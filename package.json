@@ -1,0 +1,38 @@
+{
+  "name": "automata-cli",
+  "version": "0.1.0",
+  "description": "Automata CLI tool",
+  "type": "module",
+  "bin": {
+    "automata": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --check src/",
+    "test": "npm run build && vitest run tests/unit",
+    "test:integration": "npm run build && vitest run tests/integration"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alkampfergit/automata-cli.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.0",
+    "eslint": "^10.1.0",
+    "prettier": "^3.8.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.2",
+    "vitest": "^4.1.2"
+  }
+}
