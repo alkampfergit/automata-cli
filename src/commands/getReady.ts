@@ -1,11 +1,23 @@
 import { Command } from "commander";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { readConfig } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
 
+function resolveCommand(name: string): string {
+  const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
+  for (const dir of pathDirs) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return name;
+}
+
 function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined): void {
   const prompt = systemPrompt ? `${systemPrompt}\n\n${issue.body}` : issue.body;
-  const result = spawnSync("claude", ["-p", prompt], { encoding: "utf8", stdio: "inherit" });
+  const claudeBin = resolveCommand("claude");
+  const result = spawnSync(claudeBin, ["-p", prompt], { encoding: "utf8", stdio: "inherit" });
   if (result.error) {
     const err = result.error as NodeJS.ErrnoException;
     if (err.code === "ENOENT") {

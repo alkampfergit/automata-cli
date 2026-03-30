@@ -13,14 +13,14 @@ afterEach(() => {
 
 describe("automata get-ready (CLI smoke)", () => {
   it("shows help for get-ready command", () => {
-    const output = execSync("node dist/index.js get-ready --help", { encoding: "utf8" });
+    const output = execSync(`"${process.execPath}" dist/index.js get-ready --help`, { encoding: "utf8" });
     expect(output).toContain("get-ready");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
   });
 
   it("is listed in the top-level help", () => {
-    const output = execSync("node dist/index.js --help", { encoding: "utf8" });
+    const output = execSync(`"${process.execPath}" dist/index.js --help`, { encoding: "utf8" });
     expect(output).toContain("get-ready");
   });
 });
@@ -132,7 +132,7 @@ describe("getReady command: Claude Code invocation", () => {
     const { getReadyCommand } = await import("../../src/commands/getReady.js");
     await getReadyCommand.parseAsync([], { from: "user" });
 
-    const claudeCall = mockSpawnSync.mock.calls.find((c) => c[0] === "claude");
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
     const claudeArgs = claudeCall![1] as string[];
     expect(claudeArgs[0]).toBe("-p");
@@ -162,7 +162,7 @@ describe("getReady command: Claude Code invocation", () => {
     const { getReadyCommand } = await import("../../src/commands/getReady.js");
     await getReadyCommand.parseAsync([], { from: "user" });
 
-    const claudeCall = mockSpawnSync.mock.calls.find((c) => c[0] === "claude");
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
     const claudeArgs = claudeCall![1] as string[];
     expect(claudeArgs[0]).toBe("-p");
@@ -190,7 +190,7 @@ describe("getReady command: Claude Code invocation", () => {
     const { getReadyCommand } = await import("../../src/commands/getReady.js");
     await getReadyCommand.parseAsync(["--no-claude"], { from: "user" });
 
-    const claudeCall = mockSpawnSync.mock.calls.find((c) => c[0] === "claude");
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();
 
     vi.restoreAllMocks();
