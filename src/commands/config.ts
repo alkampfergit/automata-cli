@@ -1,0 +1,32 @@
+import { Command } from "commander";
+import { render } from "ink";
+import React from "react";
+import { ConfigWizard } from "../config/ConfigWizard.js";
+import { readConfig, writeConfig, type RemoteType } from "../config/configStore.js";
+
+const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
+
+const configSetType = new Command("type")
+  .description("Set the remote environment type")
+  .argument("<value>", "Remote type: gh (GitHub) or azdo (Azure DevOps)")
+  .action((value: string) => {
+    if (!VALID_TYPES.includes(value as RemoteType)) {
+      process.stderr.write(`Error: invalid type "${value}". Must be one of: ${VALID_TYPES.join(", ")}\n`);
+      process.exit(1);
+    }
+    const current = readConfig();
+    writeConfig({ ...current, remoteType: value as RemoteType });
+    process.stdout.write(`Remote type set to: ${value}\n`);
+  });
+
+const configSet = new Command("set")
+  .description("Set a configuration value")
+  .addCommand(configSetType);
+
+export const configCommand = new Command("config")
+  .description("Configure automata settings")
+  .addCommand(configSet)
+  .action(async () => {
+    const { waitUntilExit } = render(React.createElement(ConfigWizard));
+    await waitUntilExit();
+  });
