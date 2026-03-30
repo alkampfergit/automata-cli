@@ -6,6 +6,7 @@ import {
   hasUncommittedChanges,
   checkoutAndPull,
   deleteLocalBranch,
+  fetchPrune,
 } from "../git/gitService.js";
 
 const getPrInfoCmd = new Command("get-pr-info")
@@ -96,6 +97,8 @@ const finishFeatureCmd = new Command("finish-feature")
     }
 
     try {
+      process.stdout.write(`Fetching and pruning remote refs...\n`);
+      fetchPrune();
       process.stdout.write(`Checking out develop and pulling latest...\n`);
       checkoutAndPull("develop");
       process.stdout.write(`Deleting local branch: ${branch}\n`);

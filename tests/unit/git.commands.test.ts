@@ -149,9 +149,10 @@ describe("git get-pr-info command", () => {
 //   2. git status --porcelain                → hasUncommittedChanges
 //   3. gh pr view <branch> --json ...        → getPrInfo
 //   4. git ls-remote --exit-code --heads ... → isUpstreamGone
-//   5. git checkout develop                  → checkoutAndPull (checkout)
-//   6. git pull                              → checkoutAndPull (pull)
-//   7. git branch -d <branch>               → deleteLocalBranch
+//   5. git fetch --prune                     → fetchPrune
+//   6. git checkout develop                  → checkoutAndPull (checkout)
+//   7. git pull                              → checkoutAndPull (pull)
+//   8. git branch -d <branch>               → deleteLocalBranch
 
 describe("git finish-feature command", () => {
   let out: ReturnType<typeof captureStreams>;
@@ -172,6 +173,7 @@ describe("git finish-feature command", () => {
       .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
       .mockReturnValueOnce(ok(JSON.stringify(MERGED_PR))) // getPrInfo → MERGED
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // isUpstreamGone → gone
+      .mockReturnValueOnce(ok("")) // fetchPrune
       .mockReturnValueOnce(ok("Switched to branch 'develop'\n")) // checkout
       .mockReturnValueOnce(ok("Already up to date.\n")) // pull
       .mockReturnValueOnce(ok("Deleted branch feature/my-branch.\n")); // deleteLocalBranch
@@ -179,6 +181,7 @@ describe("git finish-feature command", () => {
     const { gitCommand } = await import("../../src/commands/git.js");
     await gitCommand.parseAsync(["node", "git", "finish-feature"]);
 
+    expect(out.stdout).toContain("Fetching and pruning remote refs");
     expect(out.stdout).toContain("Checking out develop");
     expect(out.stdout).toContain("Deleting local branch: feature/my-branch");
     expect(out.stdout).toContain("Done");
@@ -268,6 +271,7 @@ describe("git finish-feature command", () => {
       .mockReturnValueOnce(ok(""))
       .mockReturnValueOnce(ok(JSON.stringify(MERGED_PR)))
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // upstream gone
+      .mockReturnValueOnce(ok("")) // fetchPrune
       .mockReturnValueOnce(fail("error: pathspec 'develop' did not match any file(s)")); // checkout fails
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -283,6 +287,7 @@ describe("git finish-feature command", () => {
       .mockReturnValueOnce(ok(""))
       .mockReturnValueOnce(ok(JSON.stringify(MERGED_PR)))
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // upstream gone
+      .mockReturnValueOnce(ok("")) // fetchPrune
       .mockReturnValueOnce(ok("Switched to branch 'develop'\n")) // checkout ok
       .mockReturnValueOnce(fail("error: could not read Username", 128)); // pull fails
 
@@ -299,6 +304,7 @@ describe("git finish-feature command", () => {
       .mockReturnValueOnce(ok(""))
       .mockReturnValueOnce(ok(JSON.stringify(MERGED_PR)))
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // upstream gone
+      .mockReturnValueOnce(ok("")) // fetchPrune
       .mockReturnValueOnce(ok("Switched to branch 'develop'\n")) // checkout
       .mockReturnValueOnce(ok("Already up to date.\n")) // pull
       .mockReturnValueOnce(fail("error: branch not fully merged")); // delete fails

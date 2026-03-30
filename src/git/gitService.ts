@@ -63,6 +63,13 @@ export function checkoutAndPull(targetBranch: string): void {
   }
 }
 
+export function fetchPrune(): void {
+  const result = run("git", ["fetch", "--prune"]);
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch --prune: ${result.stderr.trim()}`);
+  }
+}
+
 export function deleteLocalBranch(branch: string): void {
   const result = run("git", ["branch", "-d", branch]);
   if (result.status !== 0) {
