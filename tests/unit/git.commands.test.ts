@@ -27,6 +27,7 @@ const MERGED_PR = {
   title: "Add feature X",
   state: "MERGED",
   url: "https://github.com/org/repo/pull/42",
+  statusCheckRollup: null,
 };
 const OPEN_PR = { ...MERGED_PR, state: "OPEN" };
 const CLOSED_PR = { ...MERGED_PR, state: "CLOSED" };
@@ -95,7 +96,7 @@ describe("git get-pr-info command", () => {
     expect(out.exitCode).toBeUndefined();
   });
 
-  it("outputs valid JSON with --json flag", async () => {
+  it("outputs valid JSON with --json flag including checks array", async () => {
     mockSpawnSync
       .mockReturnValueOnce(ok("feature/my-branch\n"))
       .mockReturnValueOnce(ok(JSON.stringify(MERGED_PR)));
@@ -103,7 +104,10 @@ describe("git get-pr-info command", () => {
     const { gitCommand } = await import("../../src/commands/git.js");
     await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
 
-    expect(JSON.parse(out.stdout)).toEqual(MERGED_PR);
+    const parsed = JSON.parse(out.stdout) as Record<string, unknown>;
+    expect(parsed.number).toBe(42);
+    expect(parsed.state).toBe("MERGED");
+    expect(Array.isArray(parsed.checks)).toBe(true);
     expect(out.exitCode).toBeUndefined();
   });
 
@@ -139,6 +143,129 @@ describe("git get-pr-info command", () => {
 
     expect(out.stderr).toContain("Error:");
     expect(out.exitCode).toBe(1);
+  });
+});
+
+// ── get-pr-info: checks rendering ────────────────────────────────────────────
+
+describe("git get-pr-info checks rendering", () => {
+  let out: ReturnType<typeof captureStreams>;
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    out = captureStreams();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("shows 'Checks: none' when statusCheckRollup is empty", async () => {
+    const pr = { ...MERGED_PR, statusCheckRollup: [] };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Checks: none");
+  });
+
+  it("shows ✓ for a passing check", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("✓ build");
+    expect(out.stdout).not.toContain("Details:");
+  });
+
+  it("shows ✗ and failure details for a failed check", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "test", status: "COMPLETED", conclusion: "FAILURE", description: "3 tests failed", detailsUrl: "" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("✗ test");
+    expect(out.stdout).toContain("Details: 3 tests failed");
+  });
+
+  it("shows '(no details available)' when failed check has no description", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "lint", status: "COMPLETED", conclusion: "FAILURE", description: "", detailsUrl: "" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("✗ lint");
+    expect(out.stdout).toContain("(no details available)");
+  });
+
+  it("shows ● for an in-progress check", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "deploy", status: "IN_PROGRESS", conclusion: null, description: "", detailsUrl: "" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("● deploy (pending)");
+    expect(out.stdout).not.toContain("Details:");
+  });
+
+  it("JSON output contains checks array with correct fields", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://example.com" },
+        { name: "test", status: "COMPLETED", conclusion: "FAILURE", description: "fail msg", detailsUrl: "https://example.com/2" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as { checks: Array<{ name: string; conclusion: string; description: string }> };
+    expect(parsed.checks).toHaveLength(2);
+    expect(parsed.checks[0].name).toBe("build");
+    expect(parsed.checks[0].conclusion).toBe("SUCCESS");
+    expect(parsed.checks[1].name).toBe("test");
+    expect(parsed.checks[1].description).toBe("fail msg");
   });
 });
 

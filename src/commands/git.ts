@@ -7,7 +7,34 @@ import {
   checkoutAndPull,
   deleteLocalBranch,
   fetchPrune,
+  type PrCheck,
 } from "../git/gitService.js";
+
+const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
+const SKIP_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
+
+function checkSymbol(check: PrCheck): string {
+  if (check.status !== "COMPLETED") return "●";
+  if (check.conclusion === "SUCCESS") return "✓";
+  if (check.conclusion !== null && SKIP_CONCLUSIONS.has(check.conclusion)) return "○";
+  if (check.conclusion !== null && FAIL_CONCLUSIONS.has(check.conclusion)) return "✗";
+  return "●";
+}
+
+function formatChecks(checks: PrCheck[]): string {
+  if (checks.length === 0) return "Checks: none\n";
+  const lines: string[] = ["Checks:"];
+  for (const check of checks) {
+    const sym = checkSymbol(check);
+    const pending = check.status !== "COMPLETED" ? " (pending)" : "";
+    lines.push(`  ${sym} ${check.name}${pending}`);
+    if (check.conclusion !== null && FAIL_CONCLUSIONS.has(check.conclusion)) {
+      const detail = check.description.trim() || "(no details available)";
+      lines.push(`    Details: ${detail}`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
 
 const getPrInfoCmd = new Command("get-pr-info")
   .description("Show pull request info for the current branch")
@@ -38,6 +65,7 @@ const getPrInfoCmd = new Command("get-pr-info")
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
       process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
+      process.stdout.write(formatChecks(pr.checks));
     }
   });
 

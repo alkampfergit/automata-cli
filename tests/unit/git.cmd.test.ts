@@ -64,11 +64,27 @@ describe("gitService.getPrInfo", () => {
     vi.resetModules();
   });
 
-  it("returns PrInfo when gh returns valid JSON", async () => {
-    const pr = { number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42" };
-    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+  it("returns PrInfo with empty checks when gh returns no statusCheckRollup", async () => {
+    const raw = { number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42", statusCheckRollup: null };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
     const { getPrInfo } = await import("../../src/git/gitService.js");
-    expect(getPrInfo("my-branch")).toEqual(pr);
+    expect(getPrInfo("my-branch")).toEqual({ number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42", checks: [] });
+  });
+
+  it("returns PrInfo with mapped checks when gh returns statusCheckRollup", async () => {
+    const raw = {
+      number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42",
+      statusCheckRollup: [
+        { name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://example.com" },
+        { name: "test", status: "COMPLETED", conclusion: "FAILURE", description: "3 tests failed", detailsUrl: "https://example.com/2" },
+      ],
+    };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    const { getPrInfo } = await import("../../src/git/gitService.js");
+    const result = getPrInfo("my-branch");
+    expect(result?.checks).toHaveLength(2);
+    expect(result?.checks[0]).toEqual({ name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://example.com" });
+    expect(result?.checks[1]).toEqual({ name: "test", status: "COMPLETED", conclusion: "FAILURE", description: "3 tests failed", detailsUrl: "https://example.com/2" });
   });
 
   it("returns null when no PR is found", async () => {
