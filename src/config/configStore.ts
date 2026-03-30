@@ -3,8 +3,13 @@ import { join } from "node:path";
 
 export type RemoteType = "gh" | "azdo";
 
+export type IssueDiscoveryTechnique = "label" | "assignee" | "title-contains";
+
 export interface AutomataConfig {
   remoteType?: RemoteType;
+  issueDiscoveryTechnique?: IssueDiscoveryTechnique;
+  issueDiscoveryValue?: string;
+  claudeSystemPrompt?: string;
 }
 
 const CONFIG_DIR = ".automata";

@@ -56,6 +56,38 @@ describe("writeConfig", () => {
   });
 });
 
+describe("new config fields: issueDiscoveryTechnique, issueDiscoveryValue, claudeSystemPrompt", () => {
+  it("round-trips issueDiscoveryTechnique", () => {
+    writeConfig({ issueDiscoveryTechnique: "label" });
+    expect(readConfig()).toEqual({ issueDiscoveryTechnique: "label" });
+  });
+
+  it("round-trips issueDiscoveryValue", () => {
+    writeConfig({ issueDiscoveryValue: "ready-for-dev" });
+    expect(readConfig()).toEqual({ issueDiscoveryValue: "ready-for-dev" });
+  });
+
+  it("round-trips claudeSystemPrompt", () => {
+    writeConfig({ claudeSystemPrompt: "You are a senior engineer." });
+    expect(readConfig()).toEqual({ claudeSystemPrompt: "You are a senior engineer." });
+  });
+
+  it("preserves all fields together", () => {
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "assignee",
+      issueDiscoveryValue: "octocat",
+      claudeSystemPrompt: "Focus on tests.",
+    });
+    expect(readConfig()).toEqual({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "assignee",
+      issueDiscoveryValue: "octocat",
+      claudeSystemPrompt: "Focus on tests.",
+    });
+  });
+});
+
 // Cleanup TEST_DIR if it was accidentally created
 afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });

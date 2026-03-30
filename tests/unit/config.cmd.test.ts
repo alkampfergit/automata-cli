@@ -44,3 +44,52 @@ describe("automata config set type", () => {
     expect(existsSync(AUTOMATA_DIR)).toBe(false);
   });
 });
+
+describe("automata config set issue-discovery-technique", () => {
+  it("sets technique to label and prints confirmation", () => {
+    const output = run("config set issue-discovery-technique label");
+    expect(output.trim()).toBe("Issue discovery technique set to: label");
+    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    expect(config.issueDiscoveryTechnique).toBe("label");
+  });
+
+  it("sets technique to assignee", () => {
+    const output = run("config set issue-discovery-technique assignee");
+    expect(output.trim()).toBe("Issue discovery technique set to: assignee");
+  });
+
+  it("sets technique to title-contains", () => {
+    const output = run("config set issue-discovery-technique title-contains");
+    expect(output.trim()).toBe("Issue discovery technique set to: title-contains");
+  });
+
+  it("exits with code 1 for invalid technique", () => {
+    let errorOutput = "";
+    try {
+      run("config set issue-discovery-technique invalid-mode");
+    } catch (err: unknown) {
+      const execError = err as { status?: number; stderr?: Buffer };
+      expect(execError.status).toBe(1);
+      errorOutput = execError.stderr?.toString() ?? "";
+    }
+    expect(errorOutput).toContain("invalid technique");
+  });
+});
+
+describe("automata config set issue-discovery-value", () => {
+  it("sets issue discovery value and persists it", () => {
+    const output = run(`config set issue-discovery-value "ready-for-dev"`);
+    expect(output.trim()).toBe("Issue discovery value set to: ready-for-dev");
+    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    expect(config.issueDiscoveryValue).toBe("ready-for-dev");
+  });
+});
+
+describe("automata config set claude-system-prompt", () => {
+  it("sets claude system prompt and persists it", () => {
+    const output = run(`config set claude-system-prompt "You are a senior engineer."`);
+    expect(output.trim()).toBe("Claude system prompt set.");
+    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    expect(config.claudeSystemPrompt).toBe("You are a senior engineer.");
+  });
+});
