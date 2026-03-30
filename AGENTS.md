@@ -22,6 +22,8 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Active Technologies
 - TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector) (001-config-wizard)
 - Local file system — `.automata/config.json` (001-config-wizard)
+- TypeScript 5.x (strict mode), Node.js LTS + commander.js (CLI framework), `node:child_process` (exec git/gh), `execa` (optional, already not present — use `execSync`/`spawnSync` from Node.js built-ins) (002-git-commands)
+- N/A (no persistent data; reads git state and calls `gh` CLI) (002-git-commands)
 
 ## Recent Changes
 - 001-config-wizard: Added TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector)
