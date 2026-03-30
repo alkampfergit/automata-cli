@@ -1,12 +1,14 @@
 import { Command } from "commander";
 import { version } from "./version.js";
 import { configCommand } from "./commands/config.js";
+import { gitCommand } from "./commands/git.js";
 
 const program = new Command();
 
 program.name("automata").description("Automata CLI tool").version(version, "-v, --version");
 
 program.addCommand(configCommand);
+program.addCommand(gitCommand);
 program.showHelpAfterError();
 
 program.parse();
