@@ -14,6 +14,27 @@ npm install -g automata-cli
 automata --help
 ```
 
+## Commands
+
+### `automata config`
+
+Launch the interactive configuration wizard. Use arrow keys to select the remote environment type and press Enter to save.
+
+```bash
+automata config
+```
+
+### `automata config set type <value>`
+
+Set a configuration value non-interactively (useful in scripts or CI).
+
+```bash
+automata config set type gh      # GitHub
+automata config set type azdo    # Azure DevOps
+```
+
+Configuration is saved to `.automata/config.json` in the current directory.
+
 ## Development
 
 ### Prerequisites

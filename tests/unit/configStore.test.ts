@@ -1,0 +1,62 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { readConfig, writeConfig } from "../../src/config/configStore.js";
+
+const TEST_DIR = join(process.cwd(), ".automata-test");
+
+// Redirect config to a test directory by overriding cwd via env
+// We instead test via direct import with a patched cwd.
+// For simplicity, we write/read from the real .automata dir in a temp location
+// by temporarily changing the working directory.
+
+const ORIG_CWD = process.cwd;
+const TEST_CWD = join(process.cwd(), "tmp-test-config");
+
+beforeEach(() => {
+  mkdirSync(TEST_CWD, { recursive: true });
+  process.cwd = () => TEST_CWD;
+});
+
+afterEach(() => {
+  process.cwd = ORIG_CWD;
+  rmSync(TEST_CWD, { recursive: true, force: true });
+});
+
+describe("readConfig", () => {
+  it("returns empty object when no config file exists", () => {
+    expect(readConfig()).toEqual({});
+  });
+
+  it("returns parsed config when file exists", () => {
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+    writeFileSync(join(TEST_CWD, ".automata", "config.json"), JSON.stringify({ remoteType: "gh" }));
+    expect(readConfig()).toEqual({ remoteType: "gh" });
+  });
+
+  it("returns empty object when config file is corrupted", () => {
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+    writeFileSync(join(TEST_CWD, ".automata", "config.json"), "not-json");
+    expect(readConfig()).toEqual({});
+  });
+});
+
+describe("writeConfig", () => {
+  it("creates .automata directory and writes config", () => {
+    writeConfig({ remoteType: "azdo" });
+    const written = readConfig();
+    expect(written).toEqual({ remoteType: "azdo" });
+    expect(existsSync(join(TEST_CWD, ".automata"))).toBe(true);
+  });
+
+  it("overwrites existing config", () => {
+    writeConfig({ remoteType: "gh" });
+    writeConfig({ remoteType: "azdo" });
+    expect(readConfig()).toEqual({ remoteType: "azdo" });
+  });
+});
+
+// Cleanup TEST_DIR if it was accidentally created
+afterEach(() => {
+  rmSync(TEST_DIR, { recursive: true, force: true });
+});
