@@ -167,25 +167,34 @@ describe("gitService.getPrComments", () => {
     vi.doMock("../../src/config/configStore.js", () => ({
       readConfig: () => ({ remoteType: "gh" }),
     }));
-    const raw = {
-      reviewThreads: [
-        {
-          isResolved: false,
-          isOutdated: false,
-          comments: [
-            { author: { login: "alice" }, body: "Fix this", path: "src/foo.ts", line: 10, createdAt: "2026-03-30T10:00:00Z" },
-          ],
+    const gqlResponse = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  isResolved: false,
+                  isOutdated: false,
+                  comments: { nodes: [{ author: { login: "alice" }, body: "Fix this", path: "src/foo.ts", line: 10, createdAt: "2026-03-30T10:00:00Z" }] },
+                },
+                {
+                  isResolved: true,
+                  isOutdated: false,
+                  comments: { nodes: [{ author: { login: "bob" }, body: "Already resolved", path: "src/bar.ts", line: 5, createdAt: "2026-03-30T09:00:00Z" }] },
+                },
+              ],
+            },
+          },
         },
-        {
-          isResolved: true,
-          isOutdated: false,
-          comments: [
-            { author: { login: "bob" }, body: "Already resolved", path: "src/bar.ts", line: 5, createdAt: "2026-03-30T09:00:00Z" },
-          ],
-        },
-      ],
+      },
     };
-    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    // call 1: gh pr view --json number
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify({ number: 42 }), stderr: "", status: 0 });
+    // call 2: git remote get-url origin (parseOwnerRepo)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "https://github.com/org/repo.git\n", stderr: "", status: 0 });
+    // call 3: gh api graphql
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(gqlResponse), stderr: "", status: 0 });
     const { getPrComments } = await import("../../src/git/gitService.js");
     const result = getPrComments("my-branch");
     expect(result).toHaveLength(1);
@@ -198,18 +207,26 @@ describe("gitService.getPrComments", () => {
     vi.doMock("../../src/config/configStore.js", () => ({
       readConfig: () => ({ remoteType: "gh" }),
     }));
-    const raw = {
-      reviewThreads: [
-        {
-          isResolved: true,
-          isOutdated: false,
-          comments: [
-            { author: { login: "alice" }, body: "Done", path: "src/foo.ts", line: 1, createdAt: "2026-03-30T10:00:00Z" },
-          ],
+    const gqlResponse = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  isResolved: true,
+                  isOutdated: false,
+                  comments: { nodes: [{ author: { login: "alice" }, body: "Done", path: "src/foo.ts", line: 1, createdAt: "2026-03-30T10:00:00Z" }] },
+                },
+              ],
+            },
+          },
         },
-      ],
+      },
     };
-    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify({ number: 42 }), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "https://github.com/org/repo.git\n", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(gqlResponse), stderr: "", status: 0 });
     const { getPrComments } = await import("../../src/git/gitService.js");
     expect(getPrComments("my-branch")).toEqual([]);
   });
@@ -218,7 +235,8 @@ describe("gitService.getPrComments", () => {
     vi.doMock("../../src/config/configStore.js", () => ({
       readConfig: () => ({ remoteType: "gh" }),
     }));
-    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "no pull requests found", status: 1 });
+    // call 1: gh pr view --json number fails with "no pull requests found"
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "no pull requests found", status: 1 });
     const { getPrComments } = await import("../../src/git/gitService.js");
     expect(getPrComments("my-branch")).toBeNull();
   });
@@ -227,18 +245,26 @@ describe("gitService.getPrComments", () => {
     vi.doMock("../../src/config/configStore.js", () => ({
       readConfig: () => ({ remoteType: "gh" }),
     }));
-    const raw = {
-      reviewThreads: [
-        {
-          isResolved: false,
-          isOutdated: false,
-          comments: [
-            { author: { login: "bob" }, body: "Missing header", path: "src/bar.ts", line: null, createdAt: "2026-03-30T11:00:00Z" },
-          ],
+    const gqlResponse = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  isResolved: false,
+                  isOutdated: false,
+                  comments: { nodes: [{ author: { login: "bob" }, body: "Missing header", path: "src/bar.ts", line: null, createdAt: "2026-03-30T11:00:00Z" }] },
+                },
+              ],
+            },
+          },
         },
-      ],
+      },
     };
-    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify({ number: 42 }), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "https://github.com/org/repo.git\n", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(gqlResponse), stderr: "", status: 0 });
     const { getPrComments } = await import("../../src/git/gitService.js");
     const result = getPrComments("my-branch");
     expect(result).toEqual([
