@@ -157,10 +157,13 @@ See docs/git.md for full output reference.`,
 
 // Strip ANSI/CSI escape sequences and non-printable control characters from
 // untrusted text before writing to the terminal.
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_RE = new RegExp("\x1b(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])", "g");
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = new RegExp("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "g");
+
 function sanitizeText(text: string): string {
-  return text
-    .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "") // ANSI/CSI sequences
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");      // other control chars
+  return text.replace(ANSI_ESCAPE_RE, "").replace(CONTROL_CHARS_RE, "");
 }
 
 const getPrCommentsCmd = new Command("get-pr-comments")
