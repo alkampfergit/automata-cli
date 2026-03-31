@@ -1,11 +1,5 @@
 import { Command } from "commander";
-import { invokeClaudeCode } from "../claude/claudeService.js";
-
-const MODEL_IDS: Record<string, string> = {
-  opus:   "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku:  "claude-haiku-4-5-20251001",
-};
+import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
 
 const testClaudeCmd = new Command("claude")
   .description("Test Claude Code invocation with a user-supplied prompt")
@@ -16,12 +10,7 @@ const testClaudeCmd = new Command("claude")
   .option("--sonnet", "Use claude-sonnet-4-6")
   .option("--haiku",  "Use claude-haiku-4-5-20251001")
   .action(async (options: { prompt: string; yolo?: boolean; verbose?: boolean; opus?: boolean; sonnet?: boolean; haiku?: boolean }) => {
-    const selected = (["opus", "sonnet", "haiku"] as const).filter((m) => options[m]);
-    if (selected.length > 1) {
-      process.stderr.write(`Error: --${selected[0]} and --${selected[1]} are mutually exclusive.\n`);
-      process.exit(1);
-    }
-    const model = selected.length === 1 ? MODEL_IDS[selected[0]] : undefined;
+    const model = resolveModelOption(options);
     await invokeClaudeCode(options.prompt, { yolo: options.yolo, verbose: options.verbose, model });
   });
 

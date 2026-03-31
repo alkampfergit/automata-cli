@@ -1,15 +1,19 @@
 import { Command } from "commander";
 import { readConfig } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
-import { invokeClaudeCode } from "../claude/claudeService.js";
+import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
 
 export const implementNextCommand = new Command("implement-next")
   .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
   .option("--json", "Output issue details as JSON")
   .option("--no-claude", "Skip Claude Code invocation after claiming the issue")
   .option("--query-only", "Print issue content and exit without claiming or invoking Claude")
-  .option("--yolo", "Launch Claude Code with --dangerously-skip-permissions")
-  .action((options: { json?: boolean; claude: boolean; queryOnly?: boolean; yolo?: boolean }) => {
+  .option("--yolo",    "Launch Claude Code with --dangerously-skip-permissions")
+  .option("--verbose", "Show step-by-step progress summary and final result")
+  .option("--opus",    "Use claude-opus-4-6")
+  .option("--sonnet",  "Use claude-sonnet-4-6")
+  .option("--haiku",   "Use claude-haiku-4-5-20251001")
+  .action(async (options: { json?: boolean; claude: boolean; queryOnly?: boolean; yolo?: boolean; verbose?: boolean; opus?: boolean; sonnet?: boolean; haiku?: boolean }) => {
     const config = readConfig();
 
     if (config.remoteType !== "gh") {
@@ -65,6 +69,7 @@ export const implementNextCommand = new Command("implement-next")
 
     if (options.claude !== false) {
       const prompt = config.claudeSystemPrompt ? `${config.claudeSystemPrompt}\n\n${issue.body}` : issue.body;
-      invokeClaudeCode(prompt, { yolo: options.yolo });
+      const model = resolveModelOption(options);
+      await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: options.verbose, model });
     }
   });
