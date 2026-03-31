@@ -1,38 +1,7 @@
 import { Command } from "commander";
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import { readConfig } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
-
-function resolveCommand(name: string): string {
-  const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
-  for (const dir of pathDirs) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return name;
-}
-
-function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined, yolo: boolean): void {
-  const prompt = systemPrompt ? `${systemPrompt}\n\n${issue.body}` : issue.body;
-  const claudeBin = resolveCommand("claude");
-  const args = yolo ? ["--dangerously-skip-permissions", "-p", prompt] : ["-p", prompt];
-  const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
-  if (result.error) {
-    const err = result.error as NodeJS.ErrnoException;
-    if (err.code === "ENOENT") {
-      process.stderr.write("Error: `claude` CLI is not installed or not on PATH.\n");
-      process.exit(1);
-    }
-    process.stderr.write(`Error: ${err.message}\n`);
-    process.exit(1);
-  }
-  if (result.status !== 0) {
-    process.stderr.write(`Error: Claude Code exited with code ${result.status ?? "unknown"}.\n`);
-    process.exit(result.status ?? 1);
-  }
-}
+import { invokeClaudeCode } from "../claude/claudeService.js";
 
 export const implementNextCommand = new Command("implement-next")
   .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
@@ -95,6 +64,7 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     if (options.claude !== false) {
-      invokeClaudeCode(issue, config.claudeSystemPrompt, options.yolo ?? false);
+      const prompt = config.claudeSystemPrompt ? `${config.claudeSystemPrompt}\n\n${issue.body}` : issue.body;
+      invokeClaudeCode(prompt, options.yolo ?? false);
     }
   });
