@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { readConfig } from "../config/configStore.js";
+import * as azdoService from "../config/azdoService.js";
 
 export interface PrCheck {
   name: string;
@@ -49,7 +51,7 @@ interface RawPrView {
   statusCheckRollup: RawCheckRollup[] | null;
 }
 
-export function getPrInfo(branch: string): PrInfo | null {
+function getPrInfoGh(branch: string): PrInfo | null {
   const { stdout, stderr, status } = run("gh", [
     "pr",
     "view",
@@ -72,6 +74,14 @@ export function getPrInfo(branch: string): PrInfo | null {
     detailsUrl: c.detailsUrl ?? "",
   }));
   return { number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks };
+}
+
+export function getPrInfo(branch: string): PrInfo | null {
+  const config = readConfig();
+  if (config.remoteType === "azdo") {
+    return azdoService.getPrInfo();
+  }
+  return getPrInfoGh(branch);
 }
 
 export function isUpstreamGone(branch: string): boolean {

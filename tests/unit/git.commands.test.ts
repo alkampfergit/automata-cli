@@ -4,6 +4,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockSpawnSync = vi.fn();
 
+// ── Mock configStore so azdo dispatch tests can set remoteType ────────────────
+
+const mockReadConfig = vi.fn(() => ({}));
+
+vi.mock("../../src/config/configStore.js", () => ({
+  readConfig: () => mockReadConfig(),
+  writeConfig: vi.fn(),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -522,5 +531,70 @@ describe("git finish-feature command", () => {
 
     expect(out.stderr).toContain("Failed to delete branch feature/my-branch");
     expect(out.exitCode).toBe(1);
+  });
+});
+
+// ── azdo dispatch ─────────────────────────────────────────────────────────────
+
+describe("git get-pr-info: azdo dispatch", () => {
+  let out: ReturnType<typeof captureStreams>;
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    out = captureStreams();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("calls azdo pr status when remoteType is azdo", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const azdoPrOutput = {
+      pullRequests: [
+        { id: 7, title: "AzDO PR", status: "active", url: "https://dev.azure.com/o/p/_git/r/pullrequest/7" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok(JSON.stringify(azdoPrOutput))); // azdo pr status --json
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("#7");
+    expect(out.stdout).toContain("AzDO PR");
+    expect(out.stdout).toContain("OPEN");
+    const calls = mockSpawnSync.mock.calls as [string, string[]][];
+    const azdoCall = calls.find(([cmd]) => cmd === "azdo");
+    expect(azdoCall).toBeDefined();
+    expect(azdoCall?.[1]).toEqual(["pr", "status", "--json"]);
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("maps azdo completed status to MERGED for finish-feature", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const azdoMergedOutput = {
+      pullRequests: [
+        { id: 9, title: "Done", status: "completed", url: "https://dev.azure.com/o/p/_git/r/pullrequest/9" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
+      .mockReturnValueOnce(ok(JSON.stringify(azdoMergedOutput))) // azdo pr status → MERGED
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // isUpstreamGone → gone
+      .mockReturnValueOnce(ok("")) // fetchPrune
+      .mockReturnValueOnce(ok("Switched to branch 'develop'\n")) // checkout
+      .mockReturnValueOnce(ok("Already up to date.\n")) // pull
+      .mockReturnValueOnce(ok("")); // deleteLocalBranch
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "finish-feature"]);
+
+    expect(out.stdout).toContain("Done");
+    expect(out.exitCode).toBeUndefined();
   });
 });
