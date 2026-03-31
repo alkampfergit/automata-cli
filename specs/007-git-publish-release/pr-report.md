@@ -20,3 +20,8 @@ Adds `automata git publish-release [version]` — a single command that executes
 
 - **Unit — service functions**: `bumpMinorVersion` (minor bump, patch reset, v-prefix strip, invalid input), `getLatestTagOnMaster` (happy path, v-prefix, no tags, non-semver tag), `tagExists` (present / absent), `publishRelease` (full sequence order, step failure error, dry-run no-exec).
 - **Smoke — CLI help**: The existing `git.cmd.test.ts` smoke test was extended to verify `publish-release` appears in `automata git --help`.
+
+## Notes
+
+- The command does not update any version file (e.g. `package.json`). It is intentionally scoped to git operations only.
+- Tags are lightweight (non-annotated). Annotated tags can be added as a follow-up if needed.
