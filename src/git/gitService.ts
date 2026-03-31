@@ -104,7 +104,7 @@ export function fetchPrune(): void {
 }
 
 export function deleteLocalBranch(branch: string): void {
-  const result = run("git", ["branch", "-d", branch]);
+  const result = run("git", ["branch", "-D", branch]);
   if (result.status !== 0) {
     throw new Error(`Failed to delete branch ${branch}: ${result.stderr.trim()}`);
   }
