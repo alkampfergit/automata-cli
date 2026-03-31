@@ -36,6 +36,7 @@ A command-line interface tool built with TypeScript and commander.js.
 - `.automata/config.json` (existing file, extended with new fields) (003-gh-get-ready)
 - TypeScript 5.x (strict mode), Node.js LTS + commander.js (CLI), `gh` CLI via `spawnSync` (GitHub data), `node:child_process` (no execa) (006-get-pr-comments)
 - N/A — read-only query (006-get-pr-comments)
+- TypeScript 5.x (strict mode) + commander.js (existing), node:child_process (existing) (008-test-command)
 
 ## Recent Changes
 - 001-config-wizard: Added TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector)
