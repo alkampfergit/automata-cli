@@ -7,6 +7,7 @@ describe("automata git (CLI smoke)", () => {
   it("shows help for git command", () => {
     const output = execSync("node dist/index.js git --help", { encoding: "utf8" });
     expect(output).toContain("get-pr-info");
+    expect(output).toContain("get-pr-comments");
     expect(output).toContain("finish-feature");
   });
 
@@ -141,5 +142,107 @@ describe("gitService.hasUncommittedChanges", () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
     const { hasUncommittedChanges } = await import("../../src/git/gitService.js");
     expect(hasUncommittedChanges()).toBe(false);
+  });
+});
+
+describe("gitService.getPrComments", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("returns unsupported when remoteType is azdo", async () => {
+    vi.doMock("../../src/config/configStore.js", () => ({
+      readConfig: () => ({ remoteType: "azdo" }),
+    }));
+    const { getPrComments } = await import("../../src/git/gitService.js");
+    expect(getPrComments("my-branch")).toBe("unsupported");
+  });
+
+  it("returns array of PrComments for unresolved threads", async () => {
+    vi.doMock("../../src/config/configStore.js", () => ({
+      readConfig: () => ({ remoteType: "gh" }),
+    }));
+    const raw = {
+      reviewThreads: [
+        {
+          isResolved: false,
+          isOutdated: false,
+          comments: [
+            { author: { login: "alice" }, body: "Fix this", path: "src/foo.ts", line: 10, createdAt: "2026-03-30T10:00:00Z" },
+          ],
+        },
+        {
+          isResolved: true,
+          isOutdated: false,
+          comments: [
+            { author: { login: "bob" }, body: "Already resolved", path: "src/bar.ts", line: 5, createdAt: "2026-03-30T09:00:00Z" },
+          ],
+        },
+      ],
+    };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    const { getPrComments } = await import("../../src/git/gitService.js");
+    const result = getPrComments("my-branch");
+    expect(result).toHaveLength(1);
+    expect(result).toEqual([
+      { author: "alice", body: "Fix this", path: "src/foo.ts", line: 10, createdAt: "2026-03-30T10:00:00Z" },
+    ]);
+  });
+
+  it("returns empty array when all threads are resolved", async () => {
+    vi.doMock("../../src/config/configStore.js", () => ({
+      readConfig: () => ({ remoteType: "gh" }),
+    }));
+    const raw = {
+      reviewThreads: [
+        {
+          isResolved: true,
+          isOutdated: false,
+          comments: [
+            { author: { login: "alice" }, body: "Done", path: "src/foo.ts", line: 1, createdAt: "2026-03-30T10:00:00Z" },
+          ],
+        },
+      ],
+    };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    const { getPrComments } = await import("../../src/git/gitService.js");
+    expect(getPrComments("my-branch")).toEqual([]);
+  });
+
+  it("returns null when no PR found", async () => {
+    vi.doMock("../../src/config/configStore.js", () => ({
+      readConfig: () => ({ remoteType: "gh" }),
+    }));
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "no pull requests found", status: 1 });
+    const { getPrComments } = await import("../../src/git/gitService.js");
+    expect(getPrComments("my-branch")).toBeNull();
+  });
+
+  it("sets line to null for file-level comments", async () => {
+    vi.doMock("../../src/config/configStore.js", () => ({
+      readConfig: () => ({ remoteType: "gh" }),
+    }));
+    const raw = {
+      reviewThreads: [
+        {
+          isResolved: false,
+          isOutdated: false,
+          comments: [
+            { author: { login: "bob" }, body: "Missing header", path: "src/bar.ts", line: null, createdAt: "2026-03-30T11:00:00Z" },
+          ],
+        },
+      ],
+    };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
+    const { getPrComments } = await import("../../src/git/gitService.js");
+    const result = getPrComments("my-branch");
+    expect(result).toEqual([
+      { author: "bob", body: "Missing header", path: "src/bar.ts", line: null, createdAt: "2026-03-30T11:00:00Z" },
+    ]);
   });
 });

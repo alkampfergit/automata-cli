@@ -10,6 +10,14 @@ export interface PrCheck {
   detailsUrl: string;
 }
 
+export interface PrComment {
+  author: string;
+  body: string;
+  path: string;
+  line: number | null;
+  createdAt: string;
+}
+
 export interface PrInfo {
   number: number;
   title: string;
@@ -182,4 +190,59 @@ export function deleteLocalBranch(branch: string): void {
   if (result.status !== 0) {
     throw new Error(`Failed to delete branch ${branch}: ${result.stderr.trim()}`);
   }
+}
+
+interface RawReviewThreadComment {
+  author: { login: string };
+  body: string;
+  path: string;
+  line: number | null;
+  createdAt: string;
+}
+
+interface RawReviewThread {
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: RawReviewThreadComment[];
+}
+
+interface RawReviewThreadsView {
+  reviewThreads: RawReviewThread[];
+}
+
+function getPrCommentsGh(branch: string): PrComment[] | null {
+  const { stdout, stderr, status } = run("gh", [
+    "pr",
+    "view",
+    branch,
+    "--json",
+    "reviewThreads",
+  ]);
+  if (status !== 0) {
+    if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
+      return null;
+    }
+    throw new Error(stderr.trim() || "Failed to query GitHub. Is `gh` installed and authenticated?");
+  }
+  const raw = JSON.parse(stdout) as RawReviewThreadsView;
+  return raw.reviewThreads
+    .filter((t) => !t.isResolved && t.comments.length > 0)
+    .map((t) => {
+      const c = t.comments[0] as RawReviewThreadComment;
+      return {
+        author: c.author.login,
+        body: c.body,
+        path: c.path,
+        line: c.line ?? null,
+        createdAt: c.createdAt,
+      };
+    });
+}
+
+export function getPrComments(branch: string): PrComment[] | null | "unsupported" {
+  const config = readConfig();
+  if (config.remoteType === "azdo") {
+    return "unsupported";
+  }
+  return getPrCommentsGh(branch);
 }

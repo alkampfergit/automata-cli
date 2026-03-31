@@ -15,6 +15,8 @@ The following features work correctly when `remoteType` is set to `azdo`:
 | View PR info | `automata git get-pr-info` | Uses `azdo pr status --json`. PR number, title, state, and URL are returned. |
 | Finish feature branch | `automata git finish-feature` | Uses `azdo pr status --json` to confirm PR is merged (`status: "completed"`) before deleting the local branch. |
 
+> **Note**: `automata git get-pr-comments` is **GitHub-only** and is not available in AzDO mode. See Gap #3 below.
+
 ---
 
 ## Gaps
@@ -44,6 +46,20 @@ The following features work correctly when `remoteType` is set to `azdo`:
 **Impact**: The `checks` array returned by `get-pr-info --json` is always empty in AzDO mode. The human-readable output shows `Checks: none` regardless of actual pipeline state.
 
 **What would close this gap**: A future version of azdo-cli that includes policy evaluation results (Azure DevOps REST API: `/_apis/policy/evaluations?artifactId=...`) in the `azdo pr status --json` output would allow check rendering. Alternatively, automata-cli could query the Azure DevOps Pipelines API directly for build run results associated with the PR.
+
+---
+
+### 3. PR Review Comments — `automata git get-pr-comments` is unavailable in AzDO mode
+
+**Affected command**: `automata git get-pr-comments`
+
+**What GitHub supports**: `gh pr view --json reviewThreads` returns all review threads on a pull request, each with an `isResolved` flag, author login, comment body, file path, line number, and creation timestamp. automata-cli uses this to surface unresolved reviewer feedback in the terminal.
+
+**What azdo-cli provides**: `azdo pr status --json` returns only `{ id, title, status, url }` per pull request. There is no azdo-cli command to list, query, or inspect PR review threads or comments.
+
+**Impact**: `automata git get-pr-comments` exits with code 1 in AzDO mode with the message: `Error: get-pr-comments is not supported for Azure DevOps. See docs/azdo-gap.md for details.`
+
+**What would close this gap**: A future version of azdo-cli that exposes pull request thread data (Azure DevOps REST API: `/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/threads`) would allow full parity. Alternatively, automata-cli could query that Azure DevOps REST API directly using a stored PAT, without relying on azdo-cli for this capability.
 
 ---
 
