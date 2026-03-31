@@ -11,17 +11,19 @@ afterEach(() => {
 
 // ── CLI smoke tests ───────────────────────────────────────────────────────────
 
-describe("automata get-ready (CLI smoke)", () => {
-  it("shows help for get-ready command", () => {
-    const output = execSync(`"${process.execPath}" dist/index.js get-ready --help`, { encoding: "utf8" });
-    expect(output).toContain("get-ready");
+describe("automata implement-next (CLI smoke)", () => {
+  it("shows help for implement-next command", () => {
+    const output = execSync(`"${process.execPath}" dist/index.js implement-next --help`, { encoding: "utf8" });
+    expect(output).toContain("implement-next");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
+    expect(output).toContain("--query-only");
+    expect(output).toContain("--yolo");
   });
 
   it("is listed in the top-level help", () => {
     const output = execSync(`"${process.execPath}" dist/index.js --help`, { encoding: "utf8" });
-    expect(output).toContain("get-ready");
+    expect(output).toContain("implement-next");
   });
 });
 
@@ -59,14 +61,14 @@ describe("getReady command: config validation", () => {
     });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
     try {
-      await getReadyCommand.parseAsync([], { from: "user" });
+      await implementNextCommand.parseAsync([], { from: "user" });
     } catch {
       // expected
     }
 
-    expect(stderrLines.join("")).toContain("get-ready is not supported in Azure DevOps mode");
+    expect(stderrLines.join("")).toContain("implement-next is not supported in Azure DevOps mode");
     expect(stderrLines.join("")).toContain("docs/azdo-gap.md");
     expect(exitSpy).toHaveBeenCalledWith(1);
 
@@ -84,9 +86,9 @@ describe("getReady command: config validation", () => {
     });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
     try {
-      await getReadyCommand.parseAsync([], { from: "user" });
+      await implementNextCommand.parseAsync([], { from: "user" });
     } catch {
       // expected
     }
@@ -130,8 +132,8 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync([], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -160,8 +162,8 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync([], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -188,8 +190,8 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync(["--no-claude"], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();

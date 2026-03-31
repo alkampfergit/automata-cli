@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { version } from "./version.js";
 import { configCommand } from "./commands/config.js";
 import { gitCommand } from "./commands/git.js";
-import { getReadyCommand } from "./commands/getReady.js";
+import { implementNextCommand } from "./commands/getReady.js";
 
 const program = new Command();
 
@@ -10,7 +10,7 @@ program.name("automata").description("Automata CLI tool").version(version, "-v, 
 
 program.addCommand(configCommand);
 program.addCommand(gitCommand);
-program.addCommand(getReadyCommand);
+program.addCommand(implementNextCommand);
 program.showHelpAfterError();
 
 program.parse();

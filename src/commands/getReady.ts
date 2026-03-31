@@ -14,10 +14,11 @@ function resolveCommand(name: string): string {
   return name;
 }
 
-function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined): void {
+function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined, yolo: boolean): void {
   const prompt = systemPrompt ? `${systemPrompt}\n\n${issue.body}` : issue.body;
   const claudeBin = resolveCommand("claude");
-  const result = spawnSync(claudeBin, ["-p", prompt], { encoding: "utf8", stdio: "inherit" });
+  const args = yolo ? ["--dangerously-skip-permissions", "-p", prompt] : ["-p", prompt];
+  const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   if (result.error) {
     const err = result.error as NodeJS.ErrnoException;
     if (err.code === "ENOENT") {
@@ -33,16 +34,18 @@ function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined):
   }
 }
 
-export const getReadyCommand = new Command("get-ready")
+export const implementNextCommand = new Command("implement-next")
   .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
   .option("--json", "Output issue details as JSON")
   .option("--no-claude", "Skip Claude Code invocation after claiming the issue")
-  .action((options: { json?: boolean; claude: boolean }) => {
+  .option("--query-only", "Print issue content and exit without claiming or invoking Claude")
+  .option("--yolo", "Launch Claude Code with --dangerously-skip-permissions")
+  .action((options: { json?: boolean; claude: boolean; queryOnly?: boolean; yolo?: boolean }) => {
     const config = readConfig();
 
     if (config.remoteType !== "gh") {
       process.stderr.write(
-        "Error: get-ready is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
+        "Error: implement-next is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
       );
       process.exit(1);
     }
@@ -80,6 +83,10 @@ export const getReadyCommand = new Command("get-ready")
       process.stdout.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\nURL:    ${issue.url}\n\n${issue.body}\n`);
     }
 
+    if (options.queryOnly) {
+      process.exit(0);
+    }
+
     try {
       postComment(issue.number, "working");
     } catch (err) {
@@ -88,6 +95,6 @@ export const getReadyCommand = new Command("get-ready")
     }
 
     if (options.claude !== false) {
-      invokeClaudeCode(issue, config.claudeSystemPrompt);
+      invokeClaudeCode(issue, config.claudeSystemPrompt, options.yolo ?? false);
     }
   });
