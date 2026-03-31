@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { readConfig } from "../config/configStore.js";
+import * as azdoService from "../config/azdoService.js";
 
 export interface PrCheck {
   name: string;
@@ -46,16 +48,70 @@ interface RawPrView {
   title: string;
   state: string;
   url: string;
+  headRefOid: string;
   statusCheckRollup: RawCheckRollup[] | null;
 }
 
-export function getPrInfo(branch: string): PrInfo | null {
+interface CheckRunOutput {
+  title: string | null;
+  summary: string | null;
+}
+
+interface CheckRunApiItem {
+  name: string;
+  html_url: string;
+  details_url: string;
+  output: CheckRunOutput;
+}
+
+
+function parseOwnerRepo(): string | null {
+  const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
+  if (status !== 0) return null;
+  const url = stdout.trim();
+  const https = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (https) return https[1];
+  const ssh = url.match(/github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (ssh) return ssh[1];
+  return null;
+}
+
+function extractLastMarkdownUrl(markdown: string): string | null {
+  const matches = [...markdown.matchAll(/\]\((https?:\/\/[^)]+)\)/g)];
+  return matches.length > 0 ? (matches[matches.length - 1][1] ?? null) : null;
+}
+
+function fetchCheckRunOutputs(ownerRepo: string, sha: string): Map<string, { title: string; detailsUrl: string }> {
+  const { stdout, status } = run("gh", [
+    "api",
+    `repos/${ownerRepo}/commits/${sha}/check-runs`,
+    "--jq",
+    ".check_runs[] | {name, html_url, details_url, output}",
+  ]);
+  const map = new Map<string, { title: string; detailsUrl: string }>();
+  if (status !== 0) return map;
+  for (const line of stdout.trim().split("\n")) {
+    if (!line) continue;
+    try {
+      const item = JSON.parse(line) as CheckRunApiItem;
+      const title = item.output?.title ?? "";
+      const summaryUrl = item.output?.summary ? extractLastMarkdownUrl(item.output.summary) : null;
+      const detailsUrl = summaryUrl ?? (item.details_url !== item.html_url ? item.details_url : "") ?? item.html_url;
+      map.set(item.name, { title, detailsUrl });
+    } catch {
+      // skip malformed line
+    }
+  }
+  return map;
+}
+
+function getPrInfoGh(branch: string): PrInfo | null {
   const { stdout, stderr, status } = run("gh", [
     "pr",
     "view",
     branch,
     "--json",
-    "number,title,state,url,statusCheckRollup",
+    "number,title,state,url,headRefOid,statusCheckRollup",
   ]);
   if (status !== 0) {
     if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
@@ -64,14 +120,32 @@ export function getPrInfo(branch: string): PrInfo | null {
     throw new Error(stderr.trim() || "Failed to query GitHub. Is `gh` installed and authenticated?");
   }
   const raw = JSON.parse(stdout) as RawPrView;
-  const checks: PrCheck[] = (raw.statusCheckRollup ?? []).map((c) => ({
-    name: c.name,
-    status: c.status,
-    conclusion: c.conclusion,
-    description: c.description ?? "",
-    detailsUrl: c.detailsUrl ?? "",
-  }));
+
+  const failedChecks = (raw.statusCheckRollup ?? []).filter(
+    (c) => c.conclusion !== null && ["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"].includes(c.conclusion),
+  );
+  const ownerRepo = failedChecks.length > 0 ? parseOwnerRepo() : null;
+  const checkOutputs = ownerRepo ? fetchCheckRunOutputs(ownerRepo, raw.headRefOid) : new Map();
+
+  const checks: PrCheck[] = (raw.statusCheckRollup ?? []).map((c) => {
+    const enriched = checkOutputs.get(c.name);
+    return {
+      name: c.name,
+      status: c.status,
+      conclusion: c.conclusion,
+      description: enriched?.title || c.description || "",
+      detailsUrl: enriched?.detailsUrl || c.detailsUrl || "",
+    };
+  });
   return { number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks };
+}
+
+export function getPrInfo(branch: string): PrInfo | null {
+  const config = readConfig();
+  if (config.remoteType === "azdo") {
+    return azdoService.getPrInfo();
+  }
+  return getPrInfoGh(branch);
 }
 
 export function isUpstreamGone(branch: string): boolean {
@@ -104,7 +178,7 @@ export function fetchPrune(): void {
 }
 
 export function deleteLocalBranch(branch: string): void {
-  const result = run("git", ["branch", "-d", branch]);
+  const result = run("git", ["branch", "-D", branch]);
   if (result.status !== 0) {
     throw new Error(`Failed to delete branch ${branch}: ${result.stderr.trim()}`);
   }

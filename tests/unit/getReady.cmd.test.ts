@@ -66,7 +66,8 @@ describe("getReady command: config validation", () => {
       // expected
     }
 
-    expect(stderrLines.join("")).toContain("get-ready is only available for GitHub (gh) mode");
+    expect(stderrLines.join("")).toContain("get-ready is not supported in Azure DevOps mode");
+    expect(stderrLines.join("")).toContain("docs/azdo-gap.md");
     expect(exitSpy).toHaveBeenCalledWith(1);
 
     vi.restoreAllMocks();

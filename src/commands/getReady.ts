@@ -41,7 +41,9 @@ export const getReadyCommand = new Command("get-ready")
     const config = readConfig();
 
     if (config.remoteType !== "gh") {
-      process.stderr.write("Error: get-ready is only available for GitHub (gh) mode.\n");
+      process.stderr.write(
+        "Error: get-ready is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
+      );
       process.exit(1);
     }
 

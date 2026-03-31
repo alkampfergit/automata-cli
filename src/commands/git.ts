@@ -27,7 +27,7 @@ function formatCheckSummary(checks: PrCheck[]): string {
   const errors =
     failed.length === 0
       ? "none"
-      : failed.map((c) => `${c.name}: ${c.description.trim() || "no details available"}`).join("; ");
+      : failed.map((c) => `${c.name}: ${c.description.trim() || c.detailsUrl || "no details available"}`).join("; ");
   return `Checks Running: ${String(running)}\nCheck Errors:   ${errors}\n`;
 }
 
@@ -39,16 +39,39 @@ function formatChecks(checks: PrCheck[]): string {
     const pending = check.status !== "COMPLETED" ? " (pending)" : "";
     lines.push(`  ${sym} ${check.name}${pending}`);
     if (check.conclusion !== null && FAIL_CONCLUSIONS.has(check.conclusion)) {
-      const detail = check.description.trim() || "(no details available)";
-      lines.push(`    Details: ${detail}`);
+      const desc = check.description.trim();
+      const url = check.detailsUrl.trim();
+      if (desc) lines.push(`    Details: ${desc}`);
+      if (url) lines.push(`    URL:     ${url}`);
+      if (!desc && !url) lines.push(`    Details: (no details available)`);
     }
   }
   return lines.join("\n") + "\n";
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatFailedChecks(failed: PrCheck[]): string {
+  const lines: string[] = [];
+  for (const check of failed) {
+    lines.push(`  ✗ ${check.name}`);
+    const desc = check.description.trim();
+    const url = check.detailsUrl.trim();
+    if (desc) lines.push(`    Details: ${desc}`);
+    if (url) lines.push(`    URL:     ${url}`);
+    if (!desc && !url) lines.push(`    Details: (no details available)`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+const POLL_INTERVAL_MS = 10_000;
+
 const getPrInfoCmd = new Command("get-pr-info")
   .description("Show pull request info for the current branch")
   .option("--json", "Output as JSON")
+  .option("--wait-finish-checks", "Poll until all checks complete, then report pass/fail (exit 1 on failure)")
   .addHelpText(
     "after",
     `
@@ -61,13 +84,52 @@ Check status symbols:
 Failure details are printed beneath each ✗ check.
 See docs/git.md for full output reference.`,
   )
-  .action((options: { json?: boolean }) => {
+  .action(async (options: { json?: boolean; waitFinishChecks?: boolean }) => {
     let branch: string;
     try {
       branch = getCurrentBranch();
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);
+    }
+
+    if (options.waitFinishChecks) {
+      let pr;
+      while (true) {
+        try {
+          pr = getPrInfo(branch);
+        } catch (err) {
+          process.stderr.write(`Error: ${(err as Error).message}\n`);
+          process.exit(1);
+        }
+        if (pr === null) {
+          process.stderr.write(`Error: No pull request found for branch: ${branch}\n`);
+          process.exit(1);
+        }
+        const running = pr.checks.filter((c) => c.status !== "COMPLETED");
+        if (running.length === 0) break;
+        process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
+        await sleep(POLL_INTERVAL_MS);
+      }
+
+      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
+      if (failed.length === 0) {
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ result: "passed" }, null, 2) + "\n");
+        } else {
+          process.stdout.write(`All checks passed. ✓\n`);
+        }
+        process.exit(0);
+      } else {
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ result: "failed", failed }, null, 2) + "\n");
+        } else {
+          process.stdout.write(`${failed.length} check(s) failed:\n`);
+          process.stdout.write(formatFailedChecks(failed));
+        }
+        process.exit(1);
+      }
+      return;
     }
 
     let pr;
