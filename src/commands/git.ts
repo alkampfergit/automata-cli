@@ -386,7 +386,7 @@ minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
   });
 
 export const gitCommand = new Command("git")
-  .description("Git workflow commands (requires gh CLI)")
+  .description("Git workflow commands (some require gh CLI)")
   .addCommand(getPrInfoCmd)
   .addCommand(getPrCommentsCmd)
   .addCommand(finishFeatureCmd)

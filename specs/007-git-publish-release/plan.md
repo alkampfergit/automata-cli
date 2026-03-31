@@ -57,8 +57,9 @@ src/
     └── gitService.ts   # add getLatestTagOnMaster, bumpMinorVersion, publishRelease
 
 tests/
-└── git/
-    └── publishRelease.test.ts   # new test file
+└── unit/
+    ├── publishRelease.test.ts       # new: service-function unit tests
+    └── git.commands.test.ts         # extended: CLI precondition tests for publish-release
 ```
 
 **Structure Decision**: Single-project, flat service layer. Mirrors existing `finish-feature` pattern exactly.

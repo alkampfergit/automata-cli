@@ -78,6 +78,12 @@ describe("gitService.tagExists", () => {
     const { tagExists } = await import("../../src/git/gitService.js");
     expect(tagExists("1.3.0")).toBe(false);
   });
+
+  it("throws when git tag -l exits non-zero", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "not a git repository", status: 128 });
+    const { tagExists } = await import("../../src/git/gitService.js");
+    expect(() => tagExists("1.3.0")).toThrow("git tag -l 1.3.0");
+  });
 });
 
 describe("gitService.publishRelease", () => {
@@ -90,13 +96,16 @@ describe("gitService.publishRelease", () => {
     publishRelease("1.3.0", false);
 
     const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
-    expect(calls).toContain("checkout -b release/1.3.0");
-    expect(calls).toContain("checkout master");
-    expect(calls).toContain("merge --no-ff release/1.3.0");
-    expect(calls).toContain("tag 1.3.0");
-    expect(calls).toContain("checkout develop");
-    expect(calls).toContain("branch -d release/1.3.0");
-    expect(calls).toContain("push origin develop master 1.3.0");
+    expect(calls).toEqual([
+      "checkout -b release/1.3.0",
+      "checkout master",
+      "merge --no-ff release/1.3.0",
+      "tag 1.3.0",
+      "checkout develop",
+      "merge --no-ff release/1.3.0",
+      "branch -d release/1.3.0",
+      "push origin develop master 1.3.0",
+    ]);
   });
 
   it("throws with descriptive error when a step fails", async () => {

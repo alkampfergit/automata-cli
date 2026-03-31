@@ -978,3 +978,89 @@ describe("git get-pr-info: azdo dispatch", () => {
     expect(out.exitCode).toBeUndefined();
   });
 });
+
+// ── publish-release CLI preconditions ─────────────────────────────────────────
+
+describe("git publish-release command: preconditions", () => {
+  let out: ReturnType<typeof captureStreams>;
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    out = captureStreams();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("exits 1 with error when not on develop branch", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("feature/some-branch\n")); // getCurrentBranch
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("develop");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 with error when working tree is dirty", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("M src/foo.ts\n")); // hasUncommittedChanges → dirty
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("uncommitted changes");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 with error when version is not valid semver", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("")); // hasUncommittedChanges → clean
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "not-a-version"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("not valid semver");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 with error when tag already exists", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
+      .mockReturnValueOnce(ok("1.3.0\n")); // tagExists → true
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("already exists");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 when no semver tag found on master and no version supplied", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
+      .mockReturnValueOnce(fail("fatal: No names found", 128)); // getLatestTagOnMaster → null
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("No semver tag found");
+    expect(out.exitCode).toBe(1);
+  });
+});

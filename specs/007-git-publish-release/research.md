@@ -31,7 +31,7 @@
 ### Decision: Tag format (bare vs. prefixed)
 
 - **Decision**: Use bare semver tags (`1.2.0`) without a `v` prefix, matching the existing tags in this repository.
-- **Rationale**: [AUTO] The spec says "get the actual tag on master and increment the middle number" — this implies bare semver tags. If the existing tag has a `v` prefix, strip it for version arithmetic and reapply it when tagging.
+- **Rationale**: [AUTO] The spec says "get the actual tag on master and increment the middle number" — this implies bare semver tags. We always create bare tags (e.g. `git tag 1.3.0`); v-prefixed input tags are stripped for version arithmetic but the output tag is never re-prefixed.
 - **Alternatives considered**: Always `v`-prefixed (common but not specified and may break tag detection logic).
 
 ## Autonomous Decisions

@@ -291,7 +291,12 @@ export function getPrComments(branch: string): PrComment[] | null | "unsupported
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
 export function getLatestTagOnMaster(): string | null {
-  const { stdout, status } = run("git", ["describe", "--tags", "--abbrev=0", "master"]);
+  const { stdout, status } = run("git", [
+    "describe", "--tags", "--abbrev=0",
+    "--match", "[0-9]*.[0-9]*.[0-9]*",
+    "--match", "v[0-9]*.[0-9]*.[0-9]*",
+    "master",
+  ]);
   if (status !== 0) return null;
   const tag = stdout.trim();
   const m = SEMVER_RE.exec(tag);
@@ -306,7 +311,10 @@ export function bumpMinorVersion(version: string): string {
 }
 
 export function tagExists(version: string): boolean {
-  const { stdout } = run("git", ["tag", "-l", version]);
+  const { stdout, status, stderr } = run("git", ["tag", "-l", version]);
+  if (status !== 0) {
+    throw new Error(`Command failed: git tag -l ${version}\n${stderr.trim()}`);
+  }
   return stdout.trim().length > 0;
 }
 

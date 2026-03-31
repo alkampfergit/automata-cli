@@ -10,6 +10,6 @@
 - [ ] T4: Add `publishRelease(version, dryRun)` to `src/git/gitService.ts` — executes or dry-runs the 8-step GitFlow sequence
 - [ ] T5: Add `publishReleaseCmd` to `src/commands/git.ts` — validates preconditions, resolves version, calls `publishRelease`, outputs result
 - [ ] T6: Wire `publishReleaseCmd` into the `gitCommand` group in `src/commands/git.ts`
-- [ ] T7: Write unit tests in `tests/git/publishRelease.test.ts` covering: auto-version detection, minor bump logic, dry-run output, dirty tree rejection, wrong branch rejection, existing tag rejection, invalid semver rejection, no tag found rejection
+- [ ] T7: Write unit tests in `tests/unit/publishRelease.test.ts` covering service functions (auto-version detection, minor bump logic, dry-run output) and CLI precondition tests in `tests/unit/git.commands.test.ts` (dirty tree rejection, wrong branch rejection, existing tag rejection, invalid semver rejection, no tag found rejection)
 - [ ] T8: Update `docs/git.md` with `publish-release` command documentation
 - [ ] T9: Run `npm test && npm run lint` and fix any issues
