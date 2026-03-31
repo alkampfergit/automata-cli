@@ -155,6 +155,14 @@ See docs/git.md for full output reference.`,
     }
   });
 
+// Strip ANSI/CSI escape sequences and non-printable control characters from
+// untrusted text before writing to the terminal.
+function sanitizeText(text: string): string {
+  return text
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "") // ANSI/CSI sequences
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");      // other control chars
+}
+
 const getPrCommentsCmd = new Command("get-pr-comments")
   .description("List open (unresolved) review comments on the pull request for the current branch (GitHub only)")
   .option("--json", "Output as JSON array")
@@ -206,7 +214,9 @@ See docs/azdo-gap.md for details.`,
     const lines: string[] = [];
     for (const c of comments) {
       const loc = c.line !== null ? `${c.path}:${String(c.line)}` : `${c.path}:(file)`;
-      lines.push(`[${c.author}] on ${loc}\n${c.body}`);
+      const safeBody = sanitizeText(c.body);
+      const safeAuthor = sanitizeText(c.author);
+      lines.push(`[${safeAuthor}] on ${loc}\n${safeBody}`);
     }
     process.stdout.write(lines.join("\n\n") + "\n");
   });
