@@ -10,6 +10,14 @@ export interface PrCheck {
   detailsUrl: string;
 }
 
+export interface PrComment {
+  author: string;
+  body: string;
+  path: string;
+  line: number | null;
+  createdAt: string;
+}
+
 export interface PrInfo {
   number: number;
   title: string;
@@ -182,4 +190,100 @@ export function deleteLocalBranch(branch: string): void {
   if (result.status !== 0) {
     throw new Error(`Failed to delete branch ${branch}: ${result.stderr.trim()}`);
   }
+}
+
+interface RawReviewThreadComment {
+  author: { login: string };
+  body: string;
+  path: string;
+  line: number | null;
+  createdAt: string;
+}
+
+interface RawReviewThread {
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: { nodes: RawReviewThreadComment[] };
+}
+
+interface RawGraphQlResponse {
+  data: {
+    repository: {
+      pullRequest: {
+        reviewThreads: { nodes: RawReviewThread[] };
+      };
+    };
+  };
+}
+
+const REVIEW_THREADS_QUERY = `
+query($owner:String!,$repo:String!,$prNumber:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$prNumber){
+      reviewThreads(first:100){
+        nodes{
+          isResolved
+          isOutdated
+          comments(first:1){
+            nodes{ author{login} body path line createdAt }
+          }
+        }
+      }
+    }
+  }
+}`.trim();
+
+function getPrCommentsGh(branch: string): PrComment[] | null {
+  // Step 1: get PR number
+  const prView = run("gh", ["pr", "view", branch, "--json", "number"]);
+  if (prView.status !== 0) {
+    if (prView.stderr.includes("no pull requests found") || prView.stderr.includes("Could not resolve")) {
+      return null;
+    }
+    throw new Error(prView.stderr.trim() || "Failed to query GitHub. Is `gh` installed and authenticated?");
+  }
+  const { number: prNumber } = JSON.parse(prView.stdout) as { number: number };
+
+  // Step 2: resolve owner/repo
+  const ownerRepo = parseOwnerRepo();
+  if (!ownerRepo) {
+    throw new Error("Could not determine GitHub owner/repo from git remote. Is 'origin' set to a GitHub URL?");
+  }
+  const slashIdx = ownerRepo.indexOf("/");
+  const owner = ownerRepo.slice(0, slashIdx);
+  const repo = ownerRepo.slice(slashIdx + 1);
+
+  // Step 3: fetch review threads via GraphQL
+  const gql = run("gh", [
+    "api", "graphql",
+    "-f", `query=${REVIEW_THREADS_QUERY}`,
+    "-f", `owner=${owner}`,
+    "-f", `repo=${repo}`,
+    "-F", `prNumber=${String(prNumber)}`,
+  ]);
+  if (gql.status !== 0) {
+    throw new Error(gql.stderr.trim() || "Failed to query GitHub GraphQL API.");
+  }
+  const response = JSON.parse(gql.stdout) as RawGraphQlResponse;
+  const threads = response.data.repository.pullRequest.reviewThreads.nodes;
+  return threads
+    .filter((t) => !t.isResolved && t.comments.nodes.length > 0)
+    .map((t) => {
+      const c = t.comments.nodes[0] as RawReviewThreadComment;
+      return {
+        author: c.author.login,
+        body: c.body,
+        path: c.path,
+        line: c.line ?? null,
+        createdAt: c.createdAt,
+      };
+    });
+}
+
+export function getPrComments(branch: string): PrComment[] | null | "unsupported" {
+  const config = readConfig();
+  if (config.remoteType === "azdo") {
+    return "unsupported";
+  }
+  return getPrCommentsGh(branch);
 }

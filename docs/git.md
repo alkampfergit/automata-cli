@@ -95,6 +95,71 @@ For each `✗` check the failure description is also printed on the next line un
 
 ---
 
+## `automata git get-pr-comments`
+
+List open (unresolved) review thread comments on the pull request for the current branch. **GitHub only** — not supported in Azure DevOps mode (see [azdo-gap.md](azdo-gap.md)).
+
+```bash
+automata git get-pr-comments           # human-readable output
+automata git get-pr-comments --json    # JSON array output
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--json` | Print unresolved threads as a JSON array |
+
+### Human-readable output
+
+One block per unresolved review thread (separated by blank lines):
+
+```
+[alice] on src/commands/git.ts:42
+This variable name is unclear — please rename to something descriptive.
+
+[bob] on src/config/configStore.ts:(file)
+Missing licence header at the top of this file.
+```
+
+When there are no unresolved comments:
+
+```
+No open comments.
+```
+
+### JSON output shape (`--json`)
+
+```json
+[
+  {
+    "author": "alice",
+    "body": "This variable name is unclear — please rename to something descriptive.",
+    "path": "src/commands/git.ts",
+    "line": 42,
+    "createdAt": "2026-03-30T10:00:00Z"
+  },
+  {
+    "author": "bob",
+    "body": "Missing licence header at the top of this file.",
+    "path": "src/config/configStore.ts",
+    "line": null,
+    "createdAt": "2026-03-30T11:30:00Z"
+  }
+]
+```
+
+`line` is `null` for file-level comments (not anchored to a specific line). Returns `[]` when there are no unresolved threads.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success (including when there are no open comments) |
+| `1` | Error: no PR found, `gh` not installed/authenticated, or Azure DevOps remote type |
+
+---
+
 ## `automata git finish-feature`
 
 Clean up a merged feature branch in one step: checkout `develop`, pull the latest, and delete the local branch.

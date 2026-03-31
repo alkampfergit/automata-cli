@@ -729,6 +729,191 @@ describe("git finish-feature command", () => {
   });
 });
 
+// ── get-pr-comments ───────────────────────────────────────────────────────────
+//
+// Sequence of spawnSync calls:
+//   1. git rev-parse --abbrev-ref HEAD   → getCurrentBranch
+//   2. gh pr view <branch> --json number → getPrComments (PR number lookup)
+//   3. git remote get-url origin         → parseOwnerRepo
+//   4. gh api graphql ...                → getPrComments (review threads)
+
+function gqlResponse(threads: Array<{ isResolved: boolean; author: string; body: string; path: string; line: number | null }>) {
+  return ok(
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: threads.map((t) => ({
+                isResolved: t.isResolved,
+                isOutdated: false,
+                comments: {
+                  nodes: [{ author: { login: t.author }, body: t.body, path: t.path, line: t.line, createdAt: "2026-03-30T10:00:00Z" }],
+                },
+              })),
+            },
+          },
+        },
+      },
+    }),
+  );
+}
+
+describe("git get-pr-comments command", () => {
+  let out: ReturnType<typeof captureStreams>;
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    out = captureStreams();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("displays unresolved threads in human-readable format", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))           // getCurrentBranch
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))  // gh pr view --json number
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n")) // parseOwnerRepo
+      .mockReturnValueOnce(gqlResponse([
+        { isResolved: false, author: "alice", body: "Fix this please", path: "src/foo.ts", line: 10 },
+        { isResolved: true,  author: "bob",   body: "Already done",    path: "src/bar.ts", line: 5 },
+      ]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
+
+    expect(out.stdout).toContain("[alice] on src/foo.ts:10");
+    expect(out.stdout).toContain("Fix this please");
+    expect(out.stdout).not.toContain("bob");
+    expect(out.stdout).not.toContain("Already done");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("shows '(file)' when line is null", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(gqlResponse([
+        { isResolved: false, author: "carol", body: "Add a license header", path: "src/index.ts", line: null },
+      ]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
+
+    expect(out.stdout).toContain("[carol] on src/index.ts:(file)");
+    expect(out.stdout).toContain("Add a license header");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("prints 'No open comments.' when all threads are resolved", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(gqlResponse([
+        { isResolved: true, author: "alice", body: "Done", path: "src/foo.ts", line: 1 },
+      ]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
+
+    expect(out.stdout).toBe("No open comments.\n");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("outputs valid JSON array with --json flag", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(gqlResponse([
+        { isResolved: false, author: "alice", body: "Fix this", path: "src/foo.ts", line: 10 },
+      ]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as Array<{ author: string; body: string; path: string; line: number }>;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].author).toBe("alice");
+    expect(parsed[0].body).toBe("Fix this");
+    expect(parsed[0].path).toBe("src/foo.ts");
+    expect(parsed[0].line).toBe(10);
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("outputs [] with --json when no unresolved threads", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(gqlResponse([]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments", "--json"]);
+
+    expect(out.stdout.trim()).toBe("[]");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("exits 1 with error when no PR found for branch", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(fail("no pull requests found"));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(gitCommand.parseAsync(["node", "git", "get-pr-comments"])).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("No pull request found for branch: feature/my-branch");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 with error when not inside a git repository", async () => {
+    mockSpawnSync.mockReturnValueOnce(fail("fatal: not a git repository", 128));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(gitCommand.parseAsync(["node", "git", "get-pr-comments"])).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("Failed to determine current branch");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 with unsupported message when remoteType is azdo", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    mockSpawnSync.mockReturnValueOnce(ok("feature/my-branch\n"));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(gitCommand.parseAsync(["node", "git", "get-pr-comments"])).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("not supported for Azure DevOps");
+    expect(out.stderr).toContain("docs/azdo-gap.md");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("strips ANSI escape sequences from comment bodies before output", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify({ number: 42 })))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(gqlResponse([
+        { isResolved: false, author: "attacker", body: "\x1b[31mRed text\x1b[0m normal", path: "src/foo.ts", line: 1 },
+      ]));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
+
+    expect(out.stdout).toContain("Red text normal");
+    expect(out.stdout).not.toContain("\x1b[");
+    expect(out.exitCode).toBeUndefined();
+  });
+});
+
 // ── azdo dispatch ─────────────────────────────────────────────────────────────
 
 describe("git get-pr-info: azdo dispatch", () => {
