@@ -22,17 +22,29 @@ automata git get-pr-info --json    # JSON output
 ### Human-readable output
 
 ```
-PR:    #42
-Title: Fix authentication bug
-State: OPEN
-URL:   https://github.com/org/repo/pull/42
+PR:             #42
+Title:          Fix authentication bug
+State:          OPEN
+URL:            https://github.com/org/repo/pull/42
+Checks Running: false
+Check Errors:   test: 3 tests failed in src/foo.test.ts; lint: no details available
 Checks:
   ✓ build
-  ✓ lint
+  ✗ lint
+    Details: no details available
   ✗ test
     Details: 3 tests failed in src/foo.test.ts
   ● deploy (pending)
 ```
+
+### Machine-readable summary fields
+
+These fields appear on every invocation and are easy to grep or parse:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `Checks Running:` | `true` / `false` | `true` if any check is still `QUEUED` or `IN_PROGRESS` |
+| `Check Errors:` | `none` or a semicolon-separated list | One entry per failed check in the format `<name>: <detail>`. Detail is `no details available` when GitHub provides no description. |
 
 ### Check status symbols
 
@@ -43,7 +55,7 @@ Checks:
 | `●` | Pending / running | `QUEUED`, `IN_PROGRESS` (conclusion not yet set) |
 | `○` | Skipped / neutral | `SKIPPED`, `NEUTRAL` |
 
-For each `✗` check, the failure description is printed on the next line under `Details:`. If no description is available from GitHub, `(no details available)` is shown instead.
+For each `✗` check the failure description is also printed on the next line under `Details:` (and is included in `Check Errors:` above).
 
 ### JSON output shape
 

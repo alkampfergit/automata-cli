@@ -21,6 +21,16 @@ function checkSymbol(check: PrCheck): string {
   return "●";
 }
 
+function formatCheckSummary(checks: PrCheck[]): string {
+  const running = checks.some((c) => c.status !== "COMPLETED");
+  const failed = checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
+  const errors =
+    failed.length === 0
+      ? "none"
+      : failed.map((c) => `${c.name}: ${c.description.trim() || "no details available"}`).join("; ");
+  return `Checks Running: ${String(running)}\nCheck Errors:   ${errors}\n`;
+}
+
 function formatChecks(checks: PrCheck[]): string {
   if (checks.length === 0) return "Checks: none\n";
   const lines: string[] = ["Checks:"];
@@ -77,6 +87,7 @@ See docs/git.md for full output reference.`,
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
       process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
+      process.stdout.write(formatCheckSummary(pr.checks));
       process.stdout.write(formatChecks(pr.checks));
     }
   });
