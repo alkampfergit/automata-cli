@@ -287,3 +287,59 @@ export function getPrComments(branch: string): PrComment[] | null | "unsupported
   }
   return getPrCommentsGh(branch);
 }
+
+const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;
+
+export function getLatestTagOnMaster(): string | null {
+  const { stdout, status } = run("git", [
+    "describe", "--tags", "--abbrev=0",
+    "--match", "[0-9]*.[0-9]*.[0-9]*",
+    "--match", "v[0-9]*.[0-9]*.[0-9]*",
+    "master",
+  ]);
+  if (status !== 0) return null;
+  const tag = stdout.trim();
+  const m = SEMVER_RE.exec(tag);
+  if (!m) return null;
+  return `${m[1]}.${m[2]}.${m[3]}`;
+}
+
+export function bumpMinorVersion(version: string): string {
+  const m = SEMVER_RE.exec(version);
+  if (!m) throw new Error(`Invalid semver: ${version}`);
+  return `${m[1]}.${String(Number(m[2]) + 1)}.0`;
+}
+
+export function tagExists(version: string): boolean {
+  const { stdout, status, stderr } = run("git", ["tag", "-l", version]);
+  if (status !== 0) {
+    throw new Error(`Command failed: git tag -l ${version}\n${stderr.trim()}`);
+  }
+  return stdout.trim().length > 0;
+}
+
+export function publishRelease(version: string, dryRun: boolean): void {
+  const releaseBranch = `release/${version}`;
+
+  const steps: Array<{ args: string[]; desc: string }> = [
+    { args: ["checkout", "-b", releaseBranch], desc: `git checkout -b ${releaseBranch}` },
+    { args: ["checkout", "master"], desc: `git checkout master` },
+    { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
+    { args: ["tag", version], desc: `git tag ${version}` },
+    { args: ["checkout", "develop"], desc: `git checkout develop` },
+    { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
+    { args: ["branch", "-d", releaseBranch], desc: `git branch -d ${releaseBranch}` },
+    { args: ["push", "origin", "develop", "master", version], desc: `git push origin develop master ${version}` },
+  ];
+
+  for (const step of steps) {
+    if (dryRun) {
+      process.stdout.write(`[dry-run] ${step.desc}\n`);
+      continue;
+    }
+    const { status, stderr } = run("git", step.args);
+    if (status !== 0) {
+      throw new Error(`Command failed: ${step.desc}\n${stderr.trim()}`);
+    }
+  }
+}
