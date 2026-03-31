@@ -1,10 +1,19 @@
 import { spawnSync } from "node:child_process";
 
+export interface PrCheck {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  description: string;
+  detailsUrl: string;
+}
+
 export interface PrInfo {
   number: number;
   title: string;
   state: string;
   url: string;
+  checks: PrCheck[];
 }
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
@@ -24,13 +33,29 @@ export function getCurrentBranch(): string {
   return stdout.trim();
 }
 
+interface RawCheckRollup {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  description: string;
+  detailsUrl: string;
+}
+
+interface RawPrView {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  statusCheckRollup: RawCheckRollup[] | null;
+}
+
 export function getPrInfo(branch: string): PrInfo | null {
   const { stdout, stderr, status } = run("gh", [
     "pr",
     "view",
     branch,
     "--json",
-    "number,title,state,url",
+    "number,title,state,url,statusCheckRollup",
   ]);
   if (status !== 0) {
     if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
@@ -38,7 +63,15 @@ export function getPrInfo(branch: string): PrInfo | null {
     }
     throw new Error(stderr.trim() || "Failed to query GitHub. Is `gh` installed and authenticated?");
   }
-  return JSON.parse(stdout) as PrInfo;
+  const raw = JSON.parse(stdout) as RawPrView;
+  const checks: PrCheck[] = (raw.statusCheckRollup ?? []).map((c) => ({
+    name: c.name,
+    status: c.status,
+    conclusion: c.conclusion,
+    description: c.description ?? "",
+    detailsUrl: c.detailsUrl ?? "",
+  }));
+  return { number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks };
 }
 
 export function isUpstreamGone(branch: string): boolean {
