@@ -65,6 +65,6 @@ export const implementNextCommand = new Command("implement-next")
 
     if (options.claude !== false) {
       const prompt = config.claudeSystemPrompt ? `${config.claudeSystemPrompt}\n\n${issue.body}` : issue.body;
-      invokeClaudeCode(prompt, options.yolo ?? false);
+      invokeClaudeCode(prompt, { yolo: options.yolo });
     }
   });

@@ -12,6 +12,7 @@ describe("automata test (CLI smoke)", () => {
     const output = execSync(`"${process.execPath}" dist/index.js test claude --help`, { encoding: "utf8" });
     expect(output).toContain("--prompt");
     expect(output).toContain("--yolo");
+    expect(output).toContain("--verbose");
   });
 
   it("is listed in the top-level help", () => {
