@@ -19,6 +19,14 @@ A command-line interface tool built with TypeScript and commander.js.
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
 
+## Documentation Convention
+
+- `README.md` must stay small: installation, quick-start, a command-group table, and dev setup only.
+- Each command group has a dedicated page under `docs/<group>.md` (e.g. `docs/git.md`, `docs/config.md`).
+- Every new subcommand must be documented in its group page, not in the README.
+- The README command table must link to the relevant `docs/<group>.md` page.
+- The `docs/<group>.md` page is the authoritative reference for that command group: options, output format, symbols/legends, exit codes, and examples.
+
 ## Active Technologies
 - TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector) (001-config-wizard)
 - Local file system — `.automata/config.json` (001-config-wizard)

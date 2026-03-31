@@ -1,0 +1,117 @@
+# automata git
+
+Git workflow commands. All commands in this group require the [`gh` CLI](https://cli.github.com/) to be installed and authenticated.
+
+---
+
+## `automata git get-pr-info`
+
+Show the pull request associated with the current branch.
+
+```bash
+automata git get-pr-info           # human-readable output
+automata git get-pr-info --json    # JSON output
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--json` | Print the full PR object as JSON (includes `checks` array) |
+
+### Human-readable output
+
+```
+PR:    #42
+Title: Fix authentication bug
+State: OPEN
+URL:   https://github.com/org/repo/pull/42
+Checks:
+  ✓ build
+  ✓ lint
+  ✗ test
+    Details: 3 tests failed in src/foo.test.ts
+  ● deploy (pending)
+```
+
+### Check status symbols
+
+| Symbol | Meaning | GitHub conclusion values |
+|---|---|---|
+| `✓` | Passed | `SUCCESS` |
+| `✗` | Failed | `FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED`, `CANCELLED` |
+| `●` | Pending / running | `QUEUED`, `IN_PROGRESS` (conclusion not yet set) |
+| `○` | Skipped / neutral | `SKIPPED`, `NEUTRAL` |
+
+For each `✗` check, the failure description is printed on the next line under `Details:`. If no description is available from GitHub, `(no details available)` is shown instead.
+
+### JSON output shape
+
+```json
+{
+  "number": 42,
+  "title": "Fix authentication bug",
+  "state": "OPEN",
+  "url": "https://github.com/org/repo/pull/42",
+  "checks": [
+    {
+      "name": "build",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "description": "",
+      "detailsUrl": "https://github.com/..."
+    },
+    {
+      "name": "test",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "description": "3 tests failed in src/foo.test.ts",
+      "detailsUrl": "https://github.com/..."
+    }
+  ]
+}
+```
+
+`checks` is always present; it is an empty array when no checks are configured on the PR.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success (including when no PR exists — a message is printed) |
+| `1` | Error (gh failure, not a git repo, etc.) |
+
+---
+
+## `automata git finish-feature`
+
+Clean up a merged feature branch in one step: checkout `develop`, pull the latest, and delete the local branch.
+
+```bash
+automata git finish-feature
+```
+
+### Preconditions (all must pass before any changes are made)
+
+| Check | Failure message |
+|---|---|
+| Not on `develop` | `finish-feature cannot be run from the develop branch` |
+| Clean working tree | `You have uncommitted changes...` |
+| PR exists for the branch | `No pull request found for branch: <branch>` |
+| PR state is `MERGED` | Open → `still open`; Closed without merge → `closed without merging` |
+| Remote tracking branch is gone | `Remote tracking branch 'origin/<branch>' still exists` |
+
+If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. No git operations are performed.
+
+### What it does
+
+1. `git fetch --prune` — syncs remote refs
+2. `git checkout develop && git pull` — moves to develop and updates it
+3. `git branch -d <branch>` — removes the local feature branch
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Branch cleaned up successfully |
+| `1` | Precondition failed or git error |

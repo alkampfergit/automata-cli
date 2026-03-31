@@ -39,6 +39,18 @@ function formatChecks(checks: PrCheck[]): string {
 const getPrInfoCmd = new Command("get-pr-info")
   .description("Show pull request info for the current branch")
   .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+Check status symbols:
+  ✓  Passed        (conclusion: SUCCESS)
+  ✗  Failed        (conclusion: FAILURE / TIMED_OUT / ACTION_REQUIRED / CANCELLED)
+  ●  Pending       (status: QUEUED or IN_PROGRESS)
+  ○  Skipped       (conclusion: SKIPPED or NEUTRAL)
+
+Failure details are printed beneath each ✗ check.
+See docs/git.md for full output reference.`,
+  )
   .action((options: { json?: boolean }) => {
     let branch: string;
     try {
