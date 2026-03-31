@@ -10,16 +10,13 @@ Adds `automata git publish-release [version]` — a single command that executes
 
 ## What's New
 
-<!-- To be completed after implementation -->
-
-- **[Area / Component]**: [What was added or changed and why]
+- **`automata git publish-release` command**: New subcommand under `automata git` that executes the complete GitFlow release sequence (branch → merge to master → tag → merge to develop → delete release branch → push) in a single invocation.
+- **Auto-versioning**: When no version argument is given, the command queries the latest semver tag on `master` and auto-increments the minor segment (e.g. `1.2.0 → 1.3.0`).
+- **`--dry-run` flag**: Prints each git command that would be executed without modifying any local or remote state.
+- **`src/git/gitService.ts`**: Added `getLatestTagOnMaster`, `bumpMinorVersion`, `tagExists`, and `publishRelease` service functions.
+- **`docs/git.md`**: Documented the new command with arguments, options, release sequence, preconditions, and exit codes.
 
 ## Testing
 
-<!-- To be completed after implementation -->
-
-- **[Unit / Integration / E2E / Manual]**: [What scenario or component was covered]
-
-## Notes
-
-<!-- To be completed after implementation -->
+- **Unit — service functions**: `bumpMinorVersion` (minor bump, patch reset, v-prefix strip, invalid input), `getLatestTagOnMaster` (happy path, v-prefix, no tags, non-semver tag), `tagExists` (present / absent), `publishRelease` (full sequence order, step failure error, dry-run no-exec).
+- **Smoke — CLI help**: The existing `git.cmd.test.ts` smoke test was extended to verify `publish-release` appears in `automata git --help`.

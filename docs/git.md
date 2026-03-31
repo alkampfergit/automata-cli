@@ -1,6 +1,6 @@
 # automata git
 
-Git workflow commands. All commands in this group require the [`gh` CLI](https://cli.github.com/) to be installed and authenticated.
+Git workflow commands. Most commands in this group require the [`gh` CLI](https://cli.github.com/) to be installed and authenticated. `publish-release` only requires `git`.
 
 ---
 
@@ -192,3 +192,59 @@ If any precondition fails the command prints a descriptive error to stderr and e
 |---|---|
 | `0` | Branch cleaned up successfully |
 | `1` | Precondition failed or git error |
+
+---
+
+## `automata git publish-release`
+
+Execute the full GitFlow release sequence and push the results to `origin`. Does **not** require the `gh` CLI — only `git` is needed.
+
+```bash
+automata git publish-release            # auto-detect version from master tag
+automata git publish-release 2.0.0      # explicit version
+automata git publish-release --dry-run  # preview commands without executing
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `[version]` | Optional. Release version in `X.Y.Z` semver format. When omitted, the latest semver tag on `master` is detected and the minor segment is incremented (e.g. `1.2.0 → 1.3.0`). |
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print each git command that would be executed without running them |
+
+### Release sequence
+
+The command executes these git operations in order:
+
+1. `git checkout -b release/<version>` — create release branch from `develop`
+2. `git checkout master` — switch to master
+3. `git merge --no-ff release/<version>` — merge release into master
+4. `git tag <version>` — tag the release on master
+5. `git checkout develop` — switch back to develop
+6. `git merge --no-ff release/<version>` — merge release back into develop
+7. `git branch -d release/<version>` — delete the local release branch
+8. `git push origin develop master <version>` — push all refs
+
+### Preconditions (all must pass before any changes are made)
+
+| Check | Failure message |
+|---|---|
+| Current branch is `develop` | `publish-release must be run from the 'develop' branch` |
+| Clean working tree | `You have uncommitted changes...` |
+| Version matches `X.Y.Z` (if provided) | `Version '...' is not valid semver. Use X.Y.Z format` |
+| Tag does not already exist | `Tag '...' already exists` |
+| Semver tag found on master (if auto-detecting) | `No semver tag found on master` |
+
+If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. No git operations are performed.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Release published successfully (or dry-run completed) |
+| `1` | Precondition failed or git error during release sequence |
