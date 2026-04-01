@@ -19,9 +19,9 @@ const testCodexCmd = new Command("codex")
   .description("Test Codex CLI invocation with a user-supplied prompt")
   .requiredOption("--prompt <string>", "Prompt to send to Codex CLI")
   .option("--yolo", "Launch Codex with --dangerously-bypass-approvals-and-sandbox")
-  .option("--verbose", "Show step-by-step progress summary and final result")
-  .action(async (options: { prompt: string; yolo?: boolean; verbose?: boolean }) => {
-    await invokeCodexCode(options.prompt, { yolo: options.yolo, verbose: options.verbose });
+  .option("--verbose", "Not supported for Codex; prints a warning and is otherwise ignored")
+  .action((options: { prompt: string; yolo?: boolean; verbose?: boolean }) => {
+    invokeCodexCode(options.prompt, { yolo: options.yolo, verbose: options.verbose });
   });
 
 export const testCommand = new Command("test")
