@@ -74,6 +74,25 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 
 ---
 
+### User Story 5 - Execute-Prompt Fix-Comments Command (Priority: P4)
+
+A developer runs `automata execute-prompt fix-comments` on a feature branch. The tool fetches open review comments from the PR via the GitHub GraphQL API, then invokes Claude (or Codex with `--codex`) with the stored Fix-Comments prompt and the formatted comment list as context so the AI can address each reviewer concern.
+
+**Why this priority**: Parallel value to the sonar command; completes the prompt-execution command group and removes the manual step of copying review comments into an AI prompt.
+
+**Independent Test**: Can be fully tested by running `execute-prompt fix-comments` on a branch whose PR has open review comments and confirming the AI is invoked with a prompt containing those comments.
+
+**Acceptance Scenarios**:
+
+1. **Given** a branch with a PR that has open review comments, **When** `automata execute-prompt fix-comments` is run, **Then** Claude is invoked with the Fix-Comments prompt and the formatted comment list.
+2. **Given** `--codex` flag, **When** `automata execute-prompt fix-comments --codex` is run, **Then** Codex CLI is used instead of Claude.
+3. **Given** `--verbose` flag, **When** `automata execute-prompt fix-comments --verbose` is run with Claude, **Then** verbose progress is shown.
+4. **Given** no open review comments on the PR, **When** `automata execute-prompt fix-comments` is run, **Then** an informative error is shown and the command exits non-zero.
+5. **Given** an Azure DevOps remote, **When** `automata execute-prompt fix-comments` is run, **Then** an unsupported-remote error is shown and the command exits non-zero.
+6. **Given** no PR exists for the current branch, **When** `automata execute-prompt fix-comments` is run, **Then** an informative error is shown and the command exits non-zero.
+
+---
+
 ### Edge Cases
 
 - What happens when the SonarCloud API is unreachable? Output should show URL but `newIssues` as unavailable, without crashing.
@@ -92,7 +111,7 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 - **FR-004A**: When a SonarCloud check is failed, the human-readable `FailedChecks:` section of `get-pr-info` MUST include the Sonar URL for that failure.
 - **FR-005**: The config wizard MUST present a top-level menu with sections: "Remote / Mode", "Implement-Next", and "Prompts".
 - **FR-006**: The "Prompts" section MUST allow viewing and editing a custom Sonar prompt.
-- **FR-007**: The config schema MUST be extended with a `prompts` object containing at minimum a `sonar` string field.
+- **FR-007**: The config schema MUST be extended with a `prompts` object containing at minimum `sonar` and `fixComments` string fields.
 - **FR-008**: A built-in default Sonar prompt MUST be defined in code and used when no custom prompt is configured.
 - **FR-008A**: The built-in default Sonar prompt MUST instruct the AI to inspect both Sonar issues and the Sonar quality gate via API.
 - **FR-008B**: The built-in default Sonar prompt MUST instruct the AI to use the `sonar-quality-gate` skill when that skill is available in the repository.
@@ -101,6 +120,10 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 - **FR-011**: `execute-prompt sonar` MUST support `--verbose` flag (Claude only) and `--codex` flag.
 - **FR-012**: `execute-prompt sonar` MUST exit with a non-zero code and informative message when no SonarCloud URL is found.
 - **FR-013**: `get-pr-info` MUST handle SonarCloud API failures gracefully (show URL without issue count).
+- **FR-014**: `automata execute-prompt fix-comments` MUST fetch open review comments from the current branch's PR via the GitHub GraphQL API and invoke the AI with the Fix-Comments prompt and formatted comment list.
+- **FR-015**: `execute-prompt fix-comments` MUST exit with a non-zero code and informative message when: no PR exists, no open comments are found, or the remote is Azure DevOps.
+- **FR-016**: A built-in default Fix-Comments prompt MUST be defined in code and used when no custom prompt is configured.
+- **FR-016A**: The "Prompts" section of the config wizard MUST allow viewing and editing a custom Fix-Comments prompt, stored under `prompts.fixComments`.
 
 ### Key Entities
 
@@ -116,6 +139,8 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 - **SC-002**: `automata config` presents a navigable menu; all existing settings remain reachable.
 - **SC-003**: Running `execute-prompt sonar` on a PR with SonarCloud issues triggers an AI invocation within 5 seconds of finding the URL.
 - **SC-004**: A Sonar prompt can be customized and is persisted across automata restarts.
+- **SC-005**: Running `execute-prompt fix-comments` on a PR with open review comments triggers an AI invocation with those comments embedded in the prompt.
+- **SC-006**: A Fix-Comments prompt can be customized and is persisted across automata restarts.
 
 ## Assumptions
 
