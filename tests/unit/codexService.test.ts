@@ -89,8 +89,7 @@ describe("codexService.invokeCodexCode (sync mode)", () => {
 
 function createMockChildProcess(events: string[], exitCode: number): EventEmitter & { stdout: Readable } {
   const stdout = new Readable({ read() {} });
-  const child = new EventEmitter() as EventEmitter & { stdout: Readable };
-  child.stdout = stdout;
+  const child = Object.assign(new EventEmitter(), { stdout });
 
   setImmediate(() => {
     for (const line of events) {

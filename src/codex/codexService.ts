@@ -88,11 +88,11 @@ function summarizeCodexTool(name: string, input: Record<string, unknown> | undef
     case "shell":
       return `running: ${truncate(String(input["cmd"] ?? input["command"] ?? ""), 80)}`;
     case "read_file":
-      return `reading ${input["path"] ?? "file"}`;
+      return `reading ${String(input["path"] ?? "file")}`;
     case "write_file":
-      return `writing ${input["path"] ?? "file"}`;
+      return `writing ${String(input["path"] ?? "file")}`;
     case "list_files":
-      return `listing files: ${input["path"] ?? "."}`;
+      return `listing files: ${String(input["path"] ?? ".")}`;
     default:
       return `tool: ${name}`;
   }
