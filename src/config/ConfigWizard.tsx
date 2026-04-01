@@ -4,6 +4,7 @@ import {
   readConfig,
   writeConfig,
   DEFAULT_SONAR_PROMPT,
+  DEFAULT_FIX_COMMENTS_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
 } from "./configStore.js";
@@ -20,7 +21,8 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
 ];
 
 const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts"] as const;
-type MainMenuOption = (typeof MAIN_MENU_OPTIONS)[number];
+
+const PROMPTS_MENU_OPTIONS = ["Sonar", "Fix-Comments"] as const;
 
 type Screen =
   | "main"
@@ -29,7 +31,8 @@ type Screen =
   | "value"
   | "system-prompt"
   | "prompts-menu"
-  | "sonar-prompt";
+  | "sonar-prompt"
+  | "fix-comments-prompt";
 
 export function ConfigWizard() {
   const existing = readConfig();
@@ -42,7 +45,11 @@ export function ConfigWizard() {
   const [selectedTechIndex, setSelectedTechIndex] = useState(initialTechIndex >= 0 ? initialTechIndex : 0);
   const [discoveryValue, setDiscoveryValue] = useState(existing.issueDiscoveryValue ?? "");
   const [systemPrompt, setSystemPrompt] = useState(existing.claudeSystemPrompt ?? "");
+  const [promptsMenuIndex, setPromptsMenuIndex] = useState(0);
   const [sonarPrompt, setSonarPrompt] = useState(existing.prompts?.sonar ?? DEFAULT_SONAR_PROMPT);
+  const [fixCommentsPrompt, setFixCommentsPrompt] = useState(
+    existing.prompts?.fixComments ?? DEFAULT_FIX_COMMENTS_PROMPT,
+  );
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -56,7 +63,7 @@ export function ConfigWizard() {
       } else if (key.downArrow) {
         setMainMenuIndex((i) => (i < MAIN_MENU_OPTIONS.length - 1 ? i + 1 : 0));
       } else if (key.return) {
-        const chosen = MAIN_MENU_OPTIONS[mainMenuIndex] as MainMenuOption;
+        const chosen = MAIN_MENU_OPTIONS[mainMenuIndex];
         if (chosen === "Remote / Mode") {
           setScreen("remote");
         } else if (chosen === "Implement-Next") {
@@ -132,8 +139,17 @@ export function ConfigWizard() {
         setSystemPrompt((v) => v + input);
       }
     } else if (screen === "prompts-menu") {
-      if (key.return) {
-        setScreen("sonar-prompt");
+      if (key.upArrow) {
+        setPromptsMenuIndex((i) => (i > 0 ? i - 1 : PROMPTS_MENU_OPTIONS.length - 1));
+      } else if (key.downArrow) {
+        setPromptsMenuIndex((i) => (i < PROMPTS_MENU_OPTIONS.length - 1 ? i + 1 : 0));
+      } else if (key.return) {
+        const chosen = PROMPTS_MENU_OPTIONS[promptsMenuIndex];
+        if (chosen === "Sonar") {
+          setScreen("sonar-prompt");
+        } else {
+          setScreen("fix-comments-prompt");
+        }
       } else if (key.escape) {
         setScreen("main");
       } else if (key.ctrl && input === "c") {
@@ -145,7 +161,7 @@ export function ConfigWizard() {
           ...existing,
           prompts: { ...existing.prompts, sonar: sonarPrompt || undefined },
         });
-        exit();
+        setScreen("prompts-menu");
       } else if (key.backspace || key.delete) {
         setSonarPrompt((v) => v.slice(0, -1));
       } else if (key.escape) {
@@ -154,6 +170,22 @@ export function ConfigWizard() {
         exit();
       } else if (input && !key.ctrl && !key.meta) {
         setSonarPrompt((v) => v + input);
+      }
+    } else if (screen === "fix-comments-prompt") {
+      if (key.return) {
+        writeConfig({
+          ...existing,
+          prompts: { ...existing.prompts, fixComments: fixCommentsPrompt || undefined },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setFixCommentsPrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setFixCommentsPrompt((v) => v + input);
       }
     }
   });
@@ -259,29 +291,51 @@ export function ConfigWizard() {
       <Box flexDirection="column" marginY={1}>
         <Text bold>Prompts</Text>
         <Text> </Text>
-        <Box>
-          <Text color="cyan">{"❯ "}</Text>
-          <Text color="cyan">Sonar</Text>
-        </Box>
+        {PROMPTS_MENU_OPTIONS.map((option, index) => (
+          <Box key={option}>
+            <Text color={index === promptsMenuIndex ? "cyan" : undefined}>
+              {index === promptsMenuIndex ? "❯ " : "  "}
+              {option}
+            </Text>
+          </Box>
+        ))}
         <Text> </Text>
-        <Text dimColor>Enter to edit Sonar prompt · Esc to go back · Ctrl+C to cancel</Text>
+        <Text dimColor>↑/↓ to move · Enter to edit · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "sonar-prompt") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Prompts — Sonar</Text>
+        <Text> </Text>
+        <Text>
+          Sonar prompt:{" "}
+          <Text color="cyan">
+            {sonarPrompt}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
       </Box>
     );
   }
 
   return (
     <Box flexDirection="column" marginY={1}>
-      <Text bold>Prompts — Sonar</Text>
+      <Text bold>Prompts — Fix-Comments</Text>
       <Text> </Text>
       <Text>
-        Sonar prompt:{" "}
+        Fix-Comments prompt:{" "}
         <Text color="cyan">
-          {sonarPrompt}
+          {fixCommentsPrompt}
           <Text>_</Text>
         </Text>
       </Text>
       <Text> </Text>
-      <Text dimColor>Type prompt · Enter to save and exit · Esc to go back · Ctrl+C to cancel</Text>
+      <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
     </Box>
   );
 }

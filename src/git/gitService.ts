@@ -173,7 +173,14 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   });
 
   // SonarCloud detection
-  const sonarCheck = checks.find((c) => c.detailsUrl.includes("sonarcloud.io"));
+  const sonarCheck = checks.find((c) => {
+    try {
+      const hostname = new URL(c.detailsUrl).hostname;
+      return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+    } catch {
+      return false;
+    }
+  });
   let sonarcloudUrl: string | undefined;
   let sonarNewIssues: number | null | undefined;
   if (sonarCheck) {
@@ -192,7 +199,7 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     state: raw.state,
     url: raw.url,
     checks,
-    ...(sonarcloudUrl !== undefined ? { sonarcloudUrl, sonarNewIssues } : {}),
+    ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues }),
   };
 }
 
