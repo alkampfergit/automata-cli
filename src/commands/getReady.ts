@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { readConfig } from "../config/configStore.js";
+import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
 import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
@@ -70,7 +70,8 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     if (options.claude !== false) {
-      const prompt = config.claudeSystemPrompt ? `${config.claudeSystemPrompt}\n\n${issue.body}` : issue.body;
+      const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
+      const prompt = `${systemPrompt}\n\n${issue.body}`;
       if (options.codex) {
         await invokeCodexCode(prompt, { yolo: options.yolo, verbose: options.verbose });
       } else {
