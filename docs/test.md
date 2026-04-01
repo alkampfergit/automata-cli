@@ -59,3 +59,50 @@ automata test claude --prompt "say hello" --verbose
 #   [info] 3 turns | 5.2s | $0.0150
 #   Hello! Everything looks good.
 ```
+
+## `test codex`
+
+Test Codex CLI invocation with a user-supplied prompt.
+
+```bash
+automata test codex --prompt "your prompt here"
+automata test codex --prompt "your prompt here" --yolo
+automata test codex --prompt "your prompt here" --verbose
+```
+
+### Options
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--prompt <string>` | Yes | The prompt to send to the Codex CLI |
+| `--yolo` | No | Launch Codex with `--dangerously-bypass-approvals-and-sandbox` |
+| `--verbose` | No | Show step-by-step progress and final result |
+
+### Behavior
+
+1. Resolves the `codex` binary from PATH.
+2. Spawns `codex exec <prompt>`.
+3. Inherits stdio so output appears in the terminal in real time.
+4. When `--yolo` is passed, adds `--dangerously-bypass-approvals-and-sandbox`.
+5. When `--verbose` is passed, streams Codex's JSONL activity and prints a human-readable summary of each step to stderr, then prints the final result to stdout.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Codex completed successfully |
+| `1` | `codex` binary not found on PATH |
+| `N` | Codex exited with code N |
+
+### Examples
+
+```bash
+# Simple test
+automata test codex --prompt "say hello"
+
+# Test with sandbox bypass
+automata test codex --prompt "list files" --yolo
+
+# Test with verbose progress
+automata test codex --prompt "say hello" --verbose
+```
