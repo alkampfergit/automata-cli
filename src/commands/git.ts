@@ -102,7 +102,7 @@ See docs/git.md for full output reference.`,
       let pr;
       while (true) {
         try {
-          pr = getPrInfo(branch);
+          pr = await getPrInfo(branch);
         } catch (err) {
           process.stderr.write(`Error: ${(err as Error).message}\n`);
           process.exit(1);
@@ -139,7 +139,7 @@ See docs/git.md for full output reference.`,
 
     let pr;
     try {
-      pr = getPrInfo(branch);
+      pr = await getPrInfo(branch);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);
@@ -154,6 +154,13 @@ See docs/git.md for full output reference.`,
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
       process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
+      if (pr.sonarcloudUrl !== undefined) {
+        process.stdout.write(`Sonar: ${pr.sonarcloudUrl}\n`);
+        const issueStr = pr.sonarNewIssues === null || pr.sonarNewIssues === undefined
+          ? "unavailable"
+          : String(pr.sonarNewIssues);
+        process.stdout.write(`Sonar New Issues: ${issueStr}\n`);
+      }
       process.stdout.write(formatCheckSummary(pr.checks));
       process.stdout.write(formatChecks(pr.checks));
     }
@@ -230,7 +237,7 @@ See docs/azdo-gap.md for details.`,
 
 const finishFeatureCmd = new Command("finish-feature")
   .description("Clean up a merged feature branch: checkout develop, pull, and delete local branch")
-  .action(() => {
+  .action(async () => {
     let branch: string;
     try {
       branch = getCurrentBranch();
@@ -253,7 +260,7 @@ const finishFeatureCmd = new Command("finish-feature")
 
     let pr;
     try {
-      pr = getPrInfo(branch);
+      pr = await getPrInfo(branch);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);

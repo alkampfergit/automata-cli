@@ -22,12 +22,14 @@ automata git get-pr-info --json    # JSON output
 ### Human-readable output
 
 ```
-PR:             #42
-Title:          Fix authentication bug
-State:          OPEN
-URL:            https://github.com/org/repo/pull/42
-Checks Running: false
-Check Errors:   test: 3 tests failed in src/foo.test.ts; lint: no details available
+PR:               #42
+Title:            Fix authentication bug
+State:            OPEN
+URL:              https://github.com/org/repo/pull/42
+Sonar:            https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42
+Sonar New Issues: 3
+Checks Running:   false
+Check Errors:     test: 3 tests failed in src/foo.test.ts; lint: no details available
 Checks:
   ✓ build
   ✗ lint
@@ -36,6 +38,8 @@ Checks:
     Details: 3 tests failed in src/foo.test.ts
   ● deploy (pending)
 ```
+
+The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). `Sonar New Issues` shows `unavailable` if the SonarCloud public API cannot be reached or the project is not public.
 
 ### Machine-readable summary fields
 
@@ -80,11 +84,13 @@ For each `✗` check the failure description is also printed on the next line un
       "description": "3 tests failed in src/foo.test.ts",
       "detailsUrl": "https://github.com/..."
     }
-  ]
+  ],
+  "sonarcloudUrl": "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42",
+  "sonarNewIssues": 3
 }
 ```
 
-`checks` is always present; it is an empty array when no checks are configured on the PR.
+`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails.
 
 ### Exit codes
 

@@ -88,6 +88,32 @@ describe("new config fields: issueDiscoveryTechnique, issueDiscoveryValue, claud
   });
 });
 
+describe("prompts config field", () => {
+  it("round-trips prompts.sonar", () => {
+    writeConfig({ prompts: { sonar: "Fix all sonar issues." } });
+    expect(readConfig()).toEqual({ prompts: { sonar: "Fix all sonar issues." } });
+  });
+
+  it("preserves prompts alongside other fields", () => {
+    writeConfig({
+      remoteType: "gh",
+      prompts: { sonar: "Custom sonar prompt." },
+    });
+    expect(readConfig()).toEqual({
+      remoteType: "gh",
+      prompts: { sonar: "Custom sonar prompt." },
+    });
+  });
+});
+
+describe("DEFAULT_SONAR_PROMPT", () => {
+  it("is exported and non-empty", async () => {
+    const { DEFAULT_SONAR_PROMPT } = await import("../../src/config/configStore.js");
+    expect(typeof DEFAULT_SONAR_PROMPT).toBe("string");
+    expect(DEFAULT_SONAR_PROMPT.length).toBeGreaterThan(0);
+  });
+});
+
 // Cleanup TEST_DIR if it was accidentally created
 afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });

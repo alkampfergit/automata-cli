@@ -5,12 +5,23 @@ export type RemoteType = "gh" | "azdo";
 
 export type IssueDiscoveryTechnique = "label" | "assignee" | "title-contains";
 
+export interface AutomataPrompts {
+  sonar?: string;
+}
+
 export interface AutomataConfig {
   remoteType?: RemoteType;
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
   issueDiscoveryValue?: string;
   claudeSystemPrompt?: string;
+  prompts?: AutomataPrompts;
 }
+
+export const DEFAULT_SONAR_PROMPT =
+  "You are an expert software engineer. You have been given the URL of a SonarCloud analysis for this pull request. " +
+  "Please visit the SonarCloud analysis URL provided and fix all new issues reported. " +
+  "Focus on code smells, bugs, and vulnerabilities flagged as new in this PR. " +
+  "Make targeted, minimal changes that resolve each issue without altering unrelated code.";
 
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";

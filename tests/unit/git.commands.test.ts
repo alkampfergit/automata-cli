@@ -1064,3 +1064,113 @@ describe("git publish-release command: preconditions", () => {
     expect(out.exitCode).toBe(1);
   });
 });
+
+// ── get-pr-info: SonarCloud detection ────────────────────────────────────────
+
+describe("git get-pr-info SonarCloud fields", () => {
+  let out: ReturnType<typeof captureStreams>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    out = captureStreams();
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows sonarcloudUrl and new-issue count when a SonarCloud check is present", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: sonarUrl },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paging: { total: 3 } }),
+    });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar:");
+    expect(out.stdout).toContain(sonarUrl);
+    expect(out.stdout).toContain("Sonar New Issues: 3");
+  });
+
+  it("shows 'unavailable' for new-issue count when SonarCloud API fails", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: sonarUrl },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    fetchMock.mockRejectedValueOnce(new Error("Network error"));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar:");
+    expect(out.stdout).toContain("Sonar New Issues: unavailable");
+  });
+
+  it("does not show SonarCloud fields when no SonarCloud check is present", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://ci.example.com" },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).not.toContain("Sonar:");
+    expect(out.stdout).not.toContain("Sonar New Issues:");
+  });
+
+  it("JSON output includes sonarcloudUrl and sonarNewIssues when SonarCloud check is present", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: sonarUrl },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ paging: { total: 5 } }),
+    });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as { sonarcloudUrl?: string; sonarNewIssues?: number };
+    expect(parsed.sonarcloudUrl).toBe(sonarUrl);
+    expect(parsed.sonarNewIssues).toBe(5);
+  });
+});
