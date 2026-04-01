@@ -115,6 +115,8 @@ const executeFixCommentsCmd = addAiOptions(
     process.exit(1);
   }
 
+  process.stdout.write(`Found ${String(comments.length)} open review comment${comments.length === 1 ? "" : "s"} on PR. Invoking AI…\n`);
+
   const config = readConfig();
   const promptText = config.prompts?.fixComments ?? DEFAULT_FIX_COMMENTS_PROMPT;
   const fullPrompt = withPush(
