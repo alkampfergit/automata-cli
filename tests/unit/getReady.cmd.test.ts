@@ -1,13 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-const AUTOMATA_DIR = join(process.cwd(), ".automata");
-
-afterEach(() => {
-  rmSync(AUTOMATA_DIR, { recursive: true, force: true });
-});
+const ORIG_CWD = process.cwd;
+const TEST_CWD = join(ORIG_CWD(), "tmp-test-getready");
 
 // ── CLI smoke tests ───────────────────────────────────────────────────────────
 
@@ -42,13 +39,16 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 describe("getReady command: config validation", () => {
   beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.resetModules();
-    rmSync(AUTOMATA_DIR, { recursive: true, force: true });
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
   });
 
   it("exits 1 with error when remoteType is azdo", async () => {
@@ -103,13 +103,16 @@ describe("getReady command: config validation", () => {
 
 describe("getReady command: Claude Code invocation", () => {
   beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.resetModules();
-    rmSync(AUTOMATA_DIR, { recursive: true, force: true });
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
   });
 
   it("invokes claude with system prompt prepended when configured", async () => {
@@ -146,7 +149,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.restoreAllMocks();
   });
 
-  it("invokes claude with only issue body when no system prompt configured", async () => {
+  it("invokes claude with default system prompt when no system prompt configured", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({
       remoteType: "gh",
@@ -170,7 +173,8 @@ describe("getReady command: Claude Code invocation", () => {
     expect(claudeCall).toBeDefined();
     const claudeArgs = claudeCall![1] as string[];
     expect(claudeArgs[0]).toBe("-p");
-    expect(claudeArgs[1]).toBe("Fix this.");
+    expect(claudeArgs[1]).toContain("You are an expert software engineer.");
+    expect(claudeArgs[1]).toContain("Fix this.");
 
     vi.restoreAllMocks();
   });
@@ -224,7 +228,8 @@ describe("getReady command: Claude Code invocation", () => {
     expect(codexCall).toBeDefined();
     const codexArgs = codexCall![1] as string[];
     expect(codexArgs).toContain("exec");
-    expect(codexArgs[codexArgs.length - 1]).toBe("Do with codex.");
+    expect(codexArgs[codexArgs.length - 1]).toContain("You are an expert software engineer.");
+    expect(codexArgs[codexArgs.length - 1]).toContain("Do with codex.");
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();

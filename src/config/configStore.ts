@@ -18,6 +18,12 @@ export interface AutomataConfig {
   prompts?: AutomataPrompts;
 }
 
+export const DEFAULT_CLAUDE_SYSTEM_PROMPT =
+  "You are an expert software engineer. " +
+  "Implement the following issue according to the project's existing conventions and style. " +
+  "Make minimal, targeted changes that satisfy the requirements. " +
+  "Run tests and linting before finishing.";
+
 export const DEFAULT_FIX_COMMENTS_PROMPT =
   "You are an expert software engineer reviewing a pull request. " +
   "Below are the open review comments left by reviewers on this PR. " +
