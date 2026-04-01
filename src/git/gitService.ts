@@ -463,6 +463,7 @@ async function fetchSonarGateViolations(projectKey: string, prNumber: number): P
       qualityGateStatus: projectStatus?.status,
       gateViolations,
       issues: [],
+      securityHotspots: [],
     },
   };
 }
