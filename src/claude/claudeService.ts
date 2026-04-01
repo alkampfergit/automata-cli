@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { truncate, handleSpawnError, handleExitCode } from "../cli/spawnUtils.js";
 
 export function resolveCommand(name: string): string {
   const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
@@ -47,8 +48,8 @@ function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | und
   if (model) args.push("--model", model);
   args.push("-p", prompt);
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
-  handleSpawnError(result.error);
-  handleExitCode(result.status);
+  handleSpawnError(result.error, "claude");
+  handleExitCode(result.status, "Claude Code");
 }
 
 function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | undefined): Promise<void> {
@@ -64,7 +65,7 @@ function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | 
     let turnCount = 0;
 
     child.on("error", (err) => {
-      handleSpawnError(err);
+      handleSpawnError(err, "claude");
     });
 
     rl.on("line", (line) => {
@@ -78,7 +79,7 @@ function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | 
     });
 
     child.on("close", (code) => {
-      handleExitCode(code);
+      handleExitCode(code, "Claude Code");
       resolve();
     });
   });
@@ -150,24 +151,3 @@ function summarizeTool(name: string, input: Record<string, unknown> | undefined)
   }
 }
 
-function truncate(str: string, max: number): string {
-  return str.length > max ? str.slice(0, max) + "..." : str;
-}
-
-function handleSpawnError(error: Error | undefined): void {
-  if (!error) return;
-  const err = error as NodeJS.ErrnoException;
-  if (err.code === "ENOENT") {
-    process.stderr.write("Error: `claude` CLI is not installed or not on PATH.\n");
-    process.exit(1);
-  }
-  process.stderr.write(`Error: ${err.message}\n`);
-  process.exit(1);
-}
-
-function handleExitCode(status: number | null): void {
-  if (status !== null && status !== 0) {
-    process.stderr.write(`Error: Claude Code exited with code ${status}.\n`);
-    process.exit(status);
-  }
-}

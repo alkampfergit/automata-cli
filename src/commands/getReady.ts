@@ -2,18 +2,20 @@ import { Command } from "commander";
 import { readConfig } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
 import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
+import { invokeCodexCode } from "../codex/codexService.js";
 
 export const implementNextCommand = new Command("implement-next")
-  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
+  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
   .option("--json", "Output issue details as JSON")
-  .option("--no-claude", "Skip Claude Code invocation after claiming the issue")
-  .option("--query-only", "Print issue content and exit without claiming or invoking Claude")
-  .option("--yolo",    "Launch Claude Code with --dangerously-skip-permissions")
+  .option("--no-claude", "Skip all AI invocation (Claude or Codex) after claiming the issue")
+  .option("--codex",   "Use Codex CLI instead of Claude Code")
+  .option("--query-only", "Print issue content and exit without claiming or invoking any AI tools")
+  .option("--yolo",    "Launch with --dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)")
   .option("--verbose", "Show step-by-step progress summary and final result")
   .option("--opus",    "Use claude-opus-4-6")
   .option("--sonnet",  "Use claude-sonnet-4-6")
   .option("--haiku",   "Use claude-haiku-4-5-20251001")
-  .action(async (options: { json?: boolean; claude: boolean; queryOnly?: boolean; yolo?: boolean; verbose?: boolean; opus?: boolean; sonnet?: boolean; haiku?: boolean }) => {
+  .action(async (options: { json?: boolean; claude: boolean; codex?: boolean; queryOnly?: boolean; yolo?: boolean; verbose?: boolean; opus?: boolean; sonnet?: boolean; haiku?: boolean }) => {
     const config = readConfig();
 
     if (config.remoteType !== "gh") {
@@ -69,7 +71,11 @@ export const implementNextCommand = new Command("implement-next")
 
     if (options.claude !== false) {
       const prompt = config.claudeSystemPrompt ? `${config.claudeSystemPrompt}\n\n${issue.body}` : issue.body;
-      const model = resolveModelOption(options);
-      await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: options.verbose, model });
+      if (options.codex) {
+        await invokeCodexCode(prompt, { yolo: options.yolo, verbose: options.verbose });
+      } else {
+        const model = resolveModelOption(options);
+        await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: options.verbose, model });
+      }
     }
   });
