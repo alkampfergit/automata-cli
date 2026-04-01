@@ -14,6 +14,9 @@ import {
   publishRelease,
   type PrCheck,
   type PrInfo,
+  type SonarFailureSummary,
+  type SonarGateViolation,
+  type SonarIssue,
 } from "../git/gitService.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -71,6 +74,70 @@ function formatFailedChecks(failed: PrCheck[]): string {
     if (url && (isSonarCheck(check) || !desc)) lines.push(`    URL:     ${url}`);
     if (!desc && !url) lines.push(`    Details: (no details available)`);
   }
+  return lines.join("\n") + "\n";
+}
+
+function formatGateViolation(violation: SonarGateViolation): string {
+  const parts = [violation.metricKey];
+  if (violation.actualValue) parts.push(`actual ${violation.actualValue}`);
+  if (violation.comparator && violation.errorThreshold) {
+    parts.push(`${violation.comparator} ${violation.errorThreshold}`);
+  } else if (violation.errorThreshold) {
+    parts.push(`threshold ${violation.errorThreshold}`);
+  }
+  return parts.join(" | ");
+}
+
+function formatSonarIssue(issue: SonarIssue): string[] {
+  const lines = [`    - ${issue.message}`];
+  const location = issue.path ? `${issue.path}${issue.line ? `:${String(issue.line)}` : ""}` : undefined;
+  if (location) lines.push(`      Location: ${location}`);
+  if (issue.severity || issue.type) {
+    const labels = [issue.severity, issue.type].filter(Boolean).join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (issue.rule) lines.push(`      Rule: ${issue.rule}`);
+  if (issue.explanation) lines.push(`      Explanation: ${issue.explanation}`);
+  return lines;
+}
+
+function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: string | undefined): string {
+  const lines: string[] = ["Sonar Failures:"];
+
+  if (sonarFailures.status === "private") {
+    lines.push(`  Note: ${sonarFailures.privateMessage ?? "SonarCloud project is private."}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.status === "unavailable") {
+    lines.push(`  Note: ${sonarFailures.unavailableMessage ?? "SonarCloud failure details are unavailable."}`);
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.qualityGateStatus) {
+    lines.push(`  Quality Gate: ${sonarFailures.qualityGateStatus}`);
+  }
+
+  if (sonarFailures.gateViolations.length > 0) {
+    lines.push("  Gate Violations:");
+    for (const violation of sonarFailures.gateViolations) {
+      lines.push(`    - ${formatGateViolation(violation)}`);
+    }
+  }
+
+  if (sonarFailures.issues.length > 0) {
+    lines.push("  Issues:");
+    for (const issue of sonarFailures.issues) {
+      lines.push(...formatSonarIssue(issue));
+    }
+  }
+
+  if (sonarFailures.gateViolations.length === 0 && sonarFailures.issues.length === 0) {
+    lines.push("  Note: SonarCloud reported a failure but returned no gate or issue details.");
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -148,6 +215,9 @@ See docs/git.md for full output reference.`,
       process.stdout.write(formatChecks(pr.checks));
       if (failed.length > 0) {
         process.stdout.write(formatFailedChecks(failed));
+      }
+      if (pr.sonarFailures !== undefined) {
+        process.stdout.write(formatSonarFailures(pr.sonarFailures, pr.sonarcloudUrl));
       }
     }
   });

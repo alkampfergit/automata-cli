@@ -31,6 +31,22 @@ function fail(stderr: string, status = 1) {
   return { stdout: "", stderr, status };
 }
 
+function fetchOk(data: unknown) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => data,
+  };
+}
+
+function fetchError(status: number) {
+  return {
+    ok: false,
+    status,
+    json: async () => ({}),
+  };
+}
+
 // Extra mocks needed when getPrInfo finds failed checks:
 // 1. git remote get-url origin (parseOwnerRepo)
 // 2. gh api …/check-runs (fetchCheckRunOutputs) — empty = no enrichment
@@ -251,15 +267,19 @@ describe("git get-pr-info check summary lines", () => {
 
 describe("git get-pr-info checks rendering", () => {
   let out: ReturnType<typeof captureStreams>;
+  let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockSpawnSync.mockReset();
     out = captureStreams();
+    fetchMock = vi.fn().mockRejectedValue(new Error("network"));
+    vi.stubGlobal("fetch", fetchMock);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
+    vi.unstubAllGlobals();
   });
 
   it("shows 'Checks: none' when statusCheckRollup is empty", async () => {
@@ -423,6 +443,21 @@ describe("git get-pr-info checks rendering", () => {
       .mockReturnValueOnce(ok(JSON.stringify(pr)))
       .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
       .mockReturnValueOnce(ok(enrichedLine));
+
+    fetchMock
+      .mockResolvedValueOnce(fetchOk({ paging: { total: 7 } }))
+      .mockResolvedValueOnce(fetchOk({
+        projectStatus: {
+          status: "ERROR",
+          conditions: [],
+        },
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 0 },
+        issues: [],
+        components: [],
+        rules: [],
+      }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
@@ -1131,10 +1166,7 @@ describe("git get-pr-info SonarCloud fields", () => {
       .mockReturnValueOnce(ok("feature/my-branch\n"))
       .mockReturnValueOnce(ok(JSON.stringify(pr)));
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ paging: { total: 3 } }),
-    });
+    fetchMock.mockResolvedValueOnce(fetchOk({ paging: { total: 3 } }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
@@ -1195,10 +1227,7 @@ describe("git get-pr-info SonarCloud fields", () => {
       .mockReturnValueOnce(ok("feature/my-branch\n"))
       .mockReturnValueOnce(ok(JSON.stringify(pr)));
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ paging: { total: 5 } }),
-    });
+    fetchMock.mockResolvedValueOnce(fetchOk({ paging: { total: 5 } }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
@@ -1206,5 +1235,241 @@ describe("git get-pr-info SonarCloud fields", () => {
     const parsed = JSON.parse(out.stdout) as { sonarcloudUrl?: string; sonarNewIssues?: number };
     expect(parsed.sonarcloudUrl).toBe(sonarUrl);
     expect(parsed.sonarNewIssues).toBe(5);
+  });
+
+  it("shows gate violations and issue details for a failing public SonarCloud check", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        {
+          name: "SonarCloud Code Analysis",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+          description: "Quality Gate failed",
+          detailsUrl: sonarUrl,
+        },
+      ],
+    };
+    const [remote, api] = noEnrichment();
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(remote)
+      .mockReturnValueOnce(api);
+
+    fetchMock
+      .mockResolvedValueOnce(fetchOk({ paging: { total: 1 } }))
+      .mockResolvedValueOnce(fetchOk({
+        projectStatus: {
+          status: "ERROR",
+          conditions: [
+            {
+              status: "ERROR",
+              metricKey: "new_duplicated_lines_density",
+              comparator: "GT",
+              actualValue: "4.1",
+              errorThreshold: "3",
+            },
+          ],
+        },
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 1 },
+        issues: [
+          {
+            key: "issue-1",
+            rule: "typescript:S1871",
+            severity: "MAJOR",
+            type: "CODE_SMELL",
+            message: "Refactor this conditional structure to avoid duplicated code.",
+            component: "my_project:src/commands/git.ts",
+            line: 42,
+          },
+        ],
+        components: [
+          {
+            key: "my_project:src/commands/git.ts",
+            path: "src/commands/git.ts",
+          },
+        ],
+        rules: [
+          {
+            key: "typescript:S1871",
+            name: "Conditional structure should not have exactly the same implementation",
+            htmlDesc: "<p>Duplicated branches make code harder to maintain.</p>",
+          },
+        ],
+      }));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar Failures:");
+    expect(out.stdout).toContain("Gate Violations:");
+    expect(out.stdout).toContain("new_duplicated_lines_density | actual 4.1 | GT 3");
+    expect(out.stdout).toContain("Issues:");
+    expect(out.stdout).toContain("Location: src/commands/git.ts:42");
+    expect(out.stdout).toContain("Explanation: Duplicated branches make code harder to maintain.");
+  });
+
+  it("shows a private-project note when SonarCloud returns 401", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        {
+          name: "SonarCloud Code Analysis",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+          description: "Quality Gate failed",
+          detailsUrl: sonarUrl,
+        },
+      ],
+    };
+    const [remote, api] = noEnrichment();
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(remote)
+      .mockReturnValueOnce(api);
+
+    fetchMock
+      .mockResolvedValueOnce(fetchError(401))
+      .mockResolvedValueOnce(fetchError(401))
+      .mockResolvedValueOnce(fetchError(401));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar Failures:");
+    expect(out.stdout).toContain("SonarCloud project is private.");
+    expect(out.stdout).toContain("authenticated browser");
+  });
+
+  it("JSON output includes structured sonarFailures data for failing public SonarCloud checks", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        {
+          name: "SonarCloud Code Analysis",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+          description: "Quality Gate failed",
+          detailsUrl: sonarUrl,
+        },
+      ],
+    };
+    const [remote, api] = noEnrichment();
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(remote)
+      .mockReturnValueOnce(api);
+
+    fetchMock
+      .mockResolvedValueOnce(fetchOk({ paging: { total: 2 } }))
+      .mockResolvedValueOnce(fetchOk({
+        projectStatus: {
+          status: "ERROR",
+          conditions: [
+            {
+              status: "ERROR",
+              metricKey: "new_security_hotspots_reviewed",
+              comparator: "LT",
+              actualValue: "0",
+              errorThreshold: "100",
+            },
+          ],
+        },
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 1 },
+        issues: [
+          {
+            key: "issue-2",
+            rule: "typescript:S1128",
+            severity: "MINOR",
+            type: "CODE_SMELL",
+            message: "Remove this unused import.",
+            component: "my_project:src/git/gitService.ts",
+            textRange: { startLine: 8 },
+          },
+        ],
+        components: [
+          {
+            key: "my_project:src/git/gitService.ts",
+            path: "src/git/gitService.ts",
+          },
+        ],
+        rules: [
+          {
+            key: "typescript:S1128",
+            htmlNote: "<p>Unused imports add noise and should be removed.</p>",
+          },
+        ],
+      }));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as {
+      sonarFailures?: {
+        status: string;
+        qualityGateStatus?: string;
+        gateViolations: Array<{ metricKey: string }>;
+        issues: Array<{ path?: string; line?: number | null; explanation?: string }>;
+      };
+    };
+
+    expect(parsed.sonarFailures?.status).toBe("available");
+    expect(parsed.sonarFailures?.qualityGateStatus).toBe("ERROR");
+    expect(parsed.sonarFailures?.gateViolations[0]?.metricKey).toBe("new_security_hotspots_reviewed");
+    expect(parsed.sonarFailures?.issues[0]).toMatchObject({
+      path: "src/git/gitService.ts",
+      line: 8,
+      explanation: "Unused imports add noise and should be removed.",
+    });
+  });
+
+  it("JSON output includes a private-project sonarFailures note when SonarCloud returns 401", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        {
+          name: "SonarCloud Code Analysis",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+          description: "Quality Gate failed",
+          detailsUrl: sonarUrl,
+        },
+      ],
+    };
+    const [remote, api] = noEnrichment();
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(remote)
+      .mockReturnValueOnce(api);
+
+    fetchMock
+      .mockResolvedValueOnce(fetchError(401))
+      .mockResolvedValueOnce(fetchError(401))
+      .mockResolvedValueOnce(fetchError(401));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as {
+      sonarFailures?: {
+        status: string;
+        privateMessage?: string;
+      };
+    };
+
+    expect(parsed.sonarFailures?.status).toBe("private");
+    expect(parsed.sonarFailures?.privateMessage).toContain("authenticated browser");
   });
 });

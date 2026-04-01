@@ -26,6 +26,35 @@ export interface PrInfo {
   checks: PrCheck[];
   sonarcloudUrl?: string;
   sonarNewIssues?: number | null;
+  sonarFailures?: SonarFailureSummary;
+}
+
+export interface SonarGateViolation {
+  metricKey: string;
+  status: string;
+  comparator?: string;
+  actualValue?: string;
+  errorThreshold?: string;
+}
+
+export interface SonarIssue {
+  key: string;
+  rule: string;
+  severity?: string;
+  type?: string;
+  message: string;
+  path?: string;
+  line?: number | null;
+  explanation?: string;
+}
+
+export interface SonarFailureSummary {
+  status: "available" | "private" | "unavailable";
+  qualityGateStatus?: string;
+  gateViolations: SonarGateViolation[];
+  issues: SonarIssue[];
+  privateMessage?: string;
+  unavailableMessage?: string;
 }
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
@@ -74,6 +103,74 @@ interface CheckRunApiItem {
   output: CheckRunOutput;
 }
 
+interface SonarProjectStatusCondition {
+  status?: string;
+  metricKey?: string;
+  comparator?: string;
+  actualValue?: string;
+  errorThreshold?: string;
+}
+
+interface SonarProjectStatusResponse {
+  projectStatus?: {
+    status?: string;
+    conditions?: SonarProjectStatusCondition[];
+  };
+  errors?: Array<{ msg?: string }>;
+}
+
+interface RawSonarIssue {
+  key?: string;
+  rule?: string;
+  severity?: string;
+  type?: string;
+  message?: string;
+  component?: string;
+  line?: number;
+  textRange?: {
+    startLine?: number;
+  };
+}
+
+interface RawSonarComponent {
+  key?: string;
+  path?: string;
+}
+
+interface RawSonarRule {
+  key?: string;
+  name?: string;
+  htmlDesc?: string;
+  htmlNote?: string;
+}
+
+interface SonarIssuesSearchResponse {
+  paging?: {
+    pageIndex?: number;
+    pageSize?: number;
+    total?: number;
+  };
+  issues?: RawSonarIssue[];
+  components?: RawSonarComponent[];
+  rules?: RawSonarRule[];
+  errors?: Array<{ msg?: string }>;
+}
+
+interface SonarFetchOk<T> {
+  ok: true;
+  status: number;
+  data: T;
+}
+
+interface SonarFetchError {
+  ok: false;
+  status: number | null;
+}
+
+type SonarFetchResult<T> = SonarFetchOk<T> | SonarFetchError;
+
+const SONAR_FETCH_TIMEOUT_MS = 5000;
+const SONAR_FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 
 function parseOwnerRepo(): string | null {
   const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
@@ -125,22 +222,227 @@ function extractSonarProjectKey(url: string): string | null {
   }
 }
 
+function isSonarUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+  } catch {
+    return false;
+  }
+}
+
+function stripHtml(text: string): string {
+  return text.replace(/<[^>]+>/g, " ");
+}
+
+function normalizeText(text: string | null | undefined): string | undefined {
+  if (!text) return undefined;
+  const normalized = stripHtml(text).replace(/\s+/g, " ").trim();
+  return normalized || undefined;
+}
+
+function resolveSonarPath(componentKey: string | undefined, components: Map<string, string>): string | undefined {
+  if (!componentKey) return undefined;
+  const mapped = components.get(componentKey);
+  if (mapped) return mapped;
+  const separatorIndex = componentKey.indexOf(":");
+  if (separatorIndex === -1) return undefined;
+  const path = componentKey.slice(separatorIndex + 1).trim();
+  return path || undefined;
+}
+
+function mapSonarIssuesPage(
+  data: SonarIssuesSearchResponse,
+  targetIssues: SonarIssue[],
+  components: Map<string, string>,
+  rules: Map<string, string>,
+): void {
+  for (const component of data.components ?? []) {
+    if (component.key && component.path) {
+      components.set(component.key, component.path);
+    }
+  }
+
+  for (const rule of data.rules ?? []) {
+    if (!rule.key) continue;
+    const explanation = normalizeText(rule.htmlDesc) ?? normalizeText(rule.htmlNote) ?? normalizeText(rule.name);
+    if (explanation) {
+      rules.set(rule.key, explanation);
+    }
+  }
+
+  for (const issue of data.issues ?? []) {
+    const ruleKey = issue.rule ?? "";
+    const mappedIssue: SonarIssue = {
+      key: issue.key ?? "",
+      rule: ruleKey,
+      severity: issue.severity,
+      type: issue.type,
+      message: issue.message ?? "",
+      path: resolveSonarPath(issue.component, components),
+      line: issue.line ?? issue.textRange?.startLine ?? null,
+      explanation: rules.get(ruleKey),
+    };
+    targetIssues.push(mappedIssue);
+  }
+}
+
+async function fetchSonarJson<T>(apiUrl: string): Promise<SonarFetchResult<T>> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SONAR_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(apiUrl, { signal: controller.signal });
+    if (!response.ok) {
+      return { ok: false, status: response.status };
+    }
+    return {
+      ok: true,
+      status: response.status,
+      data: (await response.json()) as T,
+    };
+  } catch {
+    return { ok: false, status: null };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchSonarNewIssues(projectKey: string, prNumber: number): Promise<number | null> {
   const apiUrl =
     `https://sonarcloud.io/api/issues/search` +
     `?componentKeys=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}&resolved=false&ps=1`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch(apiUrl, { signal: controller.signal });
-    if (!response.ok) return null;
-    const data = (await response.json()) as { paging?: { total?: number } };
-    return data.paging?.total ?? null;
-  } catch {
+  const response = await fetchSonarJson<{ paging?: { total?: number } }>(apiUrl);
+  if (!response.ok) {
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  return response.data.paging?.total ?? null;
+}
+
+async function fetchSonarGateViolations(projectKey: string, prNumber: number): Promise<SonarFetchResult<SonarFailureSummary>> {
+  const apiUrl =
+    `https://sonarcloud.io/api/qualitygates/project_status` +
+    `?projectKey=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}`;
+  const response = await fetchSonarJson<SonarProjectStatusResponse>(apiUrl);
+  if (!response.ok) {
+    return response;
+  }
+
+  const projectStatus = response.data.projectStatus;
+  const gateViolations = (projectStatus?.conditions ?? [])
+    .filter((condition) => condition.status !== undefined && condition.status !== "OK")
+    .map((condition) => ({
+      metricKey: condition.metricKey ?? "unknown",
+      status: condition.status ?? "ERROR",
+      comparator: condition.comparator,
+      actualValue: condition.actualValue,
+      errorThreshold: condition.errorThreshold,
+    }));
+
+  return {
+    ok: true,
+    status: response.status,
+    data: {
+      status: "available",
+      qualityGateStatus: projectStatus?.status,
+      gateViolations,
+      issues: [],
+    },
+  };
+}
+
+async function fetchSonarIssues(projectKey: string, prNumber: number): Promise<SonarFetchResult<{ total: number | null; issues: SonarIssue[] }>> {
+  const pageSize = 100;
+  const issues: SonarIssue[] = [];
+  const components = new Map<string, string>();
+  const rules = new Map<string, string>();
+  let page = 1;
+  let total: number | null = null;
+
+  while (true) {
+    const apiUrl =
+      `https://sonarcloud.io/api/issues/search` +
+      `?componentKeys=${encodeURIComponent(projectKey)}` +
+      `&pullRequest=${String(prNumber)}` +
+      `&resolved=false` +
+      `&ps=${String(pageSize)}` +
+      `&p=${String(page)}` +
+      `&additionalFields=_all`;
+
+    const response = await fetchSonarJson<SonarIssuesSearchResponse>(apiUrl);
+    if (!response.ok) {
+      return response;
+    }
+
+    const paging = response.data.paging;
+    if (total === null) {
+      total = paging?.total ?? null;
+    }
+
+    mapSonarIssuesPage(response.data, issues, components, rules);
+
+    const fetchedCount = page * (paging?.pageSize ?? pageSize);
+    if (paging?.total === undefined || fetchedCount >= paging.total) {
+      break;
+    }
+    page += 1;
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    data: {
+      total,
+      issues,
+    },
+  };
+}
+
+async function fetchSonarFailureSummary(
+  projectKey: string,
+  prNumber: number,
+  sonarcloudUrl: string,
+): Promise<SonarFailureSummary> {
+  const [gateResult, issuesResult] = await Promise.all([
+    fetchSonarGateViolations(projectKey, prNumber),
+    fetchSonarIssues(projectKey, prNumber),
+  ]);
+
+  if (!gateResult.ok && gateResult.status === 401) {
+    return {
+      status: "private",
+      gateViolations: [],
+      issues: [],
+      privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
+    };
+  }
+  if (!issuesResult.ok && issuesResult.status === 401) {
+    return {
+      status: "private",
+      gateViolations: [],
+      issues: [],
+      privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
+    };
+  }
+
+  const gateViolations = gateResult.ok ? gateResult.data.gateViolations : [];
+  const issues = issuesResult.ok ? issuesResult.data.issues : [];
+  const qualityGateStatus = gateResult.ok ? gateResult.data.qualityGateStatus : undefined;
+
+  if (gateViolations.length === 0 && issues.length === 0) {
+    return {
+      status: "unavailable",
+      gateViolations: [],
+      issues: [],
+      unavailableMessage: "SonarCloud failure details are unavailable right now.",
+    };
+  }
+
+  return {
+    status: "available",
+    qualityGateStatus,
+    gateViolations,
+    issues,
+  };
 }
 
 async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
@@ -177,21 +479,18 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   });
 
   // SonarCloud detection
-  const sonarCheck = checks.find((c) => {
-    try {
-      const hostname = new URL(c.detailsUrl).hostname;
-      return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
-    } catch {
-      return false;
-    }
-  });
+  const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
   let sonarcloudUrl: string | undefined;
   let sonarNewIssues: number | null | undefined;
+  let sonarFailures: SonarFailureSummary | undefined;
   if (sonarCheck) {
     sonarcloudUrl = sonarCheck.detailsUrl;
     const projectKey = extractSonarProjectKey(sonarCheck.detailsUrl);
     if (projectKey) {
       sonarNewIssues = await fetchSonarNewIssues(projectKey, raw.number);
+      if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
+        sonarFailures = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
+      }
     } else {
       sonarNewIssues = null;
     }
@@ -204,6 +503,7 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     url: raw.url,
     checks,
     ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues }),
+    ...(sonarFailures === undefined ? {} : { sonarFailures }),
   };
 }
 

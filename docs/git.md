@@ -42,9 +42,21 @@ FailedChecks:
     Details: (no details available)
   ✗ test
     Details: 3 tests failed in src/foo.test.ts
+Sonar Failures:
+  Quality Gate: ERROR
+  Gate Violations:
+    - new_duplicated_lines_density | actual 4.1 | GT 3
+  Issues:
+    - Refactor this conditional structure to avoid duplicated code.
+      Location: src/commands/git.ts:42
+      Classification: MAJOR / CODE_SMELL
+      Rule: typescript:S1871
+      Explanation: Duplicated branches make code harder to maintain.
 ```
 
 The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). `Sonar New Issues` shows `unavailable` if the SonarCloud public API cannot be reached or the project is not public.
+
+When the Sonar check is failing and the SonarCloud project is public, an additional `Sonar Failures:` section is printed with structured quality-gate and issue details. If the SonarCloud public API returns `401`, the section explains that the project is private and advises opening the Sonar URL in an authenticated browser.
 
 ### Machine-readable summary fields
 
@@ -91,11 +103,36 @@ When one or more checks fail, a trailing `FailedChecks:` section is printed afte
     }
   ],
   "sonarcloudUrl": "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42",
-  "sonarNewIssues": 3
+  "sonarNewIssues": 3,
+  "sonarFailures": {
+    "status": "available",
+    "qualityGateStatus": "ERROR",
+    "gateViolations": [
+      {
+        "metricKey": "new_duplicated_lines_density",
+        "status": "ERROR",
+        "comparator": "GT",
+        "actualValue": "4.1",
+        "errorThreshold": "3"
+      }
+    ],
+    "issues": [
+      {
+        "key": "issue-1",
+        "rule": "typescript:S1871",
+        "severity": "MAJOR",
+        "type": "CODE_SMELL",
+        "message": "Refactor this conditional structure to avoid duplicated code.",
+        "path": "src/commands/git.ts",
+        "line": 42,
+        "explanation": "Duplicated branches make code harder to maintain."
+      }
+    ]
+  }
 }
 ```
 
-`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails.
+`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails. `sonarFailures` is only present when a SonarCloud check is failing and the command was able to determine either structured failure details or a private-project note. In the private-project case, `sonarFailures.status` is `private` and `privateMessage` explains that authenticated browser access is required.
 
 ### Exit codes
 
