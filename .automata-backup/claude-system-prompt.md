@@ -1,0 +1,1 @@
+Use skill speckit-full located into ./agents/skills to autonomouly implement this new specification

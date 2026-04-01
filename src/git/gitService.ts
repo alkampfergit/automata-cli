@@ -48,11 +48,27 @@ export interface SonarIssue {
   explanation?: string;
 }
 
+export interface SonarSecurityHotspot {
+  key: string;
+  rule: string;
+  ruleName?: string;
+  status: string;
+  message: string;
+  path?: string;
+  line?: number | null;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  riskDescription?: string;
+  vulnerabilityDescription?: string;
+  fixRecommendations?: string;
+}
+
 export interface SonarFailureSummary {
   status: "available" | "private" | "unavailable";
   qualityGateStatus?: string;
   gateViolations: SonarGateViolation[];
   issues: SonarIssue[];
+  securityHotspots: SonarSecurityHotspot[];
   privateMessage?: string;
   unavailableMessage?: string;
 }
@@ -132,6 +148,20 @@ interface RawSonarIssue {
   };
 }
 
+interface RawSonarHotspot {
+  key?: string;
+  component?: string;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  status?: string;
+  line?: number;
+  message?: string;
+  ruleKey?: string;
+  textRange?: {
+    startLine?: number;
+  };
+}
+
 interface RawSonarComponent {
   key?: string;
   path?: string;
@@ -154,6 +184,39 @@ interface SonarIssuesSearchResponse {
   components?: RawSonarComponent[];
   rules?: RawSonarRule[];
   errors?: Array<{ msg?: string }>;
+}
+
+interface RawSonarHotspotRule {
+  key?: string;
+  name?: string;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  riskDescription?: string;
+  vulnerabilityDescription?: string;
+  fixRecommendations?: string;
+}
+
+interface SonarHotspotsSearchResponse {
+  paging?: {
+    pageIndex?: number;
+    pageSize?: number;
+    total?: number;
+  };
+  hotspots?: RawSonarHotspot[];
+  components?: RawSonarComponent[];
+  errors?: Array<{ msg?: string }>;
+}
+
+interface SonarHotspotShowResponse {
+  key?: string;
+  component?: RawSonarComponent;
+  rule?: RawSonarHotspotRule;
+  status?: string;
+  line?: number;
+  message?: string;
+  textRange?: {
+    startLine?: number;
+  };
 }
 
 interface SonarFetchOk<T> {
@@ -232,7 +295,25 @@ function isSonarUrl(url: string): boolean {
 }
 
 function stripHtml(text: string): string {
-  return text.replace(/<[^>]+>/g, " ");
+  let stripped = "";
+  let inTag = false;
+
+  for (const char of text) {
+    if (char === "<") {
+      inTag = true;
+      stripped += " ";
+      continue;
+    }
+    if (char === ">") {
+      inTag = false;
+      continue;
+    }
+    if (!inTag) {
+      stripped += char;
+    }
+  }
+
+  return stripped;
 }
 
 function normalizeText(text: string | null | undefined): string | undefined {
@@ -285,6 +366,42 @@ function mapSonarIssuesPage(
     };
     targetIssues.push(mappedIssue);
   }
+}
+
+function mapSonarHotspotsPage(
+  data: SonarHotspotsSearchResponse,
+  targetHotspots: RawSonarHotspot[],
+  components: Map<string, string>,
+): void {
+  for (const component of data.components ?? []) {
+    if (component.key && component.path) {
+      components.set(component.key, component.path);
+    }
+  }
+
+  targetHotspots.push(...(data.hotspots ?? []));
+}
+
+function mapSonarHotspot(
+  hotspot: RawSonarHotspot,
+  components: Map<string, string>,
+  detail?: SonarHotspotShowResponse,
+): SonarSecurityHotspot {
+  const rule = detail?.rule;
+  return {
+    key: detail?.key ?? hotspot.key ?? "",
+    rule: hotspot.ruleKey ?? rule?.key ?? "",
+    ruleName: normalizeText(rule?.name),
+    status: detail?.status ?? hotspot.status ?? "UNKNOWN",
+    message: detail?.message ?? hotspot.message ?? "",
+    path: detail?.component?.path ?? resolveSonarPath(hotspot.component, components),
+    line: detail?.line ?? detail?.textRange?.startLine ?? hotspot.line ?? hotspot.textRange?.startLine ?? null,
+    securityCategory: rule?.securityCategory ?? hotspot.securityCategory,
+    vulnerabilityProbability: rule?.vulnerabilityProbability ?? hotspot.vulnerabilityProbability,
+    riskDescription: normalizeText(rule?.riskDescription),
+    vulnerabilityDescription: normalizeText(rule?.vulnerabilityDescription),
+    fixRecommendations: normalizeText(rule?.fixRecommendations),
+  };
 }
 
 async function fetchSonarJson<T>(apiUrl: string): Promise<SonarFetchResult<T>> {
@@ -397,42 +514,103 @@ async function fetchSonarIssues(projectKey: string, prNumber: number): Promise<S
   };
 }
 
+async function fetchSonarHotspotDetail(hotspotKey: string): Promise<SonarFetchResult<SonarHotspotShowResponse>> {
+  const apiUrl = `https://sonarcloud.io/api/hotspots/show?hotspot=${encodeURIComponent(hotspotKey)}`;
+  return fetchSonarJson<SonarHotspotShowResponse>(apiUrl);
+}
+
+async function fetchSonarHotspots(projectKey: string, prNumber: number): Promise<SonarFetchResult<SonarSecurityHotspot[]>> {
+  const pageSize = 100;
+  const rawHotspots: RawSonarHotspot[] = [];
+  const components = new Map<string, string>();
+  let page = 1;
+
+  while (true) {
+    const apiUrl =
+      `https://sonarcloud.io/api/hotspots/search` +
+      `?projectKey=${encodeURIComponent(projectKey)}` +
+      `&pullRequest=${String(prNumber)}` +
+      `&onlyMine=false` +
+      `&sinceLeakPeriod=true` +
+      `&ps=${String(pageSize)}` +
+      `&p=${String(page)}`;
+
+    const response = await fetchSonarJson<SonarHotspotsSearchResponse>(apiUrl);
+    if (!response.ok) {
+      return response;
+    }
+
+    const paging = response.data.paging;
+    mapSonarHotspotsPage(response.data, rawHotspots, components);
+
+    const fetchedCount = page * (paging?.pageSize ?? pageSize);
+    if (paging?.total === undefined || fetchedCount >= paging.total) {
+      break;
+    }
+    page += 1;
+  }
+
+  const detailResults = await Promise.all(rawHotspots.map((hotspot) => fetchSonarHotspotDetail(hotspot.key ?? "")));
+  const securityHotspots: SonarSecurityHotspot[] = [];
+
+  for (let index = 0; index < rawHotspots.length; index += 1) {
+    const hotspot = rawHotspots[index];
+    const detailResult = detailResults[index];
+    if (detailResult && !detailResult.ok && detailResult.status === 401) {
+      return detailResult;
+    }
+    securityHotspots.push(mapSonarHotspot(hotspot, components, detailResult && detailResult.ok ? detailResult.data : undefined));
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    data: securityHotspots,
+  };
+}
+
+function sonarPrivateFailureSummary(sonarcloudUrl: string): SonarFailureSummary {
+  return {
+    status: "private",
+    gateViolations: [],
+    issues: [],
+    securityHotspots: [],
+    privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
+  };
+}
+
 async function fetchSonarFailureSummary(
   projectKey: string,
   prNumber: number,
   sonarcloudUrl: string,
 ): Promise<SonarFailureSummary> {
-  const [gateResult, issuesResult] = await Promise.all([
+  const [gateResult, issuesResult, hotspotsResult] = await Promise.all([
     fetchSonarGateViolations(projectKey, prNumber),
     fetchSonarIssues(projectKey, prNumber),
+    fetchSonarHotspots(projectKey, prNumber),
   ]);
 
   if (!gateResult.ok && gateResult.status === 401) {
-    return {
-      status: "private",
-      gateViolations: [],
-      issues: [],
-      privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
-    };
+    return sonarPrivateFailureSummary(sonarcloudUrl);
   }
   if (!issuesResult.ok && issuesResult.status === 401) {
-    return {
-      status: "private",
-      gateViolations: [],
-      issues: [],
-      privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
-    };
+    return sonarPrivateFailureSummary(sonarcloudUrl);
+  }
+  if (!hotspotsResult.ok && hotspotsResult.status === 401) {
+    return sonarPrivateFailureSummary(sonarcloudUrl);
   }
 
   const gateViolations = gateResult.ok ? gateResult.data.gateViolations : [];
   const issues = issuesResult.ok ? issuesResult.data.issues : [];
+  const securityHotspots = hotspotsResult.ok ? hotspotsResult.data : [];
   const qualityGateStatus = gateResult.ok ? gateResult.data.qualityGateStatus : undefined;
 
-  if (gateViolations.length === 0 && issues.length === 0) {
+  if (gateViolations.length === 0 && issues.length === 0 && securityHotspots.length === 0) {
     return {
       status: "unavailable",
       gateViolations: [],
       issues: [],
+      securityHotspots: [],
       unavailableMessage: "SonarCloud failure details are unavailable right now.",
     };
   }
@@ -442,6 +620,7 @@ async function fetchSonarFailureSummary(
     qualityGateStatus,
     gateViolations,
     issues,
+    securityHotspots,
   };
 }
 

@@ -1,33 +1,45 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execSync, ExecSyncOptions } from "node:child_process";
-import { rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const AUTOMATA_DIR = join(process.cwd(), ".automata");
+const REPO_ROOT = process.cwd();
+const CLI_PATH = join(REPO_ROOT, "dist/index.js");
+let testCwd = "";
+
+function automataDir(): string {
+  return join(testCwd, ".automata");
+}
 
 function run(args: string, opts?: ExecSyncOptions): string {
-  return execSync(`node dist/index.js ${args}`, {
+  return execSync(`node ${JSON.stringify(CLI_PATH)} ${args}`, {
     encoding: "utf8",
+    cwd: testCwd,
     ...opts,
   });
 }
 
+beforeEach(() => {
+  testCwd = mkdtempSync(join(tmpdir(), "automata-config-cmd-"));
+});
+
 afterEach(() => {
-  rmSync(AUTOMATA_DIR, { recursive: true, force: true });
+  rmSync(testCwd, { recursive: true, force: true });
 });
 
 describe("automata config set type", () => {
   it("sets remote type to gh and prints confirmation", () => {
     const output = run("config set type gh");
     expect(output.trim()).toBe("Remote type set to: gh");
-    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
     expect(config.remoteType).toBe("gh");
   });
 
   it("sets remote type to azdo and prints confirmation", () => {
     const output = run("config set type azdo");
     expect(output.trim()).toBe("Remote type set to: azdo");
-    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
     expect(config.remoteType).toBe("azdo");
   });
 
@@ -41,7 +53,7 @@ describe("automata config set type", () => {
       errorOutput = execError.stderr?.toString() ?? "";
     }
     expect(errorOutput).toContain("invalid type");
-    expect(existsSync(AUTOMATA_DIR)).toBe(false);
+    expect(existsSync(automataDir())).toBe(false);
   });
 });
 
@@ -49,7 +61,7 @@ describe("automata config set issue-discovery-technique", () => {
   it("sets technique to label and prints confirmation", () => {
     const output = run("config set issue-discovery-technique label");
     expect(output.trim()).toBe("Issue discovery technique set to: label");
-    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
     expect(config.issueDiscoveryTechnique).toBe("label");
   });
 
@@ -80,7 +92,7 @@ describe("automata config set issue-discovery-value", () => {
   it("sets issue discovery value and persists it", () => {
     const output = run(`config set issue-discovery-value "ready-for-dev"`);
     expect(output.trim()).toBe("Issue discovery value set to: ready-for-dev");
-    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
     expect(config.issueDiscoveryValue).toBe("ready-for-dev");
   });
 });
@@ -89,7 +101,7 @@ describe("automata config set claude-system-prompt", () => {
   it("sets claude system prompt and persists it", () => {
     const output = run(`config set claude-system-prompt "You are a senior engineer."`);
     expect(output.trim()).toBe("Claude system prompt set.");
-    const config = JSON.parse(readFileSync(join(AUTOMATA_DIR, "config.json"), "utf8"));
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
     expect(config.claudeSystemPrompt).toBe("You are a senior engineer.");
   });
 });

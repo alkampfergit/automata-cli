@@ -17,6 +17,7 @@ import {
   type SonarFailureSummary,
   type SonarGateViolation,
   type SonarIssue,
+  type SonarSecurityHotspot,
 } from "../git/gitService.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -101,6 +102,24 @@ function formatSonarIssue(issue: SonarIssue): string[] {
   return lines;
 }
 
+function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
+  const lines = [`    - ${hotspot.message}`];
+  const location = hotspot.path ? `${hotspot.path}${hotspot.line ? `:${String(hotspot.line)}` : ""}` : undefined;
+  if (location) lines.push(`      Location: ${location}`);
+  if (hotspot.status) lines.push(`      Status: ${hotspot.status}`);
+  if (hotspot.vulnerabilityProbability || hotspot.securityCategory) {
+    const labels = [hotspot.vulnerabilityProbability, hotspot.securityCategory].filter(Boolean).join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (hotspot.rule) {
+    lines.push(`      Rule: ${hotspot.rule}${hotspot.ruleName ? ` (${hotspot.ruleName})` : ""}`);
+  }
+  if (hotspot.riskDescription) lines.push(`      Risk: ${hotspot.riskDescription}`);
+  if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${hotspot.vulnerabilityDescription}`);
+  if (hotspot.fixRecommendations) lines.push(`      Fix: ${hotspot.fixRecommendations}`);
+  return lines;
+}
+
 function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: string | undefined): string {
   const lines: string[] = ["Sonar Failures:"];
 
@@ -133,8 +152,19 @@ function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: 
     }
   }
 
-  if (sonarFailures.gateViolations.length === 0 && sonarFailures.issues.length === 0) {
-    lines.push("  Note: SonarCloud reported a failure but returned no gate or issue details.");
+  if (sonarFailures.securityHotspots.length > 0) {
+    lines.push("  Security Hotspots:");
+    for (const hotspot of sonarFailures.securityHotspots) {
+      lines.push(...formatSonarHotspot(hotspot));
+    }
+  }
+
+  if (
+    sonarFailures.gateViolations.length === 0 &&
+    sonarFailures.issues.length === 0 &&
+    sonarFailures.securityHotspots.length === 0
+  ) {
+    lines.push("  Note: SonarCloud reported a failure but returned no gate, issue, or hotspot details.");
     if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
   }
 

@@ -457,6 +457,11 @@ describe("git get-pr-info checks rendering", () => {
         issues: [],
         components: [],
         rules: [],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 0 },
+        hotspots: [],
+        components: [],
       }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1300,6 +1305,11 @@ describe("git get-pr-info SonarCloud fields", () => {
             htmlDesc: "<p>Duplicated branches make code harder to maintain.</p>",
           },
         ],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 0 },
+        hotspots: [],
+        components: [],
       }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1345,6 +1355,101 @@ describe("git get-pr-info SonarCloud fields", () => {
     expect(out.stdout).toContain("Sonar Failures:");
     expect(out.stdout).toContain("SonarCloud project is private.");
     expect(out.stdout).toContain("authenticated browser");
+  });
+
+  it("shows security hotspot details for a failing public SonarCloud check", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        {
+          name: "SonarCloud Code Analysis",
+          status: "COMPLETED",
+          conclusion: "FAILURE",
+          description: "Quality Gate failed",
+          detailsUrl: sonarUrl,
+        },
+      ],
+    };
+    const [remote, api] = noEnrichment();
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(remote)
+      .mockReturnValueOnce(api);
+
+    fetchMock
+      .mockResolvedValueOnce(fetchOk({ paging: { total: 1 } }))
+      .mockResolvedValueOnce(fetchOk({
+        projectStatus: {
+          status: "ERROR",
+          conditions: [
+            {
+              status: "ERROR",
+              metricKey: "new_security_hotspots_reviewed",
+              comparator: "LT",
+              actualValue: "0",
+              errorThreshold: "100",
+            },
+          ],
+        },
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 0 },
+        issues: [],
+        components: [],
+        rules: [],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 1 },
+        hotspots: [
+          {
+            key: "hotspot-1",
+            ruleKey: "typescript:S5852",
+            component: "my_project:src/git/gitService.ts",
+            securityCategory: "dos",
+            vulnerabilityProbability: "MEDIUM",
+            status: "TO_REVIEW",
+            line: 235,
+            message: "Make sure the regex used here cannot lead to denial of service.",
+          },
+        ],
+        components: [
+          {
+            key: "my_project:src/git/gitService.ts",
+            path: "src/git/gitService.ts",
+          },
+        ],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        key: "hotspot-1",
+        component: {
+          key: "my_project:src/git/gitService.ts",
+          path: "src/git/gitService.ts",
+        },
+        rule: {
+          key: "typescript:S5852",
+          name: "Using slow regular expressions is security-sensitive",
+          securityCategory: "dos",
+          vulnerabilityProbability: "MEDIUM",
+          riskDescription: "<p>Backtracking regexes can degrade into denial of service.</p>",
+          vulnerabilityDescription: "<p>Check whether the input is user-controlled and unbounded.</p>",
+          fixRecommendations: "<p>Use a linear-time pattern or avoid regex for this parsing path.</p>",
+        },
+        status: "TO_REVIEW",
+        line: 235,
+        message: "Make sure the regex used here cannot lead to denial of service.",
+      }));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Security Hotspots:");
+    expect(out.stdout).toContain("Location: src/git/gitService.ts:235");
+    expect(out.stdout).toContain("Status: TO_REVIEW");
+    expect(out.stdout).toContain("Classification: MEDIUM / dos");
+    expect(out.stdout).toContain("Rule: typescript:S5852 (Using slow regular expressions is security-sensitive)");
+    expect(out.stdout).toContain("Fix: Use a linear-time pattern or avoid regex for this parsing path.");
   });
 
   it("JSON output includes structured sonarFailures data for failing public SonarCloud checks", async () => {
@@ -1409,6 +1514,46 @@ describe("git get-pr-info SonarCloud fields", () => {
             htmlNote: "<p>Unused imports add noise and should be removed.</p>",
           },
         ],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        paging: { pageIndex: 1, pageSize: 100, total: 1 },
+        hotspots: [
+          {
+            key: "hotspot-2",
+            ruleKey: "typescript:S5852",
+            component: "my_project:src/git/gitService.ts",
+            securityCategory: "dos",
+            vulnerabilityProbability: "MEDIUM",
+            status: "TO_REVIEW",
+            textRange: { startLine: 235 },
+            message: "Make sure the regex used here cannot lead to denial of service.",
+          },
+        ],
+        components: [
+          {
+            key: "my_project:src/git/gitService.ts",
+            path: "src/git/gitService.ts",
+          },
+        ],
+      }))
+      .mockResolvedValueOnce(fetchOk({
+        key: "hotspot-2",
+        component: {
+          key: "my_project:src/git/gitService.ts",
+          path: "src/git/gitService.ts",
+        },
+        rule: {
+          key: "typescript:S5852",
+          name: "Using slow regular expressions is security-sensitive",
+          securityCategory: "dos",
+          vulnerabilityProbability: "MEDIUM",
+          riskDescription: "<p>Backtracking regexes can degrade into denial of service.</p>",
+          vulnerabilityDescription: "<p>Check whether the input is user-controlled and unbounded.</p>",
+          fixRecommendations: "<p>Use a linear-time pattern or avoid regex for this parsing path.</p>",
+        },
+        status: "TO_REVIEW",
+        textRange: { startLine: 235 },
+        message: "Make sure the regex used here cannot lead to denial of service.",
       }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1420,6 +1565,7 @@ describe("git get-pr-info SonarCloud fields", () => {
         qualityGateStatus?: string;
         gateViolations: Array<{ metricKey: string }>;
         issues: Array<{ path?: string; line?: number | null; explanation?: string }>;
+        securityHotspots: Array<{ path?: string; line?: number | null; fixRecommendations?: string; ruleName?: string }>;
       };
     };
 
@@ -1430,6 +1576,12 @@ describe("git get-pr-info SonarCloud fields", () => {
       path: "src/git/gitService.ts",
       line: 8,
       explanation: "Unused imports add noise and should be removed.",
+    });
+    expect(parsed.sonarFailures?.securityHotspots[0]).toMatchObject({
+      path: "src/git/gitService.ts",
+      line: 235,
+      ruleName: "Using slow regular expressions is security-sensitive",
+      fixRecommendations: "Use a linear-time pattern or avoid regex for this parsing path.",
     });
   });
 
