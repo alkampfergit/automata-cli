@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync, ExecFileSyncOptions } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = process.cwd();
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CLI_PATH = join(REPO_ROOT, "dist/index.js");
+const TEST_TMP_ROOT = join(REPO_ROOT, ".tmp", "config-cmd-tests");
 let testCwd = "";
 
 function automataDir(): string {
@@ -21,7 +22,8 @@ function run(args: string[], opts?: ExecFileSyncOptions): string {
 }
 
 beforeEach(() => {
-  testCwd = mkdtempSync(join(tmpdir(), "automata-config-cmd-"));
+  mkdirSync(TEST_TMP_ROOT, { recursive: true });
+  testCwd = mkdtempSync(join(TEST_TMP_ROOT, "automata-config-cmd-"));
 });
 
 afterEach(() => {

@@ -1,1 +1,1 @@
-Use skill speckit-full located into ./agents/skills to autonomouly implement this new specification
+Use skill speckit-full, located in ./agents/skills, to autonomously implement this new specification

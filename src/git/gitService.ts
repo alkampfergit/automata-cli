@@ -39,7 +39,7 @@ export interface SonarGateViolation {
 
 export interface SonarIssue {
   key: string;
-  rule: string;
+  rule?: string;
   severity?: string;
   type?: string;
   message: string;
@@ -232,6 +232,11 @@ interface SonarFetchError {
 
 type SonarFetchResult<T> = SonarFetchOk<T> | SonarFetchError;
 
+interface SonarFailureSummaryResult {
+  summary: SonarFailureSummary;
+  issueTotal: number | null;
+}
+
 const SONAR_FETCH_TIMEOUT_MS = 5000;
 const SONAR_FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 
@@ -353,16 +358,18 @@ function mapSonarIssuesPage(
   }
 
   for (const issue of data.issues ?? []) {
-    const ruleKey = issue.rule ?? "";
+    if (!issue.key || !issue.message) continue;
+
+    const ruleKey = issue.rule;
     const mappedIssue: SonarIssue = {
-      key: issue.key ?? "",
-      rule: ruleKey,
+      key: issue.key,
       severity: issue.severity,
       type: issue.type,
-      message: issue.message ?? "",
+      message: issue.message,
       path: resolveSonarPath(issue.component, components),
       line: issue.line ?? issue.textRange?.startLine ?? null,
-      explanation: rules.get(ruleKey),
+      ...(ruleKey ? { rule: ruleKey } : {}),
+      ...(ruleKey && rules.has(ruleKey) ? { explanation: rules.get(ruleKey) } : {}),
     };
     targetIssues.push(mappedIssue);
   }
@@ -582,7 +589,7 @@ async function fetchSonarFailureSummary(
   projectKey: string,
   prNumber: number,
   sonarcloudUrl: string,
-): Promise<SonarFailureSummary> {
+): Promise<SonarFailureSummaryResult> {
   const [gateResult, issuesResult, hotspotsResult] = await Promise.all([
     fetchSonarGateViolations(projectKey, prNumber),
     fetchSonarIssues(projectKey, prNumber),
@@ -590,36 +597,52 @@ async function fetchSonarFailureSummary(
   ]);
 
   if (!gateResult.ok && gateResult.status === 401) {
-    return sonarPrivateFailureSummary(sonarcloudUrl);
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
   }
   if (!issuesResult.ok && issuesResult.status === 401) {
-    return sonarPrivateFailureSummary(sonarcloudUrl);
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
   }
   if (!hotspotsResult.ok && hotspotsResult.status === 401) {
-    return sonarPrivateFailureSummary(sonarcloudUrl);
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
   }
 
   const gateViolations = gateResult.ok ? gateResult.data.gateViolations : [];
   const issues = issuesResult.ok ? issuesResult.data.issues : [];
   const securityHotspots = hotspotsResult.ok ? hotspotsResult.data : [];
   const qualityGateStatus = gateResult.ok ? gateResult.data.qualityGateStatus : undefined;
+  const issueTotal = issuesResult.ok ? issuesResult.data.total : null;
 
-  if (gateViolations.length === 0 && issues.length === 0 && securityHotspots.length === 0) {
+  if (gateViolations.length === 0 && issues.length === 0 && securityHotspots.length === 0 && !qualityGateStatus) {
     return {
-      status: "unavailable",
-      gateViolations: [],
-      issues: [],
-      securityHotspots: [],
-      unavailableMessage: "SonarCloud failure details are unavailable right now.",
+      summary: {
+        status: "unavailable",
+        gateViolations: [],
+        issues: [],
+        securityHotspots: [],
+        unavailableMessage: "SonarCloud failure details are unavailable right now.",
+      },
+      issueTotal,
     };
   }
 
   return {
-    status: "available",
-    qualityGateStatus,
-    gateViolations,
-    issues,
-    securityHotspots,
+    summary: {
+      status: "available",
+      qualityGateStatus,
+      gateViolations,
+      issues,
+      securityHotspots,
+    },
+    issueTotal,
   };
 }
 
@@ -665,9 +688,12 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     sonarcloudUrl = sonarCheck.detailsUrl;
     const projectKey = extractSonarProjectKey(sonarCheck.detailsUrl);
     if (projectKey) {
-      sonarNewIssues = await fetchSonarNewIssues(projectKey, raw.number);
       if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
-        sonarFailures = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
+        const sonarSummary = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
+        sonarFailures = sonarSummary.summary;
+        sonarNewIssues = sonarSummary.issueTotal;
+      } else {
+        sonarNewIssues = await fetchSonarNewIssues(projectKey, raw.number);
       }
     } else {
       sonarNewIssues = null;

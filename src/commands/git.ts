@@ -79,55 +79,60 @@ function formatFailedChecks(failed: PrCheck[]): string {
 }
 
 function formatGateViolation(violation: SonarGateViolation): string {
-  const parts = [violation.metricKey];
-  if (violation.actualValue) parts.push(`actual ${violation.actualValue}`);
+  const parts = [sanitizeText(violation.metricKey)];
+  if (violation.actualValue) parts.push(`actual ${sanitizeText(violation.actualValue)}`);
   if (violation.comparator && violation.errorThreshold) {
-    parts.push(`${violation.comparator} ${violation.errorThreshold}`);
+    parts.push(`${sanitizeText(violation.comparator)} ${sanitizeText(violation.errorThreshold)}`);
   } else if (violation.errorThreshold) {
-    parts.push(`threshold ${violation.errorThreshold}`);
+    parts.push(`threshold ${sanitizeText(violation.errorThreshold)}`);
   }
   return parts.join(" | ");
 }
 
 function formatLocation(path: string | undefined, line: number | null | undefined): string | undefined {
   if (!path) return undefined;
-  if (!line) return path;
-  return `${path}:${String(line)}`;
+  const safePath = sanitizeText(path);
+  if (!line) return safePath;
+  return `${safePath}:${String(line)}`;
 }
 
 function formatRuleWithName(rule: string, ruleName: string | undefined): string {
-  if (!ruleName) return rule;
-  return `${rule} (${ruleName})`;
+  const safeRule = sanitizeText(rule);
+  if (!ruleName) return safeRule;
+  return `${safeRule} (${sanitizeText(ruleName)})`;
 }
 
 function formatSonarIssue(issue: SonarIssue): string[] {
-  const lines = [`    - ${issue.message}`];
+  const lines = [`    - ${sanitizeText(issue.message)}`];
   const location = formatLocation(issue.path, issue.line);
   if (location) lines.push(`      Location: ${location}`);
   if (issue.severity || issue.type) {
-    const labels = [issue.severity, issue.type].filter(Boolean).join(" / ");
+    const labels = [issue.severity, issue.type].filter((label): label is string => Boolean(label)).map(sanitizeText).join(" / ");
     lines.push(`      Classification: ${labels}`);
   }
-  if (issue.rule) lines.push(`      Rule: ${issue.rule}`);
-  if (issue.explanation) lines.push(`      Explanation: ${issue.explanation}`);
+  if (issue.rule) lines.push(`      Rule: ${sanitizeText(issue.rule)}`);
+  if (issue.explanation) lines.push(`      Explanation: ${sanitizeText(issue.explanation)}`);
   return lines;
 }
 
 function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
-  const lines = [`    - ${hotspot.message}`];
+  const lines = [`    - ${sanitizeText(hotspot.message)}`];
   const location = formatLocation(hotspot.path, hotspot.line);
   if (location) lines.push(`      Location: ${location}`);
-  if (hotspot.status) lines.push(`      Status: ${hotspot.status}`);
+  if (hotspot.status) lines.push(`      Status: ${sanitizeText(hotspot.status)}`);
   if (hotspot.vulnerabilityProbability || hotspot.securityCategory) {
-    const labels = [hotspot.vulnerabilityProbability, hotspot.securityCategory].filter(Boolean).join(" / ");
+    const labels = [hotspot.vulnerabilityProbability, hotspot.securityCategory]
+      .filter((label): label is string => Boolean(label))
+      .map(sanitizeText)
+      .join(" / ");
     lines.push(`      Classification: ${labels}`);
   }
   if (hotspot.rule) {
     lines.push(`      Rule: ${formatRuleWithName(hotspot.rule, hotspot.ruleName)}`);
   }
-  if (hotspot.riskDescription) lines.push(`      Risk: ${hotspot.riskDescription}`);
-  if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${hotspot.vulnerabilityDescription}`);
-  if (hotspot.fixRecommendations) lines.push(`      Fix: ${hotspot.fixRecommendations}`);
+  if (hotspot.riskDescription) lines.push(`      Risk: ${sanitizeText(hotspot.riskDescription)}`);
+  if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${sanitizeText(hotspot.vulnerabilityDescription)}`);
+  if (hotspot.fixRecommendations) lines.push(`      Fix: ${sanitizeText(hotspot.fixRecommendations)}`);
   return lines;
 }
 
@@ -157,6 +162,7 @@ function appendSecurityHotspots(lines: string[], securityHotspots: SonarSecurity
 
 function hasSonarFailureDetails(sonarFailures: SonarFailureSummary): boolean {
   return (
+    Boolean(sonarFailures.qualityGateStatus) ||
     sonarFailures.gateViolations.length > 0 ||
     sonarFailures.issues.length > 0 ||
     sonarFailures.securityHotspots.length > 0
@@ -167,18 +173,18 @@ function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: 
   const lines: string[] = ["Sonar Failures:"];
 
   if (sonarFailures.status === "private") {
-    lines.push(`  Note: ${sonarFailures.privateMessage ?? "SonarCloud project is private."}`);
+    lines.push(`  Note: ${sanitizeText(sonarFailures.privateMessage ?? "SonarCloud project is private.")}`);
     return lines.join("\n") + "\n";
   }
 
   if (sonarFailures.status === "unavailable") {
-    lines.push(`  Note: ${sonarFailures.unavailableMessage ?? "SonarCloud failure details are unavailable."}`);
+    lines.push(`  Note: ${sanitizeText(sonarFailures.unavailableMessage ?? "SonarCloud failure details are unavailable.")}`);
     if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
     return lines.join("\n") + "\n";
   }
 
   if (sonarFailures.qualityGateStatus) {
-    lines.push(`  Quality Gate: ${sonarFailures.qualityGateStatus}`);
+    lines.push(`  Quality Gate: ${sanitizeText(sonarFailures.qualityGateStatus)}`);
   }
 
   appendGateViolations(lines, sonarFailures.gateViolations);
@@ -186,7 +192,7 @@ function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: 
   appendSecurityHotspots(lines, sonarFailures.securityHotspots);
 
   if (!hasSonarFailureDetails(sonarFailures)) {
-    lines.push("  Note: SonarCloud reported a failure but returned no gate, issue, or hotspot details.");
+    lines.push("  Note: SonarCloud reported a failure but returned no violation, issue, or hotspot details.");
     if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
   }
 
