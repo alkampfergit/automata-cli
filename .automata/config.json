@@ -2,5 +2,5 @@
   "remoteType": "gh",
   "issueDiscoveryTechnique": "label",
   "issueDiscoveryValue": "automated",
-  "claudeSystemPrompt": "use the speckit-full skill in .agents/skills to implement the following features. All skills are in .agents/skills"
+  "claudeSystemPrompt": "claude-system-prompt.md"
 }

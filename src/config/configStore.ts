@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 export type RemoteType = "gh" | "azdo";
 
@@ -47,13 +47,55 @@ function configPath(): string {
   return join(process.cwd(), CONFIG_DIR, CONFIG_FILE);
 }
 
-export function readConfig(): AutomataConfig {
+function automataDir(): string {
+  return join(process.cwd(), CONFIG_DIR);
+}
+
+/**
+ * Resolve a prompt config field value.
+ * If value ends with ".md", reads the file from dir and returns its contents.
+ * Throws if the resolved path escapes dir or the file is missing.
+ * Otherwise returns value unchanged.
+ */
+export function resolvePromptRef(value: string, dir: string): string {
+  if (!value.endsWith(".md")) return value;
+  const fullPath = resolve(dir, value);
+  const safeBase = resolve(dir) + sep;
+  if (!fullPath.startsWith(safeBase)) {
+    throw new Error(`Prompt file "${value}" resolves outside .automata/`);
+  }
+  return readFileSync(fullPath, "utf8");
+}
+
+/** Read config.json as-is without resolving .md file references. */
+export function readRawConfig(): AutomataConfig {
   try {
     const raw = readFileSync(configPath(), "utf8");
     return JSON.parse(raw) as AutomataConfig;
   } catch {
     return {};
   }
+}
+
+export function readConfig(): AutomataConfig {
+  let config: AutomataConfig;
+  try {
+    const raw = readFileSync(configPath(), "utf8");
+    config = JSON.parse(raw) as AutomataConfig;
+  } catch {
+    return {};
+  }
+  const dir = automataDir();
+  if (config.claudeSystemPrompt) {
+    config.claudeSystemPrompt = resolvePromptRef(config.claudeSystemPrompt, dir);
+  }
+  if (config.prompts?.sonar) {
+    config.prompts.sonar = resolvePromptRef(config.prompts.sonar, dir);
+  }
+  if (config.prompts?.fixComments) {
+    config.prompts.fixComments = resolvePromptRef(config.prompts.fixComments, dir);
+  }
+  return config;
 }
 
 export function writeConfig(config: AutomataConfig): void {

@@ -10,20 +10,20 @@ Prompt-type configuration fields (`claudeSystemPrompt`, `prompts.sonar`, `prompt
 
 ## What's New
 
-<!-- Completed in Phase 7 after implementation -->
-
-- **[config/configStore.ts — resolvePromptRef()]**: [placeholder]
-- **[config/configStore.ts — readConfig()]**: [placeholder]
-- **[config/ConfigWizard.tsx — prompt save handlers]**: [placeholder]
-- **[.automata/ convention]**: [placeholder]
+- **`resolvePromptRef()` helper** (`src/config/configStore.ts`): New exported function that resolves a config field value ending with `.md` to the file's contents from `.automata/`. Includes path-traversal prevention. Inline strings are returned unchanged.
+- **`readRawConfig()` function** (`src/config/configStore.ts`): New exported function that reads `config.json` without resolving file references — used internally by the config wizard when merging updates.
+- **`readConfig()` resolution** (`src/config/configStore.ts`): Updated to automatically resolve `claudeSystemPrompt`, `prompts.sonar`, and `prompts.fixComments` through `resolvePromptRef()` before returning — fully transparent to callers.
+- **Config wizard prompt saves** (`src/config/ConfigWizard.tsx`): The system-prompt, sonar-prompt, and fix-comments-prompt save handlers now write prompt content to the corresponding `.automata/*.md` file and store only the filename in `config.json`.
+- **`.automata/config.json` migration**: `claudeSystemPrompt` now references `claude-system-prompt.md` instead of embedding the prompt inline.
+- **Documentation** (`docs/config.md`): New "Prompt file references" section documents the convention, rules, and wizard filename mapping.
 
 ## Testing
 
-<!-- Completed in Phase 7 after implementation -->
-
-- **[Unit]**: [placeholder]
-- **[Integration]**: [placeholder]
+- **Unit — `resolvePromptRef()`**: inline string pass-through, `.md` file read, missing file error, path traversal rejection.
+- **Unit — `readConfig()` resolution**: resolves `claudeSystemPrompt`, `prompts.sonar`, `prompts.fixComments` from `.md` refs; inline strings unchanged; throws on missing file.
+- **Unit — `readRawConfig()`**: returns filename as-is without resolving.
+- **Regression — ConfigWizard**: existing wizard tests updated with `readRawConfig` mock and `node:fs` mock to prevent disk writes; all 197 tests pass.
 
 ## Notes
 
-- By convention, any prompt field value ending with `.md` is treated as a file reference. This is a documented behaviour; values that happen to end with `.md` and are intended as inline strings would need to be renamed.
+- By convention, any prompt field value ending with `.md` is treated as a file reference. Inline prompt values that happen to end with `.md` would need to be renamed (edge case — prompt text ending with `.md` is extremely unlikely in practice).
