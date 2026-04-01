@@ -14,6 +14,10 @@ import {
   publishRelease,
   type PrCheck,
   type PrInfo,
+  type SonarFailureSummary,
+  type SonarGateViolation,
+  type SonarIssue,
+  type SonarSecurityHotspot,
 } from "../git/gitService.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -71,6 +75,127 @@ function formatFailedChecks(failed: PrCheck[]): string {
     if (url && (isSonarCheck(check) || !desc)) lines.push(`    URL:     ${url}`);
     if (!desc && !url) lines.push(`    Details: (no details available)`);
   }
+  return lines.join("\n") + "\n";
+}
+
+function formatGateViolation(violation: SonarGateViolation): string {
+  const parts = [sanitizeText(violation.metricKey)];
+  if (violation.actualValue) parts.push(`actual ${sanitizeText(violation.actualValue)}`);
+  if (violation.comparator && violation.errorThreshold) {
+    parts.push(`${sanitizeText(violation.comparator)} ${sanitizeText(violation.errorThreshold)}`);
+  } else if (violation.errorThreshold) {
+    parts.push(`threshold ${sanitizeText(violation.errorThreshold)}`);
+  }
+  return parts.join(" | ");
+}
+
+function formatLocation(path: string | undefined, line: number | null | undefined): string | undefined {
+  if (!path) return undefined;
+  const safePath = sanitizeText(path);
+  if (!line) return safePath;
+  return `${safePath}:${String(line)}`;
+}
+
+function formatRuleWithName(rule: string, ruleName: string | undefined): string {
+  const safeRule = sanitizeText(rule);
+  if (!ruleName) return safeRule;
+  return `${safeRule} (${sanitizeText(ruleName)})`;
+}
+
+function formatSonarIssue(issue: SonarIssue): string[] {
+  const lines = [`    - ${sanitizeText(issue.message)}`];
+  const location = formatLocation(issue.path, issue.line);
+  if (location) lines.push(`      Location: ${location}`);
+  if (issue.severity || issue.type) {
+    const labels = [issue.severity, issue.type].filter((label): label is string => Boolean(label)).map(sanitizeText).join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (issue.rule) lines.push(`      Rule: ${sanitizeText(issue.rule)}`);
+  if (issue.explanation) lines.push(`      Explanation: ${sanitizeText(issue.explanation)}`);
+  return lines;
+}
+
+function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
+  const lines = [`    - ${sanitizeText(hotspot.message)}`];
+  const location = formatLocation(hotspot.path, hotspot.line);
+  if (location) lines.push(`      Location: ${location}`);
+  if (hotspot.status) lines.push(`      Status: ${sanitizeText(hotspot.status)}`);
+  if (hotspot.vulnerabilityProbability || hotspot.securityCategory) {
+    const labels = [hotspot.vulnerabilityProbability, hotspot.securityCategory]
+      .filter((label): label is string => Boolean(label))
+      .map(sanitizeText)
+      .join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (hotspot.rule) {
+    lines.push(`      Rule: ${formatRuleWithName(hotspot.rule, hotspot.ruleName)}`);
+  }
+  if (hotspot.riskDescription) lines.push(`      Risk: ${sanitizeText(hotspot.riskDescription)}`);
+  if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${sanitizeText(hotspot.vulnerabilityDescription)}`);
+  if (hotspot.fixRecommendations) lines.push(`      Fix: ${sanitizeText(hotspot.fixRecommendations)}`);
+  return lines;
+}
+
+function appendGateViolations(lines: string[], gateViolations: SonarGateViolation[]): void {
+  if (gateViolations.length === 0) return;
+  lines.push("  Gate Violations:");
+  for (const violation of gateViolations) {
+    lines.push(`    - ${formatGateViolation(violation)}`);
+  }
+}
+
+function appendSonarIssues(lines: string[], issues: SonarIssue[]): void {
+  if (issues.length === 0) return;
+  lines.push("  Issues:");
+  for (const issue of issues) {
+    lines.push(...formatSonarIssue(issue));
+  }
+}
+
+function appendSecurityHotspots(lines: string[], securityHotspots: SonarSecurityHotspot[]): void {
+  if (securityHotspots.length === 0) return;
+  lines.push("  Security Hotspots:");
+  for (const hotspot of securityHotspots) {
+    lines.push(...formatSonarHotspot(hotspot));
+  }
+}
+
+function hasSonarFailureDetails(sonarFailures: SonarFailureSummary): boolean {
+  return (
+    Boolean(sonarFailures.qualityGateStatus) ||
+    sonarFailures.gateViolations.length > 0 ||
+    sonarFailures.issues.length > 0 ||
+    sonarFailures.securityHotspots.length > 0
+  );
+}
+
+function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: string | undefined): string {
+  const lines: string[] = ["Sonar Failures:"];
+
+  if (sonarFailures.status === "private") {
+    lines.push(`  Note: ${sanitizeText(sonarFailures.privateMessage ?? "SonarCloud project is private.")}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.status === "unavailable") {
+    lines.push(`  Note: ${sanitizeText(sonarFailures.unavailableMessage ?? "SonarCloud failure details are unavailable.")}`);
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.qualityGateStatus) {
+    lines.push(`  Quality Gate: ${sanitizeText(sonarFailures.qualityGateStatus)}`);
+  }
+
+  appendGateViolations(lines, sonarFailures.gateViolations);
+  appendSonarIssues(lines, sonarFailures.issues);
+  appendSecurityHotspots(lines, sonarFailures.securityHotspots);
+
+  if (!hasSonarFailureDetails(sonarFailures)) {
+    lines.push("  Note: SonarCloud reported a failure but returned no violation, issue, or hotspot details.");
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -148,6 +273,9 @@ See docs/git.md for full output reference.`,
       process.stdout.write(formatChecks(pr.checks));
       if (failed.length > 0) {
         process.stdout.write(formatFailedChecks(failed));
+      }
+      if (pr.sonarFailures !== undefined) {
+        process.stdout.write(formatSonarFailures(pr.sonarFailures, pr.sonarcloudUrl));
       }
     }
   });

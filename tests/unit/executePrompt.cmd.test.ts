@@ -38,9 +38,58 @@ const OPEN_PR_WITH_SONAR = {
   title: "Feature",
   state: "OPEN",
   url: "https://github.com/org/repo/pull/42",
-  checks: [],
+  checks: [
+    {
+      name: "SonarCloud Code Analysis",
+      status: "COMPLETED",
+      conclusion: "FAILURE",
+      description: "Quality Gate failed",
+      detailsUrl: SONAR_URL,
+    },
+  ],
   sonarcloudUrl: SONAR_URL,
   sonarNewIssues: 3,
+  sonarFailures: {
+    status: "available",
+    qualityGateStatus: "ERROR",
+    gateViolations: [
+      {
+        metricKey: "new_security_hotspots_reviewed",
+        status: "ERROR",
+        comparator: "LT",
+        actualValue: "0",
+        errorThreshold: "100",
+      },
+    ],
+    issues: [
+      {
+        key: "issue-1",
+        rule: "typescript:S5852",
+        severity: "MAJOR",
+        type: "VULNERABILITY",
+        message: "Make sure this regex cannot lead to denial of service.",
+        path: "src/git/gitService.ts",
+        line: 235,
+        explanation: "Backtracking regexes can become vulnerable under crafted input.",
+      },
+    ],
+    securityHotspots: [
+      {
+        key: "hotspot-1",
+        rule: "typescript:S5852",
+        ruleName: "Using slow regular expressions is security-sensitive",
+        status: "TO_REVIEW",
+        message: "Make sure the regex used here cannot lead to denial of service.",
+        path: "src/git/gitService.ts",
+        line: 235,
+        securityCategory: "dos",
+        vulnerabilityProbability: "MEDIUM",
+        riskDescription: "Backtracking regexes can degrade into denial of service.",
+        vulnerabilityDescription: "Check whether the input is user-controlled and unbounded.",
+        fixRecommendations: "Use a linear-time pattern or avoid regex for this parsing path.",
+      },
+    ],
+  },
 };
 
 function captureStreams() {
@@ -99,6 +148,9 @@ describe("execute-prompt sonar command", () => {
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("Default: fix sonar issues at the given URL.");
     expect(prompt).toContain(SONAR_URL);
+    expect(prompt).toContain("Current PR context from automata git get-pr-info --json:");
+    expect(prompt).toContain('"sonarNewIssues": 3');
+    expect(prompt).toContain('"sonarFailures"');
   });
 
   it("invokes Claude with custom sonar prompt when configured", async () => {
@@ -112,6 +164,7 @@ describe("execute-prompt sonar command", () => {
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("Custom: fix it.");
     expect(prompt).toContain(SONAR_URL);
+    expect(prompt).toContain('"qualityGateStatus": "ERROR"');
   });
 
   it("invokes Codex instead of Claude when --codex flag is passed", async () => {
@@ -124,6 +177,20 @@ describe("execute-prompt sonar command", () => {
     expect(mockInvokeClaudeCode).not.toHaveBeenCalled();
     const [prompt] = mockInvokeCodexCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain(SONAR_URL);
+    expect(prompt).toContain('"securityHotspots"');
+  });
+
+  it("embeds structured get-pr-info Sonar details in the prompt", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+
+    const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
+    expect(prompt).toContain('"metricKey": "new_security_hotspots_reviewed"');
+    expect(prompt).toContain('"message": "Make sure the regex used here cannot lead to denial of service."');
+    expect(prompt).toContain('"fixRecommendations": "Use a linear-time pattern or avoid regex for this parsing path."');
   });
 
   it("passes verbose flag to Claude invocation", async () => {

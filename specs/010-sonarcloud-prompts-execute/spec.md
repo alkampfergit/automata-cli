@@ -57,20 +57,21 @@ An operator wants to store a reusable "fix Sonar issues" prompt in the automata 
 
 ### User Story 4 - Execute-Prompt Sonar Command (Priority: P4)
 
-A developer runs `automata execute-prompt sonar` on a feature branch. The tool looks up the current SonarCloud analysis URL from the PR status, then invokes Claude (or Codex with `--codex`) with the stored Sonar prompt, passing the analysis URL as context so the AI can fix the reported issues.
+A developer runs `automata execute-prompt sonar` on a feature branch. The tool looks up the current SonarCloud analysis URL from the PR status, then invokes Claude (or Codex with `--codex`) with the stored Sonar prompt, passing both the analysis URL and the structured Sonar-related data from `automata git get-pr-info --json` as context so the AI can fix the reported issues without re-fetching basic Sonar details.
 
 **Why this priority**: The primary end-to-end value of the feature; depends on stories 1–3.
 
-**Independent Test**: Can be fully tested by running `execute-prompt sonar` on a branch with a SonarCloud analysis and confirming the AI is invoked with a prompt containing the SonarCloud URL.
+**Independent Test**: Can be fully tested by running `execute-prompt sonar` on a branch with a SonarCloud analysis and confirming the AI is invoked with a prompt containing the SonarCloud URL and the structured `get-pr-info` payload for that PR.
 
 **Acceptance Scenarios**:
 
-1. **Given** a branch with a PR that has a SonarCloud analysis URL, **When** `automata execute-prompt sonar` is run, **Then** Claude is invoked with the Sonar custom prompt and the SonarCloud URL.
+1. **Given** a branch with a PR that has a SonarCloud analysis URL, **When** `automata execute-prompt sonar` is run, **Then** Claude is invoked with the Sonar custom prompt, the SonarCloud URL, and the structured `get-pr-info` payload for that PR.
 2. **Given** the repository exposes a `sonar-quality-gate` skill, **When** `automata execute-prompt sonar` is run, **Then** the prompt instructs the AI to use that skill.
 3. **Given** the SonarCloud analysis contains metric-based quality gate failures such as duplication, **When** `automata execute-prompt sonar` is run, **Then** the prompt instructs the AI to inspect both Sonar issues and the quality gate via API rather than relying only on the issues endpoint.
-4. **Given** `--codex` flag, **When** `automata execute-prompt sonar --codex` is run, **Then** Codex CLI is used instead of Claude.
-5. **Given** `--verbose` flag, **When** `automata execute-prompt sonar --verbose` is run with Claude, **Then** verbose progress is shown.
-6. **Given** no SonarCloud URL is found on the PR, **When** `automata execute-prompt sonar` is run, **Then** an informative error is shown and the command exits non-zero.
+4. **Given** `get-pr-info` has already resolved structured Sonar failure details such as `sonarFailures`, **When** `automata execute-prompt sonar` is run, **Then** those details are embedded in the AI prompt so the model can start from the known terminal context.
+5. **Given** `--codex` flag, **When** `automata execute-prompt sonar --codex` is run, **Then** Codex CLI is used instead of Claude.
+6. **Given** `--verbose` flag, **When** `automata execute-prompt sonar --verbose` is run with Claude, **Then** verbose progress is shown.
+7. **Given** no SonarCloud URL is found on the PR, **When** `automata execute-prompt sonar` is run, **Then** an informative error is shown and the command exits non-zero.
 
 ---
 
@@ -117,6 +118,8 @@ A developer runs `automata execute-prompt fix-comments` on a feature branch. The
 - **FR-008B**: The built-in default Sonar prompt MUST instruct the AI to use the `sonar-quality-gate` skill when that skill is available in the repository.
 - **FR-009**: `automata execute-prompt sonar` MUST look up the SonarCloud URL for the current branch's PR.
 - **FR-010**: `execute-prompt sonar` MUST invoke the AI (Claude by default, Codex with `--codex`) with the Sonar prompt and SonarCloud URL as context.
+- **FR-010A**: `execute-prompt sonar` MUST append the structured `get-pr-info` result for the current PR to the AI prompt.
+- **FR-010B**: The appended `get-pr-info` context for `execute-prompt sonar` MUST preserve Sonar-related fields returned by `get-pr-info`, including `sonarcloudUrl`, `sonarNewIssues`, and `sonarFailures` when present.
 - **FR-011**: `execute-prompt sonar` MUST support `--verbose` flag (Claude only) and `--codex` flag.
 - **FR-012**: `execute-prompt sonar` MUST exit with a non-zero code and informative message when no SonarCloud URL is found.
 - **FR-013**: `get-pr-info` MUST handle SonarCloud API failures gracefully (show URL without issue count).
@@ -137,7 +140,7 @@ A developer runs `automata execute-prompt fix-comments` on a feature branch. The
 
 - **SC-001**: Developers can see SonarCloud new-issue count without leaving the terminal when running `get-pr-info`.
 - **SC-002**: `automata config` presents a navigable menu; all existing settings remain reachable.
-- **SC-003**: Running `execute-prompt sonar` on a PR with SonarCloud issues triggers an AI invocation within 5 seconds of finding the URL.
+- **SC-003**: Running `execute-prompt sonar` on a PR with SonarCloud issues triggers an AI invocation within 5 seconds of finding the URL and includes the structured `get-pr-info` context in the AI prompt.
 - **SC-004**: A Sonar prompt can be customized and is persisted across automata restarts.
 - **SC-005**: Running `execute-prompt fix-comments` on a PR with open review comments triggers an AI invocation with those comments embedded in the prompt.
 - **SC-006**: A Fix-Comments prompt can be customized and is persisted across automata restarts.
@@ -146,6 +149,7 @@ A developer runs `automata execute-prompt fix-comments` on a feature branch. The
 
 - [AUTO] SonarCloud detection method: URL pattern match on `sonarcloud.io` in the check's `detailsUrl` field — because checks already carry `detailsUrl` and this avoids a name-based heuristic that may break across localizations.
 - [AUTO] SonarCloud API coverage: the default prompt references both `/api/issues/search` and quality-gate or measures APIs because issue search alone does not surface duplication-based gate failures.
+- [AUTO] Execute-prompt Sonar context: append the structured `get-pr-info` payload in addition to the Sonar URL so the AI can start from already-resolved terminal context and only fall back to direct Sonar APIs when needed.
 - [AUTO] Sonar project key extraction: extracted from the SonarCloud check URL `id` query parameter — aligned with the current implementation of the SonarCloud integration.
 - [AUTO] Default Sonar prompt: instructs the AI to use Sonar APIs directly, inspect both the quality gate and issue list, and use the local `sonar-quality-gate` skill when present.
 - [AUTO] Implement-Next settings in config wizard: exposes the existing `issueDiscoveryTechnique` and `issueDiscoveryValue` fields — avoids scope creep.

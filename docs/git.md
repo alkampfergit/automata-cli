@@ -42,9 +42,30 @@ FailedChecks:
     Details: (no details available)
   ✗ test
     Details: 3 tests failed in src/foo.test.ts
+Sonar Failures:
+  Quality Gate: ERROR
+  Gate Violations:
+    - new_security_hotspots_reviewed | actual 0 | LT 100
+  Issues:
+    - Refactor this conditional structure to avoid duplicated code.
+      Location: src/commands/git.ts:42
+      Classification: MAJOR / CODE_SMELL
+      Rule: typescript:S1871
+      Explanation: Duplicated branches make code harder to maintain.
+  Security Hotspots:
+    - Make sure the regex used here cannot lead to denial of service.
+      Location: src/git/gitService.ts:235
+      Status: TO_REVIEW
+      Classification: MEDIUM / dos
+      Rule: typescript:S5852 (Using slow regular expressions is security-sensitive)
+      Risk: Backtracking regexes can degrade into denial of service.
+      Review: Check whether the input is user-controlled and unbounded.
+      Fix: Use a linear-time pattern or avoid regex for this parsing path.
 ```
 
 The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). `Sonar New Issues` shows `unavailable` if the SonarCloud public API cannot be reached or the project is not public.
+
+When the Sonar check is failing and the SonarCloud project is public, an additional `Sonar Failures:` section is printed with structured quality-gate details, issue details, and security-hotspot details when Sonar exposes them. If the SonarCloud public API returns `401`, the section explains that the project is private and advises opening the Sonar URL in an authenticated browser.
 
 ### Machine-readable summary fields
 
@@ -91,11 +112,52 @@ When one or more checks fail, a trailing `FailedChecks:` section is printed afte
     }
   ],
   "sonarcloudUrl": "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42",
-  "sonarNewIssues": 3
+  "sonarNewIssues": 3,
+  "sonarFailures": {
+    "status": "available",
+    "qualityGateStatus": "ERROR",
+    "gateViolations": [
+      {
+        "metricKey": "new_security_hotspots_reviewed",
+        "status": "ERROR",
+        "comparator": "LT",
+        "actualValue": "0",
+        "errorThreshold": "100"
+      }
+    ],
+    "issues": [
+      {
+        "key": "issue-1",
+        "rule": "typescript:S1871",
+        "severity": "MAJOR",
+        "type": "CODE_SMELL",
+        "message": "Refactor this conditional structure to avoid duplicated code.",
+        "path": "src/commands/git.ts",
+        "line": 42,
+        "explanation": "Duplicated branches make code harder to maintain."
+      }
+    ],
+    "securityHotspots": [
+      {
+        "key": "hotspot-1",
+        "rule": "typescript:S5852",
+        "ruleName": "Using slow regular expressions is security-sensitive",
+        "status": "TO_REVIEW",
+        "message": "Make sure the regex used here cannot lead to denial of service.",
+        "path": "src/git/gitService.ts",
+        "line": 235,
+        "securityCategory": "dos",
+        "vulnerabilityProbability": "MEDIUM",
+        "riskDescription": "Backtracking regexes can degrade into denial of service.",
+        "vulnerabilityDescription": "Check whether the input is user-controlled and unbounded.",
+        "fixRecommendations": "Use a linear-time pattern or avoid regex for this parsing path."
+      }
+    ]
+  }
 }
 ```
 
-`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails.
+`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails. `sonarFailures` is only present when a SonarCloud check is failing and the command was able to determine either structured failure details or a private-project note. `securityHotspots` is additive and may be empty even when other Sonar failure details are present. In the private-project case, `sonarFailures.status` is `private` and `privateMessage` explains that authenticated browser access is required.
 
 ### Exit codes
 

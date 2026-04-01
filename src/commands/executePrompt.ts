@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment } from "../git/gitService.js";
+import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment, type PrInfo } from "../git/gitService.js";
 import { readConfig, DEFAULT_SONAR_PROMPT, DEFAULT_FIX_COMMENTS_PROMPT } from "../config/configStore.js";
 import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
@@ -9,6 +9,10 @@ const PUSH_INSTRUCTION =
 
 function withPush(prompt: string, push: boolean | undefined): string {
   return push ? `${prompt}\n\n${PUSH_INSTRUCTION}` : prompt;
+}
+
+function formatPrInfoContext(pr: PrInfo): string {
+  return JSON.stringify(pr, null, 2);
 }
 
 type AiOptions = {
@@ -67,7 +71,8 @@ const executeSonarCmd = addAiOptions(
   const config = readConfig();
   const sonarPromptText = config.prompts?.sonar ?? DEFAULT_SONAR_PROMPT;
   const fullPrompt = withPush(
-    `${sonarPromptText}\n\nSonarCloud analysis URL: ${pr.sonarcloudUrl}`,
+    `${sonarPromptText}\n\nSonarCloud analysis URL: ${pr.sonarcloudUrl}` +
+      `\n\nCurrent PR context from automata git get-pr-info --json:\n${formatPrInfoContext(pr)}`,
     options.push,
   );
 

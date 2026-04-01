@@ -6,7 +6,7 @@ AI-powered prompt execution commands. These commands look up context from the cu
 
 ## `automata execute-prompt sonar`
 
-Check the current branch's pull request for a SonarCloud analysis and invoke the AI assistant with the configured Sonar prompt and the analysis URL as context.
+Check the current branch's pull request for a SonarCloud analysis and invoke the AI assistant with the configured Sonar prompt, the analysis URL, and the structured `get-pr-info` Sonar context.
 
 ```bash
 automata execute-prompt sonar            # Use Claude (default)
@@ -30,8 +30,10 @@ automata execute-prompt sonar --push     # Commit and push after AI finishes
 
 1. Detects the current branch and looks up the associated pull request via `gh`.
 2. Checks the PR status checks for a SonarCloud check (identified by `sonarcloud.io` hostname in the check URL).
-3. Builds a prompt from the configured `prompts.sonar` value (or the built-in default) and appends the SonarCloud analysis URL.
+3. Builds a prompt from the configured `prompts.sonar` value (or the built-in default), appends the SonarCloud analysis URL, and appends the current PR's structured `automata git get-pr-info --json` payload.
 4. Invokes Claude Code or Codex with the composed prompt.
+
+This means the AI receives any already-resolved Sonar details from `get-pr-info`, including fields such as `sonarNewIssues` and `sonarFailures`, so it can start from terminal context instead of always re-querying SonarCloud first.
 
 ### Configuring the Sonar prompt
 
