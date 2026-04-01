@@ -1,6 +1,0 @@
-{
-  "remoteType": "gh",
-  "issueDiscoveryTechnique": "label",
-  "issueDiscoveryValue": "automated",
-  "claudeSystemPrompt": "claude-system-prompt.md"
-}
