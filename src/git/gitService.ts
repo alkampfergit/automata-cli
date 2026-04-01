@@ -24,6 +24,8 @@ export interface PrInfo {
   state: string;
   url: string;
   checks: PrCheck[];
+  sonarcloudUrl?: string;
+  sonarNewIssues?: number | null;
 }
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
@@ -113,7 +115,35 @@ function fetchCheckRunOutputs(ownerRepo: string, sha: string): Map<string, { tit
   return map;
 }
 
-function getPrInfoGh(branch: string): PrInfo | null {
+function extractSonarProjectKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const id = parsed.searchParams.get("id");
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSonarNewIssues(projectKey: string, prNumber: number): Promise<number | null> {
+  const apiUrl =
+    `https://sonarcloud.io/api/issues/search` +
+    `?componentKeys=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}&resolved=false&ps=1`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(apiUrl, { signal: controller.signal });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { paging?: { total?: number } };
+    return data.paging?.total ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   const { stdout, stderr, status } = run("gh", [
     "pr",
     "view",
@@ -145,10 +175,39 @@ function getPrInfoGh(branch: string): PrInfo | null {
       detailsUrl: enriched?.detailsUrl || c.detailsUrl || "",
     };
   });
-  return { number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks };
+
+  // SonarCloud detection
+  const sonarCheck = checks.find((c) => {
+    try {
+      const hostname = new URL(c.detailsUrl).hostname;
+      return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+    } catch {
+      return false;
+    }
+  });
+  let sonarcloudUrl: string | undefined;
+  let sonarNewIssues: number | null | undefined;
+  if (sonarCheck) {
+    sonarcloudUrl = sonarCheck.detailsUrl;
+    const projectKey = extractSonarProjectKey(sonarCheck.detailsUrl);
+    if (projectKey) {
+      sonarNewIssues = await fetchSonarNewIssues(projectKey, raw.number);
+    } else {
+      sonarNewIssues = null;
+    }
+  }
+
+  return {
+    number: raw.number,
+    title: raw.title,
+    state: raw.state,
+    url: raw.url,
+    checks,
+    ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues }),
+  };
 }
 
-export function getPrInfo(branch: string): PrInfo | null {
+export async function getPrInfo(branch: string): Promise<PrInfo | null> {
   const config = readConfig();
   if (config.remoteType === "azdo") {
     return azdoService.getPrInfo();
@@ -286,6 +345,30 @@ export function getPrComments(branch: string): PrComment[] | null | "unsupported
     return "unsupported";
   }
   return getPrCommentsGh(branch);
+}
+
+export type PrCommentsResult =
+  | { ok: true; branch: string; comments: PrComment[] }
+  | { ok: false; kind: "unsupported" }
+  | { ok: false; kind: "no-pr"; branch: string }
+  | { ok: false; kind: "error"; message: string };
+
+export function resolveCurrentBranchComments(): PrCommentsResult {
+  let branch: string;
+  try {
+    branch = getCurrentBranch();
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  let raw: PrComment[] | null | "unsupported";
+  try {
+    raw = getPrComments(branch);
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  if (raw === "unsupported") return { ok: false, kind: "unsupported" };
+  if (raw === null) return { ok: false, kind: "no-pr", branch };
+  return { ok: true, branch, comments: raw };
 }
 
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;

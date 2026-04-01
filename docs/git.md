@@ -11,6 +11,7 @@ Show the pull request associated with the current branch.
 ```bash
 automata git get-pr-info           # human-readable output
 automata git get-pr-info --json    # JSON output
+automata git get-pr-info --wait-finish-checks  # wait for checks, then print the normal output
 ```
 
 ### Options
@@ -18,24 +19,32 @@ automata git get-pr-info --json    # JSON output
 | Flag | Description |
 |---|---|
 | `--json` | Print the full PR object as JSON (includes `checks` array) |
+| `--wait-finish-checks` | Poll until all checks are finished, then print the same output as a normal `get-pr-info` run |
 
 ### Human-readable output
 
 ```
-PR:             #42
-Title:          Fix authentication bug
-State:          OPEN
-URL:            https://github.com/org/repo/pull/42
-Checks Running: false
-Check Errors:   test: 3 tests failed in src/foo.test.ts; lint: no details available
+PR:               #42
+Title:            Fix authentication bug
+State:            OPEN
+URL:              https://github.com/org/repo/pull/42
+Sonar:            https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42
+Sonar New Issues: 3
+Checks Running:   false
+Check Errors:     test: 3 tests failed in src/foo.test.ts; lint: no details available
 Checks:
   ✓ build
   ✗ lint
-    Details: no details available
+  ✗ test
+  ● deploy (pending)
+FailedChecks:
+  ✗ lint
+    Details: (no details available)
   ✗ test
     Details: 3 tests failed in src/foo.test.ts
-  ● deploy (pending)
 ```
+
+The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). `Sonar New Issues` shows `unavailable` if the SonarCloud public API cannot be reached or the project is not public.
 
 ### Machine-readable summary fields
 
@@ -55,7 +64,7 @@ These fields appear on every invocation and are easy to grep or parse:
 | `●` | Pending / running | `QUEUED`, `IN_PROGRESS` (conclusion not yet set) |
 | `○` | Skipped / neutral | `SKIPPED`, `NEUTRAL` |
 
-For each `✗` check the failure description is also printed on the next line under `Details:` (and is included in `Check Errors:` above).
+When one or more checks fail, a trailing `FailedChecks:` section is printed after the checks list. That section contains the detailed failure text for each failed check. Sonar failures also include the Sonar URL there.
 
 ### JSON output shape
 
@@ -80,11 +89,13 @@ For each `✗` check the failure description is also printed on the next line un
       "description": "3 tests failed in src/foo.test.ts",
       "detailsUrl": "https://github.com/..."
     }
-  ]
+  ],
+  "sonarcloudUrl": "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42",
+  "sonarNewIssues": 3
 }
 ```
 
-`checks` is always present; it is an empty array when no checks are configured on the PR.
+`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails.
 
 ### Exit codes
 
