@@ -347,6 +347,30 @@ export function getPrComments(branch: string): PrComment[] | null | "unsupported
   return getPrCommentsGh(branch);
 }
 
+export type PrCommentsResult =
+  | { ok: true; branch: string; comments: PrComment[] }
+  | { ok: false; kind: "unsupported" }
+  | { ok: false; kind: "no-pr"; branch: string }
+  | { ok: false; kind: "error"; message: string };
+
+export function resolveCurrentBranchComments(): PrCommentsResult {
+  let branch: string;
+  try {
+    branch = getCurrentBranch();
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  let raw: PrComment[] | null | "unsupported";
+  try {
+    raw = getPrComments(branch);
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  if (raw === "unsupported") return { ok: false, kind: "unsupported" };
+  if (raw === null) return { ok: false, kind: "no-pr", branch };
+  return { ok: true, branch, comments: raw };
+}
+
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
 export function getLatestTagOnMaster(): string | null {

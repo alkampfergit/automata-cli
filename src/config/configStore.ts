@@ -26,9 +26,12 @@ export const DEFAULT_FIX_COMMENTS_PROMPT =
 
 export const DEFAULT_SONAR_PROMPT =
   "You are an expert software engineer. You have been given the URL of a SonarCloud analysis for this pull request. " +
-  "The project is public, so use the SonarCloud REST API directly (no authentication required) to fetch the list of issues rather than scraping the URL. " +
-  "Fix all new issues reported. " +
-  "Focus on code smells, bugs, and vulnerabilities flagged as new in this PR. " +
+  "If the `sonar-quality-gate` skill is available in this repository, use it. " +
+  "The project is public, so use the SonarCloud REST API directly (no authentication required) rather than scraping the URL. " +
+  "Inspect both the quality gate and the list of issues for this pull request. " +
+  "If the quality gate fails because of duplication or another metric-based condition, use the relevant Sonar APIs to identify the affected files and details instead of relying only on the issues endpoint. " +
+  "Fix all new issues and quality-gate failures reported. " +
+  "Focus on code smells, bugs, vulnerabilities, and blocking quality-gate conditions flagged in this PR. " +
   "Make targeted, minimal changes that resolve each issue without altering unrelated code.";
 
 const CONFIG_DIR = ".automata";

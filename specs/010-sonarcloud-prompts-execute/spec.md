@@ -17,8 +17,9 @@ A developer runs `automata git get-pr-info` on a branch whose PR has a SonarClou
 **Acceptance Scenarios**:
 
 1. **Given** a branch with an open PR that has a SonarCloud check, **When** `automata git get-pr-info` is run, **Then** the output includes the SonarCloud project URL and new-issue count.
-2. **Given** a branch with an open PR that has no SonarCloud check, **When** `automata git get-pr-info` is run, **Then** no SonarCloud fields appear in the output.
-3. **Given** `--json` flag, **When** `automata git get-pr-info --json` is run on a PR with SonarCloud, **Then** JSON output includes `sonarcloudUrl` and `sonarNewIssues` fields.
+2. **Given** that SonarCloud check has failed, **When** `automata git get-pr-info` is run, **Then** the trailing `FailedChecks:` section includes the Sonar URL for that failure.
+3. **Given** a branch with an open PR that has no SonarCloud check, **When** `automata git get-pr-info` is run, **Then** no SonarCloud fields appear in the output.
+4. **Given** `--json` flag, **When** `automata git get-pr-info --json` is run on a PR with SonarCloud, **Then** JSON output includes `sonarcloudUrl` and `sonarNewIssues` fields.
 
 ---
 
@@ -65,9 +66,11 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 **Acceptance Scenarios**:
 
 1. **Given** a branch with a PR that has a SonarCloud analysis URL, **When** `automata execute-prompt sonar` is run, **Then** Claude is invoked with the Sonar custom prompt and the SonarCloud URL.
-2. **Given** `--codex` flag, **When** `automata execute-prompt sonar --codex` is run, **Then** Codex CLI is used instead of Claude.
-3. **Given** `--verbose` flag, **When** `automata execute-prompt sonar --verbose` is run with Claude, **Then** verbose progress is shown.
-4. **Given** no SonarCloud URL is found on the PR, **When** `automata execute-prompt sonar` is run, **Then** an informative error is shown and the command exits non-zero.
+2. **Given** the repository exposes a `sonar-quality-gate` skill, **When** `automata execute-prompt sonar` is run, **Then** the prompt instructs the AI to use that skill.
+3. **Given** the SonarCloud analysis contains metric-based quality gate failures such as duplication, **When** `automata execute-prompt sonar` is run, **Then** the prompt instructs the AI to inspect both Sonar issues and the quality gate via API rather than relying only on the issues endpoint.
+4. **Given** `--codex` flag, **When** `automata execute-prompt sonar --codex` is run, **Then** Codex CLI is used instead of Claude.
+5. **Given** `--verbose` flag, **When** `automata execute-prompt sonar --verbose` is run with Claude, **Then** verbose progress is shown.
+6. **Given** no SonarCloud URL is found on the PR, **When** `automata execute-prompt sonar` is run, **Then** an informative error is shown and the command exits non-zero.
 
 ---
 
@@ -86,10 +89,13 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 - **FR-002**: When SonarCloud is detected, `get-pr-info` MUST extract the SonarCloud project URL from the check details.
 - **FR-003**: When SonarCloud is detected, `get-pr-info` MUST query the SonarCloud public API (no auth) to fetch the count of new issues for the PR.
 - **FR-004**: The new-issue count and SonarCloud URL MUST be included in both human-readable and `--json` output of `get-pr-info`.
+- **FR-004A**: When a SonarCloud check is failed, the human-readable `FailedChecks:` section of `get-pr-info` MUST include the Sonar URL for that failure.
 - **FR-005**: The config wizard MUST present a top-level menu with sections: "Remote / Mode", "Implement-Next", and "Prompts".
 - **FR-006**: The "Prompts" section MUST allow viewing and editing a custom Sonar prompt.
 - **FR-007**: The config schema MUST be extended with a `prompts` object containing at minimum a `sonar` string field.
 - **FR-008**: A built-in default Sonar prompt MUST be defined in code and used when no custom prompt is configured.
+- **FR-008A**: The built-in default Sonar prompt MUST instruct the AI to inspect both Sonar issues and the Sonar quality gate via API.
+- **FR-008B**: The built-in default Sonar prompt MUST instruct the AI to use the `sonar-quality-gate` skill when that skill is available in the repository.
 - **FR-009**: `automata execute-prompt sonar` MUST look up the SonarCloud URL for the current branch's PR.
 - **FR-010**: `execute-prompt sonar` MUST invoke the AI (Claude by default, Codex with `--codex`) with the Sonar prompt and SonarCloud URL as context.
 - **FR-011**: `execute-prompt sonar` MUST support `--verbose` flag (Claude only) and `--codex` flag.
@@ -114,9 +120,9 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 ## Assumptions
 
 - [AUTO] SonarCloud detection method: URL pattern match on `sonarcloud.io` in the check's `detailsUrl` field — because checks already carry `detailsUrl` and this avoids a name-based heuristic that may break across localizations.
-- [AUTO] SonarCloud API endpoint: uses `/api/issues/search?componentKeys=<project>&pullRequest=<number>&resolved=false` (public API, no auth needed for public projects) — industry standard for SonarCloud public project access.
+- [AUTO] SonarCloud API coverage: the default prompt references both `/api/issues/search` and quality-gate or measures APIs because issue search alone does not surface duplication-based gate failures.
 - [AUTO] Sonar project key extraction: extracted from the SonarCloud check URL `id` query parameter — aligned with the current implementation of the SonarCloud integration.
-- [AUTO] Default Sonar prompt: instructs the AI to read the SonarCloud analysis at the given URL and fix the reported new issues — minimal viable default.
+- [AUTO] Default Sonar prompt: instructs the AI to use Sonar APIs directly, inspect both the quality gate and issue list, and use the local `sonar-quality-gate` skill when present.
 - [AUTO] Implement-Next settings in config wizard: exposes the existing `issueDiscoveryTechnique` and `issueDiscoveryValue` fields — avoids scope creep.
 - [AUTO] execute-prompt is a new top-level command group (not under `git`) — consistent with it being an AI-invocation workflow, not a git workflow.
 - [AUTO] `--yolo` flag not added to `execute-prompt sonar` — not mentioned in feature description; follow YAGNI.

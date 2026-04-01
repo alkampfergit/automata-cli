@@ -13,6 +13,7 @@ import {
   tagExists,
   publishRelease,
   type PrCheck,
+  type PrInfo,
 } from "../git/gitService.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -43,13 +44,6 @@ function formatChecks(checks: PrCheck[]): string {
     const sym = checkSymbol(check);
     const pending = check.status !== "COMPLETED" ? " (pending)" : "";
     lines.push(`  ${sym} ${check.name}${pending}`);
-    if (check.conclusion !== null && FAIL_CONCLUSIONS.has(check.conclusion)) {
-      const desc = check.description.trim();
-      const url = check.detailsUrl.trim();
-      if (desc) lines.push(`    Details: ${desc}`);
-      if (url) lines.push(`    URL:     ${url}`);
-      if (!desc && !url) lines.push(`    Details: (no details available)`);
-    }
   }
   return lines.join("\n") + "\n";
 }
@@ -58,14 +52,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isSonarCheck(check: PrCheck): boolean {
+  try {
+    const hostname = new URL(check.detailsUrl).hostname;
+    return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+  } catch {
+    return false;
+  }
+}
+
 function formatFailedChecks(failed: PrCheck[]): string {
-  const lines: string[] = [];
+  const lines: string[] = ["FailedChecks:"];
   for (const check of failed) {
     lines.push(`  ✗ ${check.name}`);
     const desc = check.description.trim();
     const url = check.detailsUrl.trim();
     if (desc) lines.push(`    Details: ${desc}`);
-    if (url) lines.push(`    URL:     ${url}`);
+    if (url && (isSonarCheck(check) || !desc)) lines.push(`    URL:     ${url}`);
     if (!desc && !url) lines.push(`    Details: (no details available)`);
   }
   return lines.join("\n") + "\n";
@@ -76,7 +79,7 @@ const POLL_INTERVAL_MS = 10_000;
 const getPrInfoCmd = new Command("get-pr-info")
   .description("Show pull request info for the current branch")
   .option("--json", "Output as JSON")
-  .option("--wait-finish-checks", "Poll until all checks complete, then report pass/fail (exit 1 on failure)")
+  .option("--wait-finish-checks", "Poll until all checks complete, then print the normal get-pr-info output")
   .addHelpText(
     "after",
     `
@@ -86,11 +89,12 @@ Check status symbols:
   ●  Pending       (status: QUEUED or IN_PROGRESS)
   ○  Skipped       (conclusion: SKIPPED or NEUTRAL)
 
-Failure details are printed beneath each ✗ check.
+When checks fail, details are printed in a trailing FailedChecks section.
 See docs/git.md for full output reference.`,
   )
   .action(async (options: { json?: boolean; waitFinishChecks?: boolean }) => {
     let branch: string;
+    let pr: PrInfo | null = null;
     try {
       branch = getCurrentBranch();
     } catch (err) {
@@ -99,7 +103,6 @@ See docs/git.md for full output reference.`,
     }
 
     if (options.waitFinishChecks) {
-      let pr;
       while (true) {
         try {
           pr = await getPrInfo(branch);
@@ -108,41 +111,20 @@ See docs/git.md for full output reference.`,
           process.exit(1);
         }
         if (pr === null) {
-          process.stderr.write(`Error: No pull request found for branch: ${branch}\n`);
-          process.exit(1);
+          break;
         }
         const running = pr.checks.filter((c) => c.status !== "COMPLETED");
         if (running.length === 0) break;
         process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
         await sleep(POLL_INTERVAL_MS);
       }
-
-      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
-      if (failed.length === 0) {
-        if (options.json) {
-          process.stdout.write(JSON.stringify({ result: "passed" }, null, 2) + "\n");
-        } else {
-          process.stdout.write(`All checks passed. ✓\n`);
-        }
-        process.exit(0);
-      } else {
-        if (options.json) {
-          process.stdout.write(JSON.stringify({ result: "failed", failed }, null, 2) + "\n");
-        } else {
-          process.stdout.write(`${failed.length} check(s) failed:\n`);
-          process.stdout.write(formatFailedChecks(failed));
-        }
+    } else {
+      try {
+        pr = await getPrInfo(branch);
+      } catch (err) {
+        process.stderr.write(`Error: ${(err as Error).message}\n`);
         process.exit(1);
       }
-      return;
-    }
-
-    let pr;
-    try {
-      pr = await getPrInfo(branch);
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
     }
 
     if (pr === null) {
@@ -153,6 +135,7 @@ See docs/git.md for full output reference.`,
     if (options.json) {
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
+      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
       process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
       if (pr.sonarcloudUrl !== undefined) {
         process.stdout.write(`Sonar: ${pr.sonarcloudUrl}\n`);
@@ -163,6 +146,9 @@ See docs/git.md for full output reference.`,
       }
       process.stdout.write(formatCheckSummary(pr.checks));
       process.stdout.write(formatChecks(pr.checks));
+      if (failed.length > 0) {
+        process.stdout.write(formatFailedChecks(failed));
+      }
     }
   });
 

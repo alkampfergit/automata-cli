@@ -112,6 +112,13 @@ describe("DEFAULT_SONAR_PROMPT", () => {
     expect(typeof DEFAULT_SONAR_PROMPT).toBe("string");
     expect(DEFAULT_SONAR_PROMPT.length).toBeGreaterThan(0);
   });
+
+  it("mentions the sonar-quality-gate skill and quality gate api usage", async () => {
+    const { DEFAULT_SONAR_PROMPT } = await import("../../src/config/configStore.js");
+    expect(DEFAULT_SONAR_PROMPT).toContain("sonar-quality-gate");
+    expect(DEFAULT_SONAR_PROMPT).toMatch(/quality gate/i);
+    expect(DEFAULT_SONAR_PROMPT).toMatch(/issues/i);
+  });
 });
 
 // Cleanup TEST_DIR if it was accidentally created

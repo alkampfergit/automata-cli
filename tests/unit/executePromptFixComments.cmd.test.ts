@@ -2,16 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const mockGetCurrentBranch = vi.fn(() => "feature/my-branch");
-const mockGetPrComments = vi.fn();
+const mockResolveCurrentBranchComments = vi.fn();
 const mockReadConfig = vi.fn(() => ({}));
 const mockInvokeClaudeCode = vi.fn();
 const mockInvokeCodexCode = vi.fn();
 const mockResolveModelOption = vi.fn(() => undefined);
 
 vi.mock("../../src/git/gitService.js", () => ({
-  getCurrentBranch: () => mockGetCurrentBranch(),
-  getPrComments: (...args: unknown[]) => mockGetPrComments(...args),
+  resolveCurrentBranchComments: () => mockResolveCurrentBranchComments(),
 }));
 
 vi.mock("../../src/config/configStore.js", () => ({
@@ -67,8 +65,11 @@ describe("execute-prompt fix-comments command", () => {
   let out: ReturnType<typeof captureStreams>;
 
   beforeEach(() => {
-    mockGetCurrentBranch.mockReset().mockReturnValue("feature/my-branch");
-    mockGetPrComments.mockReset();
+    mockResolveCurrentBranchComments.mockReset().mockReturnValue({
+      ok: true,
+      branch: "feature/my-branch",
+      comments: SAMPLE_COMMENTS,
+    });
     mockReadConfig.mockReset().mockReturnValue({});
     mockInvokeClaudeCode.mockReset();
     mockInvokeCodexCode.mockReset();
@@ -82,7 +83,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("invokes Claude with default prompt and comment text when no custom prompt is configured", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
@@ -96,7 +96,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("invokes Claude with custom prompt when configured", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockReadConfig.mockReturnValue({ prompts: { fixComments: "Custom: fix the comments." } });
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
@@ -108,8 +107,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("invokes Codex instead of Claude when --codex is passed", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
-
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--codex"]);
 
@@ -120,7 +117,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("passes verbose flag to Claude invocation", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
@@ -131,7 +127,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("always passes yolo:true to Claude invocation", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
@@ -142,8 +137,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("always passes yolo:true to Codex invocation", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
-
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--codex"]);
 
@@ -152,7 +145,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("appends commit-and-push instruction to prompt when --push is passed", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
@@ -164,7 +156,6 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("does not append commit-and-push instruction when --push is not passed", async () => {
-    mockGetPrComments.mockReturnValue(SAMPLE_COMMENTS);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
@@ -175,7 +166,7 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("exits 1 when there are no open comments on the PR", async () => {
-    mockGetPrComments.mockReturnValue([]);
+    mockResolveCurrentBranchComments.mockReturnValue({ ok: true, branch: "feature/my-branch", comments: [] });
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
@@ -187,7 +178,7 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("exits 1 when get-pr-comments returns unsupported (AzDO)", async () => {
-    mockGetPrComments.mockReturnValue("unsupported");
+    mockResolveCurrentBranchComments.mockReturnValue({ ok: false, kind: "unsupported" });
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
@@ -199,7 +190,7 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("exits 1 when no pull request is found for the branch", async () => {
-    mockGetPrComments.mockReturnValue(null);
+    mockResolveCurrentBranchComments.mockReturnValue({ ok: false, kind: "no-pr", branch: "feature/my-branch" });
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
@@ -211,9 +202,7 @@ describe("execute-prompt fix-comments command", () => {
   });
 
   it("exits 1 when getCurrentBranch throws", async () => {
-    mockGetCurrentBranch.mockImplementationOnce(() => {
-      throw new Error("not a git repository");
-    });
+    mockResolveCurrentBranchComments.mockReturnValue({ ok: false, kind: "error", message: "not a git repository" });
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
