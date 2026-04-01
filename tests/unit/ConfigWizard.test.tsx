@@ -5,10 +5,16 @@ import { ConfigWizard } from "../../src/config/ConfigWizard.js";
 
 vi.mock("../../src/config/configStore.js", () => ({
   readConfig: vi.fn(() => ({})),
+  readRawConfig: vi.fn(() => ({})),
   writeConfig: vi.fn(),
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
 }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: vi.fn(), mkdirSync: vi.fn() };
+});
 
 const ENTER = "\r";
 const ESC = "\x1B";

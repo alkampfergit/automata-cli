@@ -1,13 +1,22 @@
 import React, { useState } from "react";
 import { Box, Text, useInput, useApp } from "ink";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   readConfig,
+  readRawConfig,
   writeConfig,
   DEFAULT_SONAR_PROMPT,
   DEFAULT_FIX_COMMENTS_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
 } from "./configStore.js";
+
+function writePromptFile(filename: string, content: string): void {
+  const dir = join(process.cwd(), ".automata");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, filename), content, "utf8");
+}
 
 const REMOTE_OPTIONS: { label: string; value: RemoteType }[] = [
   { label: "GitHub", value: "gh" },
@@ -36,6 +45,7 @@ type Screen =
 
 export function ConfigWizard() {
   const existing = readConfig();
+  const rawExisting = readRawConfig();
   const initialRemoteIndex = REMOTE_OPTIONS.findIndex((o) => o.value === existing.remoteType);
   const initialTechIndex = TECHNIQUE_OPTIONS.findIndex((o) => o.value === existing.issueDiscoveryTechnique);
 
@@ -85,7 +95,7 @@ export function ConfigWizard() {
         if (chosen.value === "gh") {
           setScreen("technique");
         } else {
-          writeConfig({ ...existing, remoteType: chosen.value });
+          writeConfig({ ...rawExisting, remoteType: chosen.value });
           exit();
         }
       } else if (key.escape) {
@@ -121,12 +131,17 @@ export function ConfigWizard() {
       }
     } else if (screen === "system-prompt") {
       if (key.return) {
+        let claudeSystemPromptValue: string | undefined;
+        if (systemPrompt) {
+          writePromptFile("claude-system-prompt.md", systemPrompt);
+          claudeSystemPromptValue = "claude-system-prompt.md";
+        }
         writeConfig({
-          ...existing,
+          ...rawExisting,
           remoteType: pendingRemote,
           issueDiscoveryTechnique: pendingTechnique,
           issueDiscoveryValue: discoveryValue || undefined,
-          claudeSystemPrompt: systemPrompt || undefined,
+          claudeSystemPrompt: claudeSystemPromptValue,
         });
         exit();
       } else if (key.backspace || key.delete) {
@@ -157,10 +172,15 @@ export function ConfigWizard() {
       }
     } else if (screen === "sonar-prompt") {
       if (key.return) {
-        const current = readConfig();
+        let sonarValue: string | undefined;
+        if (sonarPrompt) {
+          writePromptFile("sonar-prompt.md", sonarPrompt);
+          sonarValue = "sonar-prompt.md";
+        }
+        const current = readRawConfig();
         writeConfig({
           ...current,
-          prompts: { ...current.prompts, sonar: sonarPrompt || undefined },
+          prompts: { ...current.prompts, sonar: sonarValue },
         });
         setScreen("prompts-menu");
       } else if (key.backspace || key.delete) {
@@ -174,10 +194,15 @@ export function ConfigWizard() {
       }
     } else if (screen === "fix-comments-prompt") {
       if (key.return) {
-        const current = readConfig();
+        let fixCommentsValue: string | undefined;
+        if (fixCommentsPrompt) {
+          writePromptFile("fix-comments-prompt.md", fixCommentsPrompt);
+          fixCommentsValue = "fix-comments-prompt.md";
+        }
+        const current = readRawConfig();
         writeConfig({
           ...current,
-          prompts: { ...current.prompts, fixComments: fixCommentsPrompt || undefined },
+          prompts: { ...current.prompts, fixComments: fixCommentsValue },
         });
         setScreen("prompts-menu");
       } else if (key.backspace || key.delete) {
