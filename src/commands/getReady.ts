@@ -1,48 +1,26 @@
 import { Command } from "commander";
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
-import { readConfig } from "../config/configStore.js";
+import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
+import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
+import { invokeCodexCode } from "../codex/codexService.js";
 
-function resolveCommand(name: string): string {
-  const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
-  for (const dir of pathDirs) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return name;
-}
-
-function invokeClaudeCode(issue: GitHubIssue, systemPrompt: string | undefined): void {
-  const prompt = systemPrompt ? `${systemPrompt}\n\n${issue.body}` : issue.body;
-  const claudeBin = resolveCommand("claude");
-  const result = spawnSync(claudeBin, ["-p", prompt], { encoding: "utf8", stdio: "inherit" });
-  if (result.error) {
-    const err = result.error as NodeJS.ErrnoException;
-    if (err.code === "ENOENT") {
-      process.stderr.write("Error: `claude` CLI is not installed or not on PATH.\n");
-      process.exit(1);
-    }
-    process.stderr.write(`Error: ${err.message}\n`);
-    process.exit(1);
-  }
-  if (result.status !== 0) {
-    process.stderr.write(`Error: Claude Code exited with code ${result.status ?? "unknown"}.\n`);
-    process.exit(result.status ?? 1);
-  }
-}
-
-export const getReadyCommand = new Command("get-ready")
-  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
+export const implementNextCommand = new Command("implement-next")
+  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
   .option("--json", "Output issue details as JSON")
-  .option("--no-claude", "Skip Claude Code invocation after claiming the issue")
-  .action((options: { json?: boolean; claude: boolean }) => {
+  .option("--no-claude", "Skip all AI invocation (Claude or Codex) after claiming the issue")
+  .option("--codex",   "Use Codex CLI instead of Claude Code")
+  .option("--query-only", "Print issue content and exit without claiming or invoking any AI tools")
+  .option("--yolo",    "Launch with --dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)")
+  .option("--verbose", "Show step-by-step progress summary and final result")
+  .option("--opus",    "Use claude-opus-4-6")
+  .option("--sonnet",  "Use claude-sonnet-4-6")
+  .option("--haiku",   "Use claude-haiku-4-5-20251001")
+  .action(async (options: { json?: boolean; claude: boolean; codex?: boolean; queryOnly?: boolean; yolo?: boolean; verbose?: boolean; opus?: boolean; sonnet?: boolean; haiku?: boolean }) => {
     const config = readConfig();
 
     if (config.remoteType !== "gh") {
       process.stderr.write(
-        "Error: get-ready is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
+        "Error: implement-next is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
       );
       process.exit(1);
     }
@@ -80,6 +58,10 @@ export const getReadyCommand = new Command("get-ready")
       process.stdout.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\nURL:    ${issue.url}\n\n${issue.body}\n`);
     }
 
+    if (options.queryOnly) {
+      process.exit(0);
+    }
+
     try {
       postComment(issue.number, "working");
     } catch (err) {
@@ -88,6 +70,13 @@ export const getReadyCommand = new Command("get-ready")
     }
 
     if (options.claude !== false) {
-      invokeClaudeCode(issue, config.claudeSystemPrompt);
+      const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
+      const prompt = `${systemPrompt}\n\n${issue.body}`;
+      if (options.codex) {
+        await invokeCodexCode(prompt, { yolo: options.yolo, verbose: options.verbose });
+      } else {
+        const model = resolveModelOption(options);
+        await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: options.verbose, model });
+      }
     }
   });

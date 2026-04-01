@@ -83,6 +83,22 @@ When no version is given, the latest semver tag on `master` is detected and the 
 
 ---
 
+## `automata implement-next`
+
+Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code to implement it.
+
+```bash
+automata implement-next                # find, claim, and implement
+automata implement-next --query-only   # print the issue and exit
+automata implement-next --yolo         # skip Claude permission prompts
+automata implement-next --json         # JSON output
+automata implement-next --no-claude    # claim without launching Claude
+```
+
+See [docs/implement-next.md](docs/implement-next.md) for full details.
+
+---
+
 ## Development
 
 ### Prerequisites

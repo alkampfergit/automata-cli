@@ -24,6 +24,53 @@ export interface PrInfo {
   state: string;
   url: string;
   checks: PrCheck[];
+  sonarcloudUrl?: string;
+  sonarNewIssues?: number | null;
+  sonarFailures?: SonarFailureSummary;
+}
+
+export interface SonarGateViolation {
+  metricKey: string;
+  status: string;
+  comparator?: string;
+  actualValue?: string;
+  errorThreshold?: string;
+}
+
+export interface SonarIssue {
+  key: string;
+  rule?: string;
+  severity?: string;
+  type?: string;
+  message: string;
+  path?: string;
+  line?: number | null;
+  explanation?: string;
+}
+
+export interface SonarSecurityHotspot {
+  key: string;
+  rule: string;
+  ruleName?: string;
+  status: string;
+  message: string;
+  path?: string;
+  line?: number | null;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  riskDescription?: string;
+  vulnerabilityDescription?: string;
+  fixRecommendations?: string;
+}
+
+export interface SonarFailureSummary {
+  status: "available" | "private" | "unavailable";
+  qualityGateStatus?: string;
+  gateViolations: SonarGateViolation[];
+  issues: SonarIssue[];
+  securityHotspots: SonarSecurityHotspot[];
+  privateMessage?: string;
+  unavailableMessage?: string;
 }
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
@@ -72,6 +119,126 @@ interface CheckRunApiItem {
   output: CheckRunOutput;
 }
 
+interface SonarProjectStatusCondition {
+  status?: string;
+  metricKey?: string;
+  comparator?: string;
+  actualValue?: string;
+  errorThreshold?: string;
+}
+
+interface SonarProjectStatusResponse {
+  projectStatus?: {
+    status?: string;
+    conditions?: SonarProjectStatusCondition[];
+  };
+  errors?: Array<{ msg?: string }>;
+}
+
+interface RawSonarIssue {
+  key?: string;
+  rule?: string;
+  severity?: string;
+  type?: string;
+  message?: string;
+  component?: string;
+  line?: number;
+  textRange?: {
+    startLine?: number;
+  };
+}
+
+interface RawSonarHotspot {
+  key?: string;
+  component?: string;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  status?: string;
+  line?: number;
+  message?: string;
+  ruleKey?: string;
+  textRange?: {
+    startLine?: number;
+  };
+}
+
+interface RawSonarComponent {
+  key?: string;
+  path?: string;
+}
+
+interface RawSonarRule {
+  key?: string;
+  name?: string;
+  htmlDesc?: string;
+  htmlNote?: string;
+}
+
+interface SonarIssuesSearchResponse {
+  paging?: {
+    pageIndex?: number;
+    pageSize?: number;
+    total?: number;
+  };
+  issues?: RawSonarIssue[];
+  components?: RawSonarComponent[];
+  rules?: RawSonarRule[];
+  errors?: Array<{ msg?: string }>;
+}
+
+interface RawSonarHotspotRule {
+  key?: string;
+  name?: string;
+  securityCategory?: string;
+  vulnerabilityProbability?: string;
+  riskDescription?: string;
+  vulnerabilityDescription?: string;
+  fixRecommendations?: string;
+}
+
+interface SonarHotspotsSearchResponse {
+  paging?: {
+    pageIndex?: number;
+    pageSize?: number;
+    total?: number;
+  };
+  hotspots?: RawSonarHotspot[];
+  components?: RawSonarComponent[];
+  errors?: Array<{ msg?: string }>;
+}
+
+interface SonarHotspotShowResponse {
+  key?: string;
+  component?: RawSonarComponent;
+  rule?: RawSonarHotspotRule;
+  status?: string;
+  line?: number;
+  message?: string;
+  textRange?: {
+    startLine?: number;
+  };
+}
+
+interface SonarFetchOk<T> {
+  ok: true;
+  status: number;
+  data: T;
+}
+
+interface SonarFetchError {
+  ok: false;
+  status: number | null;
+}
+
+type SonarFetchResult<T> = SonarFetchOk<T> | SonarFetchError;
+
+interface SonarFailureSummaryResult {
+  summary: SonarFailureSummary;
+  issueTotal: number | null;
+}
+
+const SONAR_FETCH_TIMEOUT_MS = 5000;
+const SONAR_FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 
 function parseOwnerRepo(): string | null {
   const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
@@ -113,7 +280,373 @@ function fetchCheckRunOutputs(ownerRepo: string, sha: string): Map<string, { tit
   return map;
 }
 
-function getPrInfoGh(branch: string): PrInfo | null {
+function extractSonarProjectKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const id = parsed.searchParams.get("id");
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isSonarUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+  } catch {
+    return false;
+  }
+}
+
+function stripHtml(text: string): string {
+  let stripped = "";
+  let inTag = false;
+
+  for (const char of text) {
+    if (char === "<") {
+      inTag = true;
+      stripped += " ";
+      continue;
+    }
+    if (char === ">") {
+      inTag = false;
+      continue;
+    }
+    if (!inTag) {
+      stripped += char;
+    }
+  }
+
+  return stripped;
+}
+
+function normalizeText(text: string | null | undefined): string | undefined {
+  if (!text) return undefined;
+  const normalized = stripHtml(text).replaceAll(/\s+/g, " ").trim();
+  return normalized || undefined;
+}
+
+function resolveSonarPath(componentKey: string | undefined, components: Map<string, string>): string | undefined {
+  if (!componentKey) return undefined;
+  const mapped = components.get(componentKey);
+  if (mapped) return mapped;
+  const separatorIndex = componentKey.indexOf(":");
+  if (separatorIndex === -1) return undefined;
+  const path = componentKey.slice(separatorIndex + 1).trim();
+  return path || undefined;
+}
+
+function mapSonarIssuesPage(
+  data: SonarIssuesSearchResponse,
+  targetIssues: SonarIssue[],
+  components: Map<string, string>,
+  rules: Map<string, string>,
+): void {
+  for (const component of data.components ?? []) {
+    if (component.key && component.path) {
+      components.set(component.key, component.path);
+    }
+  }
+
+  for (const rule of data.rules ?? []) {
+    if (!rule.key) continue;
+    const explanation = normalizeText(rule.htmlDesc) ?? normalizeText(rule.htmlNote) ?? normalizeText(rule.name);
+    if (explanation) {
+      rules.set(rule.key, explanation);
+    }
+  }
+
+  for (const issue of data.issues ?? []) {
+    if (!issue.key || !issue.message) continue;
+
+    const ruleKey = issue.rule;
+    const mappedIssue: SonarIssue = {
+      key: issue.key,
+      severity: issue.severity,
+      type: issue.type,
+      message: issue.message,
+      path: resolveSonarPath(issue.component, components),
+      line: issue.line ?? issue.textRange?.startLine ?? null,
+      ...(ruleKey ? { rule: ruleKey } : {}),
+      ...(ruleKey && rules.has(ruleKey) ? { explanation: rules.get(ruleKey) } : {}),
+    };
+    targetIssues.push(mappedIssue);
+  }
+}
+
+function mapSonarHotspotsPage(
+  data: SonarHotspotsSearchResponse,
+  targetHotspots: RawSonarHotspot[],
+  components: Map<string, string>,
+): void {
+  for (const component of data.components ?? []) {
+    if (component.key && component.path) {
+      components.set(component.key, component.path);
+    }
+  }
+
+  targetHotspots.push(...(data.hotspots ?? []));
+}
+
+function mapSonarHotspot(
+  hotspot: RawSonarHotspot,
+  components: Map<string, string>,
+  detail?: SonarHotspotShowResponse,
+): SonarSecurityHotspot {
+  const rule = detail?.rule;
+  return {
+    key: detail?.key ?? hotspot.key ?? "",
+    rule: hotspot.ruleKey ?? rule?.key ?? "",
+    ruleName: normalizeText(rule?.name),
+    status: detail?.status ?? hotspot.status ?? "UNKNOWN",
+    message: detail?.message ?? hotspot.message ?? "",
+    path: detail?.component?.path ?? resolveSonarPath(hotspot.component, components),
+    line: detail?.line ?? detail?.textRange?.startLine ?? hotspot.line ?? hotspot.textRange?.startLine ?? null,
+    securityCategory: rule?.securityCategory ?? hotspot.securityCategory,
+    vulnerabilityProbability: rule?.vulnerabilityProbability ?? hotspot.vulnerabilityProbability,
+    riskDescription: normalizeText(rule?.riskDescription),
+    vulnerabilityDescription: normalizeText(rule?.vulnerabilityDescription),
+    fixRecommendations: normalizeText(rule?.fixRecommendations),
+  };
+}
+
+async function fetchSonarJson<T>(apiUrl: string): Promise<SonarFetchResult<T>> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SONAR_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(apiUrl, { signal: controller.signal });
+    if (!response.ok) {
+      return { ok: false, status: response.status };
+    }
+    return {
+      ok: true,
+      status: response.status,
+      data: (await response.json()) as T,
+    };
+  } catch {
+    return { ok: false, status: null };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchSonarNewIssues(projectKey: string, prNumber: number): Promise<number | null> {
+  const apiUrl =
+    `https://sonarcloud.io/api/issues/search` +
+    `?componentKeys=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}&resolved=false&ps=1`;
+  const response = await fetchSonarJson<{ paging?: { total?: number } }>(apiUrl);
+  if (!response.ok) {
+    return null;
+  }
+  return response.data.paging?.total ?? null;
+}
+
+async function fetchSonarGateViolations(projectKey: string, prNumber: number): Promise<SonarFetchResult<SonarFailureSummary>> {
+  const apiUrl =
+    `https://sonarcloud.io/api/qualitygates/project_status` +
+    `?projectKey=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}`;
+  const response = await fetchSonarJson<SonarProjectStatusResponse>(apiUrl);
+  if (!response.ok) {
+    return response;
+  }
+
+  const projectStatus = response.data.projectStatus;
+  const gateViolations = (projectStatus?.conditions ?? [])
+    .filter((condition) => condition.status !== undefined && condition.status !== "OK")
+    .map((condition) => ({
+      metricKey: condition.metricKey ?? "unknown",
+      status: condition.status ?? "ERROR",
+      comparator: condition.comparator,
+      actualValue: condition.actualValue,
+      errorThreshold: condition.errorThreshold,
+    }));
+
+  return {
+    ok: true,
+    status: response.status,
+    data: {
+      status: "available",
+      qualityGateStatus: projectStatus?.status,
+      gateViolations,
+      issues: [],
+      securityHotspots: [],
+    },
+  };
+}
+
+async function fetchSonarIssues(projectKey: string, prNumber: number): Promise<SonarFetchResult<{ total: number | null; issues: SonarIssue[] }>> {
+  const pageSize = 100;
+  const issues: SonarIssue[] = [];
+  const components = new Map<string, string>();
+  const rules = new Map<string, string>();
+  let page = 1;
+  let total: number | null = null;
+
+  while (true) {
+    const apiUrl =
+      `https://sonarcloud.io/api/issues/search` +
+      `?componentKeys=${encodeURIComponent(projectKey)}` +
+      `&pullRequest=${String(prNumber)}` +
+      `&resolved=false` +
+      `&ps=${String(pageSize)}` +
+      `&p=${String(page)}` +
+      `&additionalFields=_all`;
+
+    const response = await fetchSonarJson<SonarIssuesSearchResponse>(apiUrl);
+    if (!response.ok) {
+      return response;
+    }
+
+    const paging = response.data.paging;
+    total ??= paging?.total ?? null;
+
+    mapSonarIssuesPage(response.data, issues, components, rules);
+
+    const fetchedCount = page * (paging?.pageSize ?? pageSize);
+    if (paging?.total === undefined || fetchedCount >= paging.total) {
+      break;
+    }
+    page += 1;
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    data: {
+      total,
+      issues,
+    },
+  };
+}
+
+async function fetchSonarHotspotDetail(hotspotKey: string): Promise<SonarFetchResult<SonarHotspotShowResponse>> {
+  const apiUrl = `https://sonarcloud.io/api/hotspots/show?hotspot=${encodeURIComponent(hotspotKey)}`;
+  return fetchSonarJson<SonarHotspotShowResponse>(apiUrl);
+}
+
+async function fetchSonarHotspots(projectKey: string, prNumber: number): Promise<SonarFetchResult<SonarSecurityHotspot[]>> {
+  const pageSize = 100;
+  const rawHotspots: RawSonarHotspot[] = [];
+  const components = new Map<string, string>();
+  let page = 1;
+
+  while (true) {
+    const apiUrl =
+      `https://sonarcloud.io/api/hotspots/search` +
+      `?projectKey=${encodeURIComponent(projectKey)}` +
+      `&pullRequest=${String(prNumber)}` +
+      `&onlyMine=false` +
+      `&sinceLeakPeriod=true` +
+      `&ps=${String(pageSize)}` +
+      `&p=${String(page)}`;
+
+    const response = await fetchSonarJson<SonarHotspotsSearchResponse>(apiUrl);
+    if (!response.ok) {
+      return response;
+    }
+
+    const paging = response.data.paging;
+    mapSonarHotspotsPage(response.data, rawHotspots, components);
+
+    const fetchedCount = page * (paging?.pageSize ?? pageSize);
+    if (paging?.total === undefined || fetchedCount >= paging.total) {
+      break;
+    }
+    page += 1;
+  }
+
+  const detailResults = await Promise.all(rawHotspots.map((hotspot) => fetchSonarHotspotDetail(hotspot.key ?? "")));
+  const securityHotspots: SonarSecurityHotspot[] = [];
+
+  for (let index = 0; index < rawHotspots.length; index += 1) {
+    const hotspot = rawHotspots[index];
+    const detailResult = detailResults[index];
+    if (detailResult && !detailResult.ok && detailResult.status === 401) {
+      return detailResult;
+    }
+    securityHotspots.push(mapSonarHotspot(hotspot, components, detailResult?.ok ? detailResult.data : undefined));
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    data: securityHotspots,
+  };
+}
+
+function sonarPrivateFailureSummary(sonarcloudUrl: string): SonarFailureSummary {
+  return {
+    status: "private",
+    gateViolations: [],
+    issues: [],
+    securityHotspots: [],
+    privateMessage: `SonarCloud project is private. Open the Sonar URL in an authenticated browser: ${sonarcloudUrl}`,
+  };
+}
+
+async function fetchSonarFailureSummary(
+  projectKey: string,
+  prNumber: number,
+  sonarcloudUrl: string,
+): Promise<SonarFailureSummaryResult> {
+  const [gateResult, issuesResult, hotspotsResult] = await Promise.all([
+    fetchSonarGateViolations(projectKey, prNumber),
+    fetchSonarIssues(projectKey, prNumber),
+    fetchSonarHotspots(projectKey, prNumber),
+  ]);
+
+  if (!gateResult.ok && gateResult.status === 401) {
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
+  }
+  if (!issuesResult.ok && issuesResult.status === 401) {
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
+  }
+  if (!hotspotsResult.ok && hotspotsResult.status === 401) {
+    return {
+      summary: sonarPrivateFailureSummary(sonarcloudUrl),
+      issueTotal: null,
+    };
+  }
+
+  const gateViolations = gateResult.ok ? gateResult.data.gateViolations : [];
+  const issues = issuesResult.ok ? issuesResult.data.issues : [];
+  const securityHotspots = hotspotsResult.ok ? hotspotsResult.data : [];
+  const qualityGateStatus = gateResult.ok ? gateResult.data.qualityGateStatus : undefined;
+  const issueTotal = issuesResult.ok ? issuesResult.data.total : null;
+
+  if (gateViolations.length === 0 && issues.length === 0 && securityHotspots.length === 0 && !qualityGateStatus) {
+    return {
+      summary: {
+        status: "unavailable",
+        gateViolations: [],
+        issues: [],
+        securityHotspots: [],
+        unavailableMessage: "SonarCloud failure details are unavailable right now.",
+      },
+      issueTotal,
+    };
+  }
+
+  return {
+    summary: {
+      status: "available",
+      qualityGateStatus,
+      gateViolations,
+      issues,
+      securityHotspots,
+    },
+    issueTotal,
+  };
+}
+
+async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   const { stdout, stderr, status } = run("gh", [
     "pr",
     "view",
@@ -145,10 +678,40 @@ function getPrInfoGh(branch: string): PrInfo | null {
       detailsUrl: enriched?.detailsUrl || c.detailsUrl || "",
     };
   });
-  return { number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks };
+
+  // SonarCloud detection
+  const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
+  let sonarcloudUrl: string | undefined;
+  let sonarNewIssues: number | null | undefined;
+  let sonarFailures: SonarFailureSummary | undefined;
+  if (sonarCheck) {
+    sonarcloudUrl = sonarCheck.detailsUrl;
+    const projectKey = extractSonarProjectKey(sonarCheck.detailsUrl);
+    if (projectKey) {
+      if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
+        const sonarSummary = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
+        sonarFailures = sonarSummary.summary;
+        sonarNewIssues = sonarSummary.issueTotal;
+      } else {
+        sonarNewIssues = await fetchSonarNewIssues(projectKey, raw.number);
+      }
+    } else {
+      sonarNewIssues = null;
+    }
+  }
+
+  return {
+    number: raw.number,
+    title: raw.title,
+    state: raw.state,
+    url: raw.url,
+    checks,
+    ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues }),
+    ...(sonarFailures === undefined ? {} : { sonarFailures }),
+  };
 }
 
-export function getPrInfo(branch: string): PrInfo | null {
+export async function getPrInfo(branch: string): Promise<PrInfo | null> {
   const config = readConfig();
   if (config.remoteType === "azdo") {
     return azdoService.getPrInfo();
@@ -286,6 +849,30 @@ export function getPrComments(branch: string): PrComment[] | null | "unsupported
     return "unsupported";
   }
   return getPrCommentsGh(branch);
+}
+
+export type PrCommentsResult =
+  | { ok: true; branch: string; comments: PrComment[] }
+  | { ok: false; kind: "unsupported" }
+  | { ok: false; kind: "no-pr"; branch: string }
+  | { ok: false; kind: "error"; message: string };
+
+export function resolveCurrentBranchComments(): PrCommentsResult {
+  let branch: string;
+  try {
+    branch = getCurrentBranch();
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  let raw: PrComment[] | null | "unsupported";
+  try {
+    raw = getPrComments(branch);
+  } catch (err) {
+    return { ok: false, kind: "error", message: (err as Error).message };
+  }
+  if (raw === "unsupported") return { ok: false, kind: "unsupported" };
+  if (raw === null) return { ok: false, kind: "no-pr", branch };
+  return { ok: true, branch, comments: raw };
 }
 
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;

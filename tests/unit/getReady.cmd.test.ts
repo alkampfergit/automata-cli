@@ -1,27 +1,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-const AUTOMATA_DIR = join(process.cwd(), ".automata");
-
-afterEach(() => {
-  rmSync(AUTOMATA_DIR, { recursive: true, force: true });
-});
+const ORIG_CWD = process.cwd;
+const TEST_CWD = join(ORIG_CWD(), "tmp-test-getready");
 
 // ── CLI smoke tests ───────────────────────────────────────────────────────────
 
-describe("automata get-ready (CLI smoke)", () => {
-  it("shows help for get-ready command", () => {
-    const output = execSync(`"${process.execPath}" dist/index.js get-ready --help`, { encoding: "utf8" });
-    expect(output).toContain("get-ready");
+describe("automata implement-next (CLI smoke)", () => {
+  it("shows help for implement-next command", () => {
+    const output = execSync(`"${process.execPath}" dist/index.js implement-next --help`, { encoding: "utf8" });
+    expect(output).toContain("implement-next");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
+    expect(output).toContain("--codex");
+    expect(output).toContain("--query-only");
+    expect(output).toContain("--yolo");
   });
 
   it("is listed in the top-level help", () => {
     const output = execSync(`"${process.execPath}" dist/index.js --help`, { encoding: "utf8" });
-    expect(output).toContain("get-ready");
+    expect(output).toContain("implement-next");
   });
 });
 
@@ -39,13 +39,16 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 describe("getReady command: config validation", () => {
   beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.resetModules();
-    rmSync(AUTOMATA_DIR, { recursive: true, force: true });
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
   });
 
   it("exits 1 with error when remoteType is azdo", async () => {
@@ -59,14 +62,14 @@ describe("getReady command: config validation", () => {
     });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
     try {
-      await getReadyCommand.parseAsync([], { from: "user" });
+      await implementNextCommand.parseAsync([], { from: "user" });
     } catch {
       // expected
     }
 
-    expect(stderrLines.join("")).toContain("get-ready is not supported in Azure DevOps mode");
+    expect(stderrLines.join("")).toContain("implement-next is not supported in Azure DevOps mode");
     expect(stderrLines.join("")).toContain("docs/azdo-gap.md");
     expect(exitSpy).toHaveBeenCalledWith(1);
 
@@ -84,9 +87,9 @@ describe("getReady command: config validation", () => {
     });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
     try {
-      await getReadyCommand.parseAsync([], { from: "user" });
+      await implementNextCommand.parseAsync([], { from: "user" });
     } catch {
       // expected
     }
@@ -100,13 +103,16 @@ describe("getReady command: config validation", () => {
 
 describe("getReady command: Claude Code invocation", () => {
   beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.resetModules();
-    rmSync(AUTOMATA_DIR, { recursive: true, force: true });
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
   });
 
   it("invokes claude with system prompt prepended when configured", async () => {
@@ -130,8 +136,8 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync([], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -143,7 +149,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.restoreAllMocks();
   });
 
-  it("invokes claude with only issue body when no system prompt configured", async () => {
+  it("invokes claude with default system prompt when no system prompt configured", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({
       remoteType: "gh",
@@ -160,14 +166,15 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync([], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
     const claudeArgs = claudeCall![1] as string[];
     expect(claudeArgs[0]).toBe("-p");
-    expect(claudeArgs[1]).toBe("Fix this.");
+    expect(claudeArgs[1]).toContain("You are an expert software engineer.");
+    expect(claudeArgs[1]).toContain("Fix this.");
 
     vi.restoreAllMocks();
   });
@@ -188,8 +195,41 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    const { getReadyCommand } = await import("../../src/commands/getReady.js");
-    await getReadyCommand.parseAsync(["--no-claude"], { from: "user" });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("invokes codex instead of claude when --codex flag is passed", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 2, title: "Codex issue", body: "Do with codex.", url: "https://github.com/o/r/issues/2" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--codex"], { from: "user" });
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+    const codexArgs = codexCall![1] as string[];
+    expect(codexArgs).toContain("exec");
+    expect(codexArgs[codexArgs.length - 1]).toContain("You are an expert software engineer.");
+    expect(codexArgs[codexArgs.length - 1]).toContain("Do with codex.");
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();

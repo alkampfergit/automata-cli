@@ -21,15 +21,15 @@ The following features work correctly when `remoteType` is set to `azdo`:
 
 ## Gaps
 
-### 1. Work Item Discovery — `automata get-ready` is unavailable in AzDO mode
+### 1. Work Item Discovery — `automata implement-next` is unavailable in AzDO mode
 
-**Affected command**: `automata get-ready`
+**Affected command**: `automata implement-next`
 
 **What GitHub supports**: `gh issue list` accepts `--label`, `--assignee`, and `--search` flags to filter and return open issues. automata-cli uses this to discover the next piece of available work.
 
 **What azdo-cli provides**: No work item listing or search command. Every azdo-cli work item command (`get-item`, `set-state`, `assign`, `set-field`, `list-fields`, `comments list/add`) requires a known work item ID. There is no way to query "give me open work items matching filter X" through azdo-cli.
 
-**Impact**: `automata get-ready` exits immediately with a non-zero code in AzDO mode. No work item is discovered or claimed.
+**Impact**: `automata implement-next` exits immediately with a non-zero code in AzDO mode. No work item is discovered or claimed.
 
 **What would close this gap**: A future version of azdo-cli that adds a `list-items` or `search` command accepting state, tag/label, and assignee filters would allow full parity. Alternatively, automata-cli could directly call the Azure DevOps REST API (`/_apis/wit/wiql` or `/_apis/wit/workitems`) using a stored PAT, without relying on azdo-cli for this capability.
 

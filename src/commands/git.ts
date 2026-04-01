@@ -13,6 +13,11 @@ import {
   tagExists,
   publishRelease,
   type PrCheck,
+  type PrInfo,
+  type SonarFailureSummary,
+  type SonarGateViolation,
+  type SonarIssue,
+  type SonarSecurityHotspot,
 } from "../git/gitService.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -43,13 +48,6 @@ function formatChecks(checks: PrCheck[]): string {
     const sym = checkSymbol(check);
     const pending = check.status !== "COMPLETED" ? " (pending)" : "";
     lines.push(`  ${sym} ${check.name}${pending}`);
-    if (check.conclusion !== null && FAIL_CONCLUSIONS.has(check.conclusion)) {
-      const desc = check.description.trim();
-      const url = check.detailsUrl.trim();
-      if (desc) lines.push(`    Details: ${desc}`);
-      if (url) lines.push(`    URL:     ${url}`);
-      if (!desc && !url) lines.push(`    Details: (no details available)`);
-    }
   }
   return lines.join("\n") + "\n";
 }
@@ -58,16 +56,146 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isSonarCheck(check: PrCheck): boolean {
+  try {
+    const hostname = new URL(check.detailsUrl).hostname;
+    return hostname === "sonarcloud.io" || hostname.endsWith(".sonarcloud.io");
+  } catch {
+    return false;
+  }
+}
+
 function formatFailedChecks(failed: PrCheck[]): string {
-  const lines: string[] = [];
+  const lines: string[] = ["FailedChecks:"];
   for (const check of failed) {
     lines.push(`  ✗ ${check.name}`);
     const desc = check.description.trim();
     const url = check.detailsUrl.trim();
     if (desc) lines.push(`    Details: ${desc}`);
-    if (url) lines.push(`    URL:     ${url}`);
+    if (url && (isSonarCheck(check) || !desc)) lines.push(`    URL:     ${url}`);
     if (!desc && !url) lines.push(`    Details: (no details available)`);
   }
+  return lines.join("\n") + "\n";
+}
+
+function formatGateViolation(violation: SonarGateViolation): string {
+  const parts = [sanitizeText(violation.metricKey)];
+  if (violation.actualValue) parts.push(`actual ${sanitizeText(violation.actualValue)}`);
+  if (violation.comparator && violation.errorThreshold) {
+    parts.push(`${sanitizeText(violation.comparator)} ${sanitizeText(violation.errorThreshold)}`);
+  } else if (violation.errorThreshold) {
+    parts.push(`threshold ${sanitizeText(violation.errorThreshold)}`);
+  }
+  return parts.join(" | ");
+}
+
+function formatLocation(path: string | undefined, line: number | null | undefined): string | undefined {
+  if (!path) return undefined;
+  const safePath = sanitizeText(path);
+  if (!line) return safePath;
+  return `${safePath}:${String(line)}`;
+}
+
+function formatRuleWithName(rule: string, ruleName: string | undefined): string {
+  const safeRule = sanitizeText(rule);
+  if (!ruleName) return safeRule;
+  return `${safeRule} (${sanitizeText(ruleName)})`;
+}
+
+function formatSonarIssue(issue: SonarIssue): string[] {
+  const lines = [`    - ${sanitizeText(issue.message)}`];
+  const location = formatLocation(issue.path, issue.line);
+  if (location) lines.push(`      Location: ${location}`);
+  if (issue.severity || issue.type) {
+    const labels = [issue.severity, issue.type].filter((label): label is string => Boolean(label)).map(sanitizeText).join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (issue.rule) lines.push(`      Rule: ${sanitizeText(issue.rule)}`);
+  if (issue.explanation) lines.push(`      Explanation: ${sanitizeText(issue.explanation)}`);
+  return lines;
+}
+
+function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
+  const lines = [`    - ${sanitizeText(hotspot.message)}`];
+  const location = formatLocation(hotspot.path, hotspot.line);
+  if (location) lines.push(`      Location: ${location}`);
+  if (hotspot.status) lines.push(`      Status: ${sanitizeText(hotspot.status)}`);
+  if (hotspot.vulnerabilityProbability || hotspot.securityCategory) {
+    const labels = [hotspot.vulnerabilityProbability, hotspot.securityCategory]
+      .filter((label): label is string => Boolean(label))
+      .map(sanitizeText)
+      .join(" / ");
+    lines.push(`      Classification: ${labels}`);
+  }
+  if (hotspot.rule) {
+    lines.push(`      Rule: ${formatRuleWithName(hotspot.rule, hotspot.ruleName)}`);
+  }
+  if (hotspot.riskDescription) lines.push(`      Risk: ${sanitizeText(hotspot.riskDescription)}`);
+  if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${sanitizeText(hotspot.vulnerabilityDescription)}`);
+  if (hotspot.fixRecommendations) lines.push(`      Fix: ${sanitizeText(hotspot.fixRecommendations)}`);
+  return lines;
+}
+
+function appendGateViolations(lines: string[], gateViolations: SonarGateViolation[]): void {
+  if (gateViolations.length === 0) return;
+  lines.push("  Gate Violations:");
+  for (const violation of gateViolations) {
+    lines.push(`    - ${formatGateViolation(violation)}`);
+  }
+}
+
+function appendSonarIssues(lines: string[], issues: SonarIssue[]): void {
+  if (issues.length === 0) return;
+  lines.push("  Issues:");
+  for (const issue of issues) {
+    lines.push(...formatSonarIssue(issue));
+  }
+}
+
+function appendSecurityHotspots(lines: string[], securityHotspots: SonarSecurityHotspot[]): void {
+  if (securityHotspots.length === 0) return;
+  lines.push("  Security Hotspots:");
+  for (const hotspot of securityHotspots) {
+    lines.push(...formatSonarHotspot(hotspot));
+  }
+}
+
+function hasSonarFailureDetails(sonarFailures: SonarFailureSummary): boolean {
+  return (
+    Boolean(sonarFailures.qualityGateStatus) ||
+    sonarFailures.gateViolations.length > 0 ||
+    sonarFailures.issues.length > 0 ||
+    sonarFailures.securityHotspots.length > 0
+  );
+}
+
+function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: string | undefined): string {
+  const lines: string[] = ["Sonar Failures:"];
+
+  if (sonarFailures.status === "private") {
+    lines.push(`  Note: ${sanitizeText(sonarFailures.privateMessage ?? "SonarCloud project is private.")}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.status === "unavailable") {
+    lines.push(`  Note: ${sanitizeText(sonarFailures.unavailableMessage ?? "SonarCloud failure details are unavailable.")}`);
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+    return lines.join("\n") + "\n";
+  }
+
+  if (sonarFailures.qualityGateStatus) {
+    lines.push(`  Quality Gate: ${sanitizeText(sonarFailures.qualityGateStatus)}`);
+  }
+
+  appendGateViolations(lines, sonarFailures.gateViolations);
+  appendSonarIssues(lines, sonarFailures.issues);
+  appendSecurityHotspots(lines, sonarFailures.securityHotspots);
+
+  if (!hasSonarFailureDetails(sonarFailures)) {
+    lines.push("  Note: SonarCloud reported a failure but returned no violation, issue, or hotspot details.");
+    if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -76,7 +204,7 @@ const POLL_INTERVAL_MS = 10_000;
 const getPrInfoCmd = new Command("get-pr-info")
   .description("Show pull request info for the current branch")
   .option("--json", "Output as JSON")
-  .option("--wait-finish-checks", "Poll until all checks complete, then report pass/fail (exit 1 on failure)")
+  .option("--wait-finish-checks", "Poll until all checks complete, then print the normal get-pr-info output")
   .addHelpText(
     "after",
     `
@@ -86,11 +214,12 @@ Check status symbols:
   ●  Pending       (status: QUEUED or IN_PROGRESS)
   ○  Skipped       (conclusion: SKIPPED or NEUTRAL)
 
-Failure details are printed beneath each ✗ check.
+When checks fail, details are printed in a trailing FailedChecks section.
 See docs/git.md for full output reference.`,
   )
   .action(async (options: { json?: boolean; waitFinishChecks?: boolean }) => {
     let branch: string;
+    let pr: PrInfo | null = null;
     try {
       branch = getCurrentBranch();
     } catch (err) {
@@ -99,50 +228,28 @@ See docs/git.md for full output reference.`,
     }
 
     if (options.waitFinishChecks) {
-      let pr;
       while (true) {
         try {
-          pr = getPrInfo(branch);
+          pr = await getPrInfo(branch);
         } catch (err) {
           process.stderr.write(`Error: ${(err as Error).message}\n`);
           process.exit(1);
         }
         if (pr === null) {
-          process.stderr.write(`Error: No pull request found for branch: ${branch}\n`);
-          process.exit(1);
+          break;
         }
         const running = pr.checks.filter((c) => c.status !== "COMPLETED");
         if (running.length === 0) break;
         process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
         await sleep(POLL_INTERVAL_MS);
       }
-
-      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
-      if (failed.length === 0) {
-        if (options.json) {
-          process.stdout.write(JSON.stringify({ result: "passed" }, null, 2) + "\n");
-        } else {
-          process.stdout.write(`All checks passed. ✓\n`);
-        }
-        process.exit(0);
-      } else {
-        if (options.json) {
-          process.stdout.write(JSON.stringify({ result: "failed", failed }, null, 2) + "\n");
-        } else {
-          process.stdout.write(`${failed.length} check(s) failed:\n`);
-          process.stdout.write(formatFailedChecks(failed));
-        }
+    } else {
+      try {
+        pr = await getPrInfo(branch);
+      } catch (err) {
+        process.stderr.write(`Error: ${(err as Error).message}\n`);
         process.exit(1);
       }
-      return;
-    }
-
-    let pr;
-    try {
-      pr = getPrInfo(branch);
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
     }
 
     if (pr === null) {
@@ -153,9 +260,23 @@ See docs/git.md for full output reference.`,
     if (options.json) {
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
+      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
       process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
+      if (pr.sonarcloudUrl !== undefined) {
+        process.stdout.write(`Sonar: ${pr.sonarcloudUrl}\n`);
+        const issueStr = pr.sonarNewIssues === null || pr.sonarNewIssues === undefined
+          ? "unavailable"
+          : String(pr.sonarNewIssues);
+        process.stdout.write(`Sonar New Issues: ${issueStr}\n`);
+      }
       process.stdout.write(formatCheckSummary(pr.checks));
       process.stdout.write(formatChecks(pr.checks));
+      if (failed.length > 0) {
+        process.stdout.write(formatFailedChecks(failed));
+      }
+      if (pr.sonarFailures !== undefined) {
+        process.stdout.write(formatSonarFailures(pr.sonarFailures, pr.sonarcloudUrl));
+      }
     }
   });
 
@@ -230,7 +351,7 @@ See docs/azdo-gap.md for details.`,
 
 const finishFeatureCmd = new Command("finish-feature")
   .description("Clean up a merged feature branch: checkout develop, pull, and delete local branch")
-  .action(() => {
+  .action(async () => {
     let branch: string;
     try {
       branch = getCurrentBranch();
@@ -253,7 +374,7 @@ const finishFeatureCmd = new Command("finish-feature")
 
     let pr;
     try {
-      pr = getPrInfo(branch);
+      pr = await getPrInfo(branch);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);

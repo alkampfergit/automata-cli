@@ -70,7 +70,7 @@ describe("gitService.getPrInfo", () => {
     const raw = { number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42", statusCheckRollup: null };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
     const { getPrInfo } = await import("../../src/git/gitService.js");
-    expect(getPrInfo("my-branch")).toEqual({ number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42", checks: [] });
+    expect(await getPrInfo("my-branch")).toEqual({ number: 42, title: "Fix bug", state: "MERGED", url: "https://github.com/org/repo/pull/42", checks: [] });
   });
 
   it("returns PrInfo with mapped checks when gh returns statusCheckRollup", async () => {
@@ -83,7 +83,7 @@ describe("gitService.getPrInfo", () => {
     };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(raw), stderr: "", status: 0 });
     const { getPrInfo } = await import("../../src/git/gitService.js");
-    const result = getPrInfo("my-branch");
+    const result = await getPrInfo("my-branch");
     expect(result?.checks).toHaveLength(2);
     expect(result?.checks[0]).toEqual({ name: "build", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://example.com" });
     expect(result?.checks[1]).toEqual({ name: "test", status: "COMPLETED", conclusion: "FAILURE", description: "3 tests failed", detailsUrl: "https://example.com/2" });
@@ -92,13 +92,13 @@ describe("gitService.getPrInfo", () => {
   it("returns null when no PR is found", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "no pull requests found", status: 1 });
     const { getPrInfo } = await import("../../src/git/gitService.js");
-    expect(getPrInfo("my-branch")).toBeNull();
+    expect(await getPrInfo("my-branch")).toBeNull();
   });
 
-  it("throws when gh is not authenticated", async () => {
+  it("rejects when gh is not authenticated", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "To authenticate, please run: gh auth login", status: 1 });
     const { getPrInfo } = await import("../../src/git/gitService.js");
-    expect(() => getPrInfo("my-branch")).toThrow("gh auth login");
+    await expect(getPrInfo("my-branch")).rejects.toThrow("gh auth login");
   });
 });
 
