@@ -115,7 +115,7 @@ A developer runs `automata execute-prompt sonar` on a feature branch. The tool l
 
 - [AUTO] SonarCloud detection method: URL pattern match on `sonarcloud.io` in the check's `detailsUrl` field — because checks already carry `detailsUrl` and this avoids a name-based heuristic that may break across localizations.
 - [AUTO] SonarCloud API endpoint: uses `/api/issues/search?componentKeys=<project>&pullRequest=<number>&resolved=false` (public API, no auth needed for public projects) — industry standard for SonarCloud public project access.
-- [AUTO] Sonar project key extraction: extracted from the SonarCloud check URL path segment before `/dashboard` — consistent with how SonarCloud structures its URLs.
+- [AUTO] Sonar project key extraction: extracted from the SonarCloud check URL `id` query parameter — aligned with the current implementation of the SonarCloud integration.
 - [AUTO] Default Sonar prompt: instructs the AI to read the SonarCloud analysis at the given URL and fix the reported new issues — minimal viable default.
 - [AUTO] Implement-Next settings in config wizard: exposes the existing `issueDiscoveryTechnique` and `issueDiscoveryValue` fields — avoids scope creep.
 - [AUTO] execute-prompt is a new top-level command group (not under `git`) — consistent with it being an AI-invocation workflow, not a git workflow.

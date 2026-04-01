@@ -129,13 +129,17 @@ async function fetchSonarNewIssues(projectKey: string, prNumber: number): Promis
   const apiUrl =
     `https://sonarcloud.io/api/issues/search` +
     `?componentKeys=${encodeURIComponent(projectKey)}&pullRequest=${String(prNumber)}&resolved=false&ps=1`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(apiUrl);
+    const response = await fetch(apiUrl, { signal: controller.signal });
     if (!response.ok) return null;
     const data = (await response.json()) as { paging?: { total?: number } };
     return data.paging?.total ?? null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

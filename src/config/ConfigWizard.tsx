@@ -157,9 +157,10 @@ export function ConfigWizard() {
       }
     } else if (screen === "sonar-prompt") {
       if (key.return) {
+        const current = readConfig();
         writeConfig({
-          ...existing,
-          prompts: { ...existing.prompts, sonar: sonarPrompt || undefined },
+          ...current,
+          prompts: { ...current.prompts, sonar: sonarPrompt || undefined },
         });
         setScreen("prompts-menu");
       } else if (key.backspace || key.delete) {
@@ -173,9 +174,10 @@ export function ConfigWizard() {
       }
     } else if (screen === "fix-comments-prompt") {
       if (key.return) {
+        const current = readConfig();
         writeConfig({
-          ...existing,
-          prompts: { ...existing.prompts, fixComments: fixCommentsPrompt || undefined },
+          ...current,
+          prompts: { ...current.prompts, fixComments: fixCommentsPrompt || undefined },
         });
         setScreen("prompts-menu");
       } else if (key.backspace || key.delete) {

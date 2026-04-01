@@ -67,7 +67,7 @@ const executeSonarCmd = new Command("sonar")
       );
 
       if (options.codex) {
-        invokeCodexCode(fullPrompt, { yolo: true, verbose: options.verbose });
+        invokeCodexCode(fullPrompt, { yolo: true });
       } else {
         const model = resolveModelOption(options);
         await invokeClaudeCode(fullPrompt, { yolo: true, verbose: options.verbose, model });
@@ -111,7 +111,13 @@ const executeFixCommentsCmd = new Command("fix-comments")
         process.exit(1);
       }
 
-      const comments = getPrComments(branch);
+      let comments;
+      try {
+        comments = getPrComments(branch);
+      } catch (err) {
+        process.stderr.write(`Error: ${(err as Error).message}\n`);
+        process.exit(1);
+      }
 
       if (comments === "unsupported") {
         process.stderr.write(
@@ -138,7 +144,7 @@ const executeFixCommentsCmd = new Command("fix-comments")
       );
 
       if (options.codex) {
-        invokeCodexCode(fullPrompt, { yolo: true, verbose: options.verbose });
+        invokeCodexCode(fullPrompt, { yolo: true });
       } else {
         const model = resolveModelOption(options);
         await invokeClaudeCode(fullPrompt, { yolo: true, verbose: options.verbose, model });
