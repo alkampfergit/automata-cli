@@ -89,9 +89,20 @@ function formatGateViolation(violation: SonarGateViolation): string {
   return parts.join(" | ");
 }
 
+function formatLocation(path: string | undefined, line: number | null | undefined): string | undefined {
+  if (!path) return undefined;
+  if (!line) return path;
+  return `${path}:${String(line)}`;
+}
+
+function formatRuleWithName(rule: string, ruleName: string | undefined): string {
+  if (!ruleName) return rule;
+  return `${rule} (${ruleName})`;
+}
+
 function formatSonarIssue(issue: SonarIssue): string[] {
   const lines = [`    - ${issue.message}`];
-  const location = issue.path ? `${issue.path}${issue.line ? `:${String(issue.line)}` : ""}` : undefined;
+  const location = formatLocation(issue.path, issue.line);
   if (location) lines.push(`      Location: ${location}`);
   if (issue.severity || issue.type) {
     const labels = [issue.severity, issue.type].filter(Boolean).join(" / ");
@@ -104,7 +115,7 @@ function formatSonarIssue(issue: SonarIssue): string[] {
 
 function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
   const lines = [`    - ${hotspot.message}`];
-  const location = hotspot.path ? `${hotspot.path}${hotspot.line ? `:${String(hotspot.line)}` : ""}` : undefined;
+  const location = formatLocation(hotspot.path, hotspot.line);
   if (location) lines.push(`      Location: ${location}`);
   if (hotspot.status) lines.push(`      Status: ${hotspot.status}`);
   if (hotspot.vulnerabilityProbability || hotspot.securityCategory) {
@@ -112,12 +123,44 @@ function formatSonarHotspot(hotspot: SonarSecurityHotspot): string[] {
     lines.push(`      Classification: ${labels}`);
   }
   if (hotspot.rule) {
-    lines.push(`      Rule: ${hotspot.rule}${hotspot.ruleName ? ` (${hotspot.ruleName})` : ""}`);
+    lines.push(`      Rule: ${formatRuleWithName(hotspot.rule, hotspot.ruleName)}`);
   }
   if (hotspot.riskDescription) lines.push(`      Risk: ${hotspot.riskDescription}`);
   if (hotspot.vulnerabilityDescription) lines.push(`      Review: ${hotspot.vulnerabilityDescription}`);
   if (hotspot.fixRecommendations) lines.push(`      Fix: ${hotspot.fixRecommendations}`);
   return lines;
+}
+
+function appendGateViolations(lines: string[], gateViolations: SonarGateViolation[]): void {
+  if (gateViolations.length === 0) return;
+  lines.push("  Gate Violations:");
+  for (const violation of gateViolations) {
+    lines.push(`    - ${formatGateViolation(violation)}`);
+  }
+}
+
+function appendSonarIssues(lines: string[], issues: SonarIssue[]): void {
+  if (issues.length === 0) return;
+  lines.push("  Issues:");
+  for (const issue of issues) {
+    lines.push(...formatSonarIssue(issue));
+  }
+}
+
+function appendSecurityHotspots(lines: string[], securityHotspots: SonarSecurityHotspot[]): void {
+  if (securityHotspots.length === 0) return;
+  lines.push("  Security Hotspots:");
+  for (const hotspot of securityHotspots) {
+    lines.push(...formatSonarHotspot(hotspot));
+  }
+}
+
+function hasSonarFailureDetails(sonarFailures: SonarFailureSummary): boolean {
+  return (
+    sonarFailures.gateViolations.length > 0 ||
+    sonarFailures.issues.length > 0 ||
+    sonarFailures.securityHotspots.length > 0
+  );
 }
 
 function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: string | undefined): string {
@@ -138,32 +181,11 @@ function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: 
     lines.push(`  Quality Gate: ${sonarFailures.qualityGateStatus}`);
   }
 
-  if (sonarFailures.gateViolations.length > 0) {
-    lines.push("  Gate Violations:");
-    for (const violation of sonarFailures.gateViolations) {
-      lines.push(`    - ${formatGateViolation(violation)}`);
-    }
-  }
+  appendGateViolations(lines, sonarFailures.gateViolations);
+  appendSonarIssues(lines, sonarFailures.issues);
+  appendSecurityHotspots(lines, sonarFailures.securityHotspots);
 
-  if (sonarFailures.issues.length > 0) {
-    lines.push("  Issues:");
-    for (const issue of sonarFailures.issues) {
-      lines.push(...formatSonarIssue(issue));
-    }
-  }
-
-  if (sonarFailures.securityHotspots.length > 0) {
-    lines.push("  Security Hotspots:");
-    for (const hotspot of sonarFailures.securityHotspots) {
-      lines.push(...formatSonarHotspot(hotspot));
-    }
-  }
-
-  if (
-    sonarFailures.gateViolations.length === 0 &&
-    sonarFailures.issues.length === 0 &&
-    sonarFailures.securityHotspots.length === 0
-  ) {
+  if (!hasSonarFailureDetails(sonarFailures)) {
     lines.push("  Note: SonarCloud reported a failure but returned no gate, issue, or hotspot details.");
     if (sonarcloudUrl) lines.push(`  URL:  ${sonarcloudUrl}`);
   }

@@ -318,7 +318,7 @@ function stripHtml(text: string): string {
 
 function normalizeText(text: string | null | undefined): string | undefined {
   if (!text) return undefined;
-  const normalized = stripHtml(text).replace(/\s+/g, " ").trim();
+  const normalized = stripHtml(text).replaceAll(/\s+/g, " ").trim();
   return normalized || undefined;
 }
 
@@ -492,9 +492,7 @@ async function fetchSonarIssues(projectKey: string, prNumber: number): Promise<S
     }
 
     const paging = response.data.paging;
-    if (total === null) {
-      total = paging?.total ?? null;
-    }
+    total ??= paging?.total ?? null;
 
     mapSonarIssuesPage(response.data, issues, components, rules);
 
@@ -560,7 +558,7 @@ async function fetchSonarHotspots(projectKey: string, prNumber: number): Promise
     if (detailResult && !detailResult.ok && detailResult.status === 401) {
       return detailResult;
     }
-    securityHotspots.push(mapSonarHotspot(hotspot, components, detailResult && detailResult.ok ? detailResult.data : undefined));
+    securityHotspots.push(mapSonarHotspot(hotspot, components, detailResult?.ok ? detailResult.data : undefined));
   }
 
   return {
