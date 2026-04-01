@@ -1,0 +1,6 @@
+{
+  "remoteType": "gh",
+  "issueDiscoveryTechnique": "label",
+  "issueDiscoveryValue": "automated",
+  "claudeSystemPrompt": "Use speckit-full skill in the .agents/skills directory to implement the following feature. Do not forget to put #id of the original github task in the final pull request."
+}
