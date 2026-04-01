@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolveCommand } from "../claude/claudeService.js";
+import { truncate, handleSpawnError, handleExitCode } from "../cli/spawnUtils.js";
 
 export interface InvokeCodexOptions {
   yolo?: boolean;
@@ -20,8 +21,8 @@ function invokeCodexCodeSync(prompt: string, yolo: boolean): void {
   if (yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
   args.push(prompt);
   const result = spawnSync(codexBin, args, { encoding: "utf8", stdio: "inherit" });
-  handleSpawnError(result.error);
-  handleExitCode(result.status);
+  handleSpawnError(result.error, "codex");
+  handleExitCode(result.status, "Codex");
 }
 
 function invokeCodexCodeVerbose(prompt: string, yolo: boolean): Promise<void> {
@@ -36,7 +37,7 @@ function invokeCodexCodeVerbose(prompt: string, yolo: boolean): Promise<void> {
     let stepCount = 0;
 
     child.on("error", (err) => {
-      handleSpawnError(err);
+      handleSpawnError(err, "codex");
     });
 
     rl.on("line", (line) => {
@@ -50,7 +51,7 @@ function invokeCodexCodeVerbose(prompt: string, yolo: boolean): Promise<void> {
     });
 
     child.on("close", (code) => {
-      handleExitCode(code);
+      handleExitCode(code, "Codex");
       resolve();
     });
   });
@@ -94,27 +95,5 @@ function summarizeCodexTool(name: string, input: Record<string, unknown> | undef
       return `listing files: ${input["path"] ?? "."}`;
     default:
       return `tool: ${name}`;
-  }
-}
-
-function truncate(str: string, max: number): string {
-  return str.length > max ? str.slice(0, max) + "..." : str;
-}
-
-function handleSpawnError(error: Error | undefined): void {
-  if (!error) return;
-  const err = error as NodeJS.ErrnoException;
-  if (err.code === "ENOENT") {
-    process.stderr.write("Error: `codex` CLI is not installed or not on PATH.\n");
-    process.exit(1);
-  }
-  process.stderr.write(`Error: ${err.message}\n`);
-  process.exit(1);
-}
-
-function handleExitCode(status: number | null): void {
-  if (status !== null && status !== 0) {
-    process.stderr.write(`Error: Codex exited with code ${status}.\n`);
-    process.exit(status);
   }
 }
