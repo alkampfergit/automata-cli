@@ -59,12 +59,25 @@ function automataDir(): string {
  */
 export function resolvePromptRef(value: string, dir: string): string {
   if (!value.endsWith(".md")) return value;
+  if (value.includes("/") || value.includes("\\")) {
+    throw new Error(`Prompt file "${value}" must be a plain filename with no subdirectories`);
+  }
   const fullPath = resolve(dir, value);
   const safeBase = resolve(dir) + sep;
   if (!fullPath.startsWith(safeBase)) {
     throw new Error(`Prompt file "${value}" resolves outside .automata/`);
   }
-  return readFileSync(fullPath, "utf8");
+  try {
+    return readFileSync(fullPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      throw new Error(
+        `Prompt file "${value}" not found in "${dir}". Expected path: ${fullPath}`,
+        { cause: err }
+      );
+    }
+    throw err;
+  }
 }
 
 /** Read config.json as-is without resolving .md file references. */

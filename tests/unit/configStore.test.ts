@@ -149,11 +149,15 @@ describe("resolvePromptRef", () => {
   });
 
   it("throws when referenced .md file does not exist", () => {
-    expect(() => resolvePromptRef("missing.md", dir)).toThrow();
+    expect(() => resolvePromptRef("missing.md", dir)).toThrow(/missing\.md/);
   });
 
   it("throws on path traversal attempt", () => {
-    expect(() => resolvePromptRef("../secret.md", dir)).toThrow(/outside .automata/);
+    expect(() => resolvePromptRef("../secret.md", dir)).toThrow(/no subdirectories|outside .automata/);
+  });
+
+  it("throws on subdirectory reference", () => {
+    expect(() => resolvePromptRef("sub/prompt.md", dir)).toThrow(/no subdirectories/);
   });
 });
 

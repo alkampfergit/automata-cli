@@ -84,7 +84,7 @@ When using the interactive config wizard to set a prompt field, the wizard saves
 
 ## Assumptions
 
-- [AUTO] Prompt fields: `claudeSystemPrompt` is the primary prompt-type field; the resolution logic applies to any config field whose value ends with `.md`. Chose this broad rule because future prompt fields should not require code changes.
+- [AUTO] Prompt fields: Resolution applies to the specific prompt-type fields: `claudeSystemPrompt`, `prompts.sonar`, and `prompts.fixComments`. Only these three fields are resolved at read time; adding new prompt fields requires a corresponding code change in `readConfig()`.
 - [AUTO] File location: All prompt markdown files must reside directly in `.automata/` (no subdirectories). Chose flat layout for simplicity and to make path traversal prevention straightforward.
 - [AUTO] Backwards compatibility: Non-`.md` string values pass through unchanged. Chosen to avoid a breaking migration requirement.
 - [AUTO] Config wizard scope: Only prompt-type fields (long text) trigger the file-save behaviour in the wizard; short enumerated values (e.g., `remoteType`) remain inline. Consistent with user intent of "prompt configurations or long strings".

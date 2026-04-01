@@ -95,7 +95,7 @@ export function ConfigWizard() {
         if (chosen.value === "gh") {
           setScreen("technique");
         } else {
-          writeConfig({ ...existing, remoteType: chosen.value });
+          writeConfig({ ...rawExisting, remoteType: chosen.value });
           exit();
         }
       } else if (key.escape) {
