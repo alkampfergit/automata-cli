@@ -17,6 +17,7 @@ describe("automata implement-next (CLI smoke)", () => {
     expect(output).toContain("implement-next");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
+    expect(output).toContain("--codex");
     expect(output).toContain("--query-only");
     expect(output).toContain("--yolo");
   });
@@ -192,6 +193,38 @@ describe("getReady command: Claude Code invocation", () => {
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
     await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("invokes codex instead of claude when --codex flag is passed", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 2, title: "Codex issue", body: "Do with codex.", url: "https://github.com/o/r/issues/2" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--codex"], { from: "user" });
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+    const codexArgs = codexCall![1] as string[];
+    expect(codexArgs).toContain("exec");
+    expect(codexArgs[codexArgs.length - 1]).toBe("Do with codex.");
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();

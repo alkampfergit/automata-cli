@@ -53,8 +53,9 @@ src/
     ├── getReady.ts               # MODIFIED — add --codex flag
     └── test.ts                   # MODIFIED — add test codex subcommand
 
-src/__tests__/
-└── codexService.test.ts          # NEW — unit tests for codexService
+tests/
+└── unit/
+    └── codexService.test.ts      # NEW — unit tests for codexService
 ```
 
 **Structure Decision**: Single project, flat service module under `src/codex/` to mirror the existing `src/claude/` pattern. No deeply nested directories.

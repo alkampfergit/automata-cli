@@ -39,7 +39,7 @@
 
 - [ ] T003 [US1] Add `--codex` flag option to `implementNextCommand` in `src/commands/getReady.ts`, update the options type to include `codex?: boolean`
 - [ ] T004 [US1] In `src/commands/getReady.ts`, import `invokeCodexCode` from `../codex/codexService.js` and add conditional branch: if `options.codex` is true, invoke Codex; else fall through to existing Claude invocation
-- [ ] T005 [US1] Write unit tests in `src/__tests__/codexService.test.ts` covering: sync invocation builds correct args, yolo flag appends `--dangerously-bypass-approvals-and-sandbox`, ENOENT produces correct error message
+- [ ] T005 [US1] Write unit tests in `tests/unit/codexService.test.ts` covering: sync invocation builds correct args, yolo flag appends `--dangerously-bypass-approvals-and-sandbox`, ENOENT produces correct error message
 
 **Checkpoint**: `automata implement-next --codex` correctly invokes the Codex CLI.
 

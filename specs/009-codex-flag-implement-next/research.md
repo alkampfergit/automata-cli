@@ -42,7 +42,7 @@
 
 ## Autonomous Decisions
 
-- [AUTO] Codex binary name: `codex` — confirmed on PATH at `/usr/local/share/nvm/versions/node/v24.14.1/bin/codex`.
+- [AUTO] Codex binary name: `codex` — confirmed available on `PATH` (via `which codex` / `codex exec --help`).
 - [AUTO] Non-interactive invocation: `codex exec <prompt>` — confirmed from `codex exec --help`.
 - [AUTO] Verbose JSONL flag: `--json` on `codex exec` — confirmed from `codex exec --help`.
 - [AUTO] Model flags omitted: Codex model selection uses `-c model="..."` config syntax which differs from Claude's `--model` flag; excluded from this feature per minimal scope requirement.

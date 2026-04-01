@@ -14,7 +14,11 @@ export function handleSpawnError(error: Error | undefined, toolName: string): vo
 }
 
 export function handleExitCode(status: number | null, toolName: string): void {
-  if (status !== null && status !== 0) {
+  if (status === null) {
+    process.stderr.write(`Error: ${toolName} terminated abnormally (exit code is null, likely due to a signal).\n`);
+    process.exit(1);
+  }
+  if (status !== 0) {
     process.stderr.write(`Error: ${toolName} exited with code ${status}.\n`);
     process.exit(status);
   }

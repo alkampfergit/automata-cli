@@ -5,11 +5,11 @@ import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js
 import { invokeCodexCode } from "../codex/codexService.js";
 
 export const implementNextCommand = new Command("implement-next")
-  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke Claude Code")
+  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
   .option("--json", "Output issue details as JSON")
-  .option("--no-claude", "Skip Claude Code invocation after claiming the issue")
+  .option("--no-claude", "Skip all AI invocation (Claude or Codex) after claiming the issue")
   .option("--codex",   "Use Codex CLI instead of Claude Code")
-  .option("--query-only", "Print issue content and exit without claiming or invoking Claude")
+  .option("--query-only", "Print issue content and exit without claiming or invoking any AI tools")
   .option("--yolo",    "Launch with --dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)")
   .option("--verbose", "Show step-by-step progress summary and final result")
   .option("--opus",    "Use claude-opus-4-6")
