@@ -6,6 +6,15 @@ import { join } from "node:path";
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(ORIG_CWD(), "tmp-test-getready");
 
+function makeIssues(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    number: i + 10,
+    title: `Issue ${i + 1}`,
+    body: `Body ${i + 1}.`,
+    url: `https://github.com/o/r/issues/${i + 10}`,
+  }));
+}
+
 // ── CLI smoke tests ───────────────────────────────────────────────────────────
 
 describe("automata implement-next (CLI smoke)", () => {
@@ -387,15 +396,6 @@ describe("getReady command: multi-issue selection", () => {
     process.cwd = ORIG_CWD;
     rmSync(TEST_CWD, { recursive: true, force: true });
   });
-
-  function makeIssues(count: number) {
-    return Array.from({ length: count }, (_, i) => ({
-      number: i + 10,
-      title: `Issue ${i + 1}`,
-      body: `Body ${i + 1}.`,
-      url: `https://github.com/o/r/issues/${i + 10}`,
-    }));
-  }
 
   it("--take-first: selects first issue without prompting when multiple match", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");

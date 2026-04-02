@@ -20,12 +20,70 @@ async function promptSelection(issues: GitHubIssue[], limit: number): Promise<Gi
   );
   rl.close();
 
-  const n = parseInt(answer.trim(), 10);
-  if (isNaN(n) || n < 1 || n > issues.length) {
+  const n = Number.parseInt(answer.trim(), 10);
+  if (Number.isNaN(n) || n < 1 || n > issues.length) {
     process.stderr.write(`Error: Invalid selection "${answer.trim()}". Enter a number between 1 and ${issues.length}.\n`);
     process.exit(1);
   }
   return issues[n - 1];
+}
+
+function validateConfig(config: ReturnType<typeof readConfig>): void {
+  if (config.remoteType !== "gh") {
+    process.stderr.write(
+      "Error: implement-next is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
+    );
+    process.exit(1);
+  }
+
+  if (!config.issueDiscoveryTechnique) {
+    process.stderr.write(
+      "Error: No issue discovery technique configured. Run `automata config` to set one.\n",
+    );
+    process.exit(1);
+  }
+
+  if (!config.issueDiscoveryValue) {
+    process.stderr.write(
+      "Error: No issue discovery value configured. Run `automata config` to set one.\n",
+    );
+    process.exit(1);
+  }
+}
+
+async function resolveIssue(
+  issues: GitHubIssue[],
+  options: { queryOnly?: boolean; takeFirst?: boolean },
+  limit: number,
+): Promise<GitHubIssue> {
+  if (issues.length === 0) {
+    process.stdout.write("No issues found matching the configured filter.\n");
+    process.exit(0);
+  }
+
+  if (issues.length > 1 && options.queryOnly) {
+    process.stdout.write("\nAvailable issues:\n");
+    for (let i = 0; i < issues.length; i++) {
+      process.stdout.write(`  [${i + 1}] #${issues[i].number} - ${issues[i].title}\n`);
+    }
+    if (issues.length === limit) {
+      process.stdout.write(`(Showing first ${limit} ready issues — there may be more. Use --limit to fetch more.)\n`);
+    }
+    process.exit(0);
+  }
+
+  let issue: GitHubIssue;
+  if (issues.length === 1) {
+    issue = issues[0];
+    process.stdout.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\n`);
+  } else if (options.takeFirst) {
+    issue = issues[0];
+    process.stdout.write(`Selecting issue #${issue.number}: ${issue.title}\n`);
+  } else {
+    issue = await promptSelection(issues, limit);
+    process.stdout.write(`\nIssue:  #${issue.number}\nTitle:  ${issue.title}\n`);
+  }
+  return issue;
 }
 
 export const implementNextCommand = new Command("implement-next")
@@ -55,72 +113,23 @@ export const implementNextCommand = new Command("implement-next")
     limit: string;
   }) => {
     const config = readConfig();
+    validateConfig(config);
 
-    if (config.remoteType !== "gh") {
-      process.stderr.write(
-        "Error: implement-next is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
-      );
-      process.exit(1);
-    }
-
-    if (!config.issueDiscoveryTechnique) {
-      process.stderr.write(
-        "Error: No issue discovery technique configured. Run `automata config` to set one.\n",
-      );
-      process.exit(1);
-    }
-
-    if (!config.issueDiscoveryValue) {
-      process.stderr.write(
-        "Error: No issue discovery value configured. Run `automata config` to set one.\n",
-      );
-      process.exit(1);
-    }
-
-    const limit = parseInt(options.limit, 10);
-    if (isNaN(limit) || limit <= 0) {
+    const limit = Number.parseInt(options.limit, 10);
+    if (Number.isNaN(limit) || limit <= 0) {
       process.stderr.write(`Error: --limit must be a positive integer (got "${options.limit}").\n`);
       process.exit(1);
     }
 
     let issues: GitHubIssue[];
     try {
-      issues = listIssues(config.issueDiscoveryTechnique, config.issueDiscoveryValue, limit);
+      issues = listIssues(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);
     }
 
-    if (issues.length === 0) {
-      process.stdout.write("No issues found matching the configured filter.\n");
-      process.exit(0);
-    }
-
-    let issue: GitHubIssue;
-
-    if (issues.length > 1 && options.queryOnly) {
-      // --query-only with multiple issues: show list and exit
-      process.stdout.write("\nAvailable issues:\n");
-      for (let i = 0; i < issues.length; i++) {
-        process.stdout.write(`  [${i + 1}] #${issues[i].number} - ${issues[i].title}\n`);
-      }
-      if (issues.length === limit) {
-        process.stdout.write(`(Showing first ${limit} ready issues — there may be more. Use --limit to fetch more.)\n`);
-      }
-      process.exit(0);
-    }
-
-    if (issues.length === 1) {
-      issue = issues[0];
-      // Always print ID + title for single issue
-      process.stdout.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\n`);
-    } else if (options.takeFirst) {
-      issue = issues[0];
-      process.stdout.write(`Selecting issue #${issue.number}: ${issue.title}\n`);
-    } else {
-      issue = await promptSelection(issues, limit);
-      process.stdout.write(`\nIssue:  #${issue.number}\nTitle:  ${issue.title}\n`);
-    }
+    const issue = await resolveIssue(issues, options, limit);
 
     if (options.json) {
       process.stdout.write(JSON.stringify({ number: issue.number, title: issue.title, body: issue.body, url: issue.url }, null, 2) + "\n");
