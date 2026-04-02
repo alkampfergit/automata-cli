@@ -29,16 +29,21 @@ automata implement-next [options]
 | `--opus` | Use `claude-opus-4-6` (Claude only) |
 | `--sonnet` | Use `claude-sonnet-4-6` (Claude only) |
 | `--haiku` | Use `claude-haiku-4-5-20251001` (Claude only) |
+| `--take-first` | When multiple issues match, pick the first without prompting |
+| `--limit <n>` | Max issues to fetch and display (default: `10`) |
 
 ## Behaviour
 
 1. Reads `.automata/config.json` for discovery technique and value.
-2. Runs `gh issue list` with the appropriate filter (`--label`, `--assignee`, or `--search`).
-3. Picks the first (oldest) open issue returned.
-4. Prints issue details to stdout.
-5. If `--query-only` is set, exits here.
-6. Posts a `working` comment on the issue.
-7. Unless `--no-claude`, launches the AI tool with the issue body (prepended by the configured system prompt, if any).
+2. Runs `gh issue list` with the appropriate filter (`--label`, `--assignee`, or `--search`), fetching up to `--limit` issues (default 10).
+3. **If no issues found**: prints "No issues found" and exits.
+4. **If one issue found**: prints its ID and title, then proceeds.
+5. **If multiple issues found**:
+   - Without `--take-first`: displays a numbered list and prompts you to choose. If the number of issues equals the limit, a note is shown that there may be more (use `--limit` to fetch more).
+   - With `--take-first`: prints which issue was selected (ID + title) and proceeds immediately without prompting.
+6. If `--query-only` is set, prints the issue(s) and exits (no claim, no AI). With multiple issues, the numbered list is printed and no selection prompt appears.
+7. Posts a `working` comment on the selected issue.
+8. Unless `--no-claude`, launches the AI tool with a prompt that includes the issue number, the configured system prompt, and the issue body.
    - Default: invokes `claude -p` (Claude Code).
    - With `--codex`: invokes `codex exec` (Codex CLI) using the same prompt.
    - With `--yolo`: Claude uses `--dangerously-skip-permissions`; Codex uses `--dangerously-bypass-approvals-and-sandbox`.
@@ -49,12 +54,12 @@ automata implement-next [options]
 | Code | Meaning |
 |---|---|
 | `0` | Success, or no matching issues found |
-| `1` | Configuration error, `gh`/`claude` not found, or GitHub API failure |
+| `1` | Configuration error, invalid `--limit`, invalid selection input, `gh`/`claude` not found, or GitHub API failure |
 
 ## Examples
 
 ```bash
-# Just see what issue would be picked up
+# Just see what issues are available
 automata implement-next --query-only
 
 # Claim and implement with full autonomy (Claude)
@@ -68,4 +73,10 @@ automata implement-next --codex --yolo --verbose
 
 # Claim the issue but handle implementation yourself
 automata implement-next --no-claude
+
+# Skip interactive selection and pick the first matching issue
+automata implement-next --take-first --yolo
+
+# Fetch and choose from up to 20 issues instead of the default 10
+automata implement-next --limit 20
 ```

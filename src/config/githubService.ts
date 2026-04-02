@@ -24,14 +24,14 @@ function run(cmd: string, args: string[]): { stdout: string; stderr: string; sta
   };
 }
 
-export function listIssues(technique: IssueDiscoveryTechnique, value: string): GitHubIssue | null {
+export function listIssues(technique: IssueDiscoveryTechnique, value: string, limit = 10): GitHubIssue[] {
   const baseArgs = [
     "issue",
     "list",
     "--state",
     "open",
     "--limit",
-    "1",
+    String(limit),
     "--json",
     "number,title,body,url",
   ];
@@ -55,11 +55,7 @@ export function listIssues(technique: IssueDiscoveryTechnique, value: string): G
     throw new Error(stderr.trim() || "Failed to query GitHub issues. Is `gh` installed and authenticated?");
   }
 
-  const issues = JSON.parse(stdout) as GitHubIssue[];
-  if (issues.length === 0) {
-    return null;
-  }
-  return issues[0];
+  return JSON.parse(stdout) as GitHubIssue[];
 }
 
 export function postComment(issueNumber: number, body: string): void {

@@ -19,24 +19,24 @@ describe("githubService.listIssues", () => {
     vi.resetModules();
   });
 
-  it("returns null when no issues match", async () => {
+  it("returns empty array when no issues match", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "[]", stderr: "", status: 0 });
     const { listIssues } = await import("../../src/config/githubService.js");
-    expect(listIssues("label", "my-label")).toBeNull();
+    expect(listIssues("label", "my-label")).toEqual([]);
   });
 
-  it("returns first issue when label technique matches", async () => {
+  it("returns all issues when label technique matches", async () => {
     const issue = { number: 10, title: "Fix bug", body: "Some body", url: "https://github.com/o/r/issues/10" };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
     const { listIssues } = await import("../../src/config/githubService.js");
-    expect(listIssues("label", "ready")).toEqual(issue);
+    expect(listIssues("label", "ready")).toEqual([issue]);
   });
 
-  it("returns first issue when assignee technique is used", async () => {
+  it("returns all issues when assignee technique is used", async () => {
     const issue = { number: 7, title: "Implement feature", body: "Details", url: "https://github.com/o/r/issues/7" };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
     const { listIssues } = await import("../../src/config/githubService.js");
-    expect(listIssues("assignee", "octocat")).toEqual(issue);
+    expect(listIssues("assignee", "octocat")).toEqual([issue]);
   });
 
   it("uses title-contains search syntax", async () => {
