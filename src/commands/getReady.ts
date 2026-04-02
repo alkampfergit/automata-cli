@@ -5,16 +5,28 @@ import { listIssues, postComment, type GitHubIssue } from "../config/githubServi
 import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 
-async function promptSelection(issues: GitHubIssue[], limit: number): Promise<GitHubIssue> {
-  process.stdout.write("\nAvailable issues:\n");
-  for (let i = 0; i < issues.length; i++) {
-    process.stdout.write(`  [${i + 1}] #${issues[i].number} - ${issues[i].title}\n`);
-  }
+function writeOverflowHint(output: NodeJS.WriteStream, issues: GitHubIssue[], limit: number): void {
   if (issues.length === limit) {
-    process.stdout.write(`(Showing first ${limit} ready issues — there may be more. Use --limit to fetch more.)\n`);
+    output.write(`(Showing first ${limit} matching issues — there may be more. Use --limit to fetch more.)\n`);
   }
+}
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+function writeIssueList(output: NodeJS.WriteStream, issues: GitHubIssue[], limit: number): void {
+  output.write("\nAvailable issues:\n");
+  for (let i = 0; i < issues.length; i++) {
+    output.write(`  [${i + 1}] #${issues[i].number} - ${issues[i].title}\n`);
+  }
+  writeOverflowHint(output, issues, limit);
+}
+
+async function promptSelection(
+  issues: GitHubIssue[],
+  limit: number,
+  output: NodeJS.WriteStream,
+): Promise<GitHubIssue> {
+  writeIssueList(output, issues, limit);
+
+  const rl = createInterface({ input: process.stdin, output });
   const answer = await new Promise<string>(resolve =>
     rl.question(`\nSelect issue (1-${issues.length}): `, resolve)
   );
@@ -53,35 +65,31 @@ function validateConfig(config: ReturnType<typeof readConfig>): void {
 
 async function resolveIssue(
   issues: GitHubIssue[],
-  options: { queryOnly?: boolean; takeFirst?: boolean },
+  options: { json?: boolean; queryOnly?: boolean; takeFirst?: boolean },
   limit: number,
 ): Promise<GitHubIssue> {
+  const selectionOutput = options.json ? process.stderr : process.stdout;
+
   if (issues.length === 0) {
     process.stdout.write("No issues found matching the configured filter.\n");
     process.exit(0);
   }
 
   if (issues.length > 1 && options.queryOnly) {
-    process.stdout.write("\nAvailable issues:\n");
-    for (let i = 0; i < issues.length; i++) {
-      process.stdout.write(`  [${i + 1}] #${issues[i].number} - ${issues[i].title}\n`);
-    }
-    if (issues.length === limit) {
-      process.stdout.write(`(Showing first ${limit} ready issues — there may be more. Use --limit to fetch more.)\n`);
-    }
+    writeIssueList(selectionOutput, issues, limit);
     process.exit(0);
   }
 
   let issue: GitHubIssue;
   if (issues.length === 1) {
     issue = issues[0];
-    process.stdout.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\n`);
+    selectionOutput.write(`Issue:  #${issue.number}\nTitle:  ${issue.title}\n`);
   } else if (options.takeFirst) {
     issue = issues[0];
-    process.stdout.write(`Selecting issue #${issue.number}: ${issue.title}\n`);
+    selectionOutput.write(`Selecting issue #${issue.number}: ${issue.title}\n`);
   } else {
-    issue = await promptSelection(issues, limit);
-    process.stdout.write(`\nIssue:  #${issue.number}\nTitle:  ${issue.title}\n`);
+    issue = await promptSelection(issues, limit, selectionOutput);
+    selectionOutput.write(`\nIssue:  #${issue.number}\nTitle:  ${issue.title}\n`);
   }
   return issue;
 }

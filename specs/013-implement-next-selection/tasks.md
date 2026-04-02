@@ -108,15 +108,15 @@
 
 ## Phase 6: Polish — Docs, CLI Help, Final Validation
 
-- [ ] T010 [P] Update `docs/implement-next.md`:
+- [x] T010 [P] Update `docs/implement-next.md`:
   - Add `--take-first` and `--limit <n>` to the Options table
   - Update Behaviour section to describe multi-issue list, interactive selection, and `--query-only` multi-issue behaviour
   - Add examples for `--take-first` and `--limit`
 
-- [ ] T011 Update CLI smoke test in `tests/unit/getReady.cmd.test.ts`:
+- [x] T011 Update CLI smoke test in `tests/unit/getReady.cmd.test.ts`:
   - Add assertions that `--help` output contains `--take-first` and `--limit`
 
-- [ ] T012 Run `npm test && npm run lint` and fix any failures
+- [x] T012 Run `npm test && npm run lint` and fix any failures
 
 ---
 

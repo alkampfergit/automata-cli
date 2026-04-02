@@ -507,7 +507,43 @@ describe("getReady command: multi-issue selection", () => {
     await implementNextCommand.parseAsync([], { from: "user" });
 
     const combined = stdoutLines.join("");
-    expect(combined).toContain("Showing first 10 ready issues");
+    expect(combined).toContain("Showing first 10 matching issues");
+
+    vi.restoreAllMocks();
+  });
+
+  it("--json with multiple issues: keeps stdout machine-parseable", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("2");
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--json", "--no-claude"], { from: "user" });
+
+    expect(JSON.parse(stdoutLines.join(""))).toMatchObject({
+      number: 11,
+      title: "Issue 2",
+      body: "Body 2.",
+      url: "https://github.com/o/r/issues/11",
+    });
+    expect(stderrLines.join("")).toContain("[1]");
+    expect(stderrLines.join("")).toContain("Issue:  #11");
 
     vi.restoreAllMocks();
   });
