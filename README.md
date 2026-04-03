@@ -99,6 +99,20 @@ See [docs/implement-next.md](docs/implement-next.md) for full details.
 
 ---
 
+## `automata execute`
+
+Delegate work to an AI executor (Claude or Codex) by providing a prompt inline, from a file, or via stdin.
+
+```bash
+automata execute --with claude --prompt "refactor the auth module"
+automata execute --with codex  --file-prompt prompts/fix.md
+echo "fix lint errors" | automata execute --with claude
+```
+
+See [docs/execute.md](docs/execute.md) for full details.
+
+---
+
 ## Development
 
 ### Prerequisites
