@@ -63,7 +63,7 @@ Sonar Failures:
       Fix: Use a linear-time pattern or avoid regex for this parsing path.
 ```
 
-The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). `Sonar New Issues` shows `unavailable` if the SonarCloud public API cannot be reached or the project is not public.
+The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check is detected on the PR (identified by `sonarcloud.io` in the check URL). The `Sonar:` line is normalized to the current PR's SonarCloud page when automata can determine the Sonar project key, even if GitHub only exposes a generic SonarCloud URL in the check metadata. A PR with no Sonar issues prints `Sonar New Issues: 0`. `Sonar New Issues` shows `unavailable` only when automata could not determine the count; in that case a `Sonar Note:` line explains whether the project is private, the public API is unavailable, or the Sonar URL did not contain a usable project key.
 
 When the Sonar check is failing and the SonarCloud project is public, an additional `Sonar Failures:` section is printed with structured quality-gate details, issue details, and security-hotspot details when Sonar exposes them. If the SonarCloud public API returns `401`, the section explains that the project is private and advises opening the Sonar URL in an authenticated browser.
 
@@ -157,7 +157,7 @@ When one or more checks fail, a trailing `FailedChecks:` section is printed afte
 }
 ```
 
-`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl` and `sonarNewIssues` are only present when a SonarCloud check is detected. `sonarNewIssues` is `null` when the API call fails. `sonarFailures` is only present when a SonarCloud check is failing and the command was able to determine either structured failure details or a private-project note. `securityHotspots` is additive and may be empty even when other Sonar failure details are present. In the private-project case, `sonarFailures.status` is `private` and `privateMessage` explains that authenticated browser access is required.
+`checks` is always present; it is an empty array when no checks are configured on the PR. `sonarcloudUrl`, `sonarNewIssues`, and `sonarNewIssuesNote` are only present when a SonarCloud check is detected. `sonarNewIssues` is `0` when Sonar reports no new issues and `null` only when automata could not determine the count; `sonarNewIssuesNote` explains that unavailable case. `sonarFailures` is only present when a SonarCloud check is failing and the command was able to determine either structured failure details or a private-project note. `securityHotspots` is additive and may be empty even when other Sonar failure details are present. In the private-project case, `sonarFailures.status` is `private` and `privateMessage` explains that authenticated browser access is required.
 
 ### Exit codes
 
