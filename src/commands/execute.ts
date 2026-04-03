@@ -15,7 +15,7 @@ function readStdin(): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
     process.stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8").trim()));
+    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -23,10 +23,9 @@ function readStdin(): Promise<string> {
 async function resolvePrompt(options: ExecuteOptions): Promise<string> {
   const hasCli = options.prompt !== undefined;
   const hasFile = options.filePrompt !== undefined;
-  const hasStdin = !process.stdin.isTTY;
 
-  if (hasCli && (hasFile || hasStdin)) {
-    process.stderr.write("Error: --prompt is mutually exclusive with --file-prompt and stdin.\n");
+  if (hasCli && hasFile) {
+    process.stderr.write("Error: --prompt is mutually exclusive with --file-prompt.\n");
     process.exit(1);
   }
 
@@ -44,9 +43,9 @@ async function resolvePrompt(options: ExecuteOptions): Promise<string> {
     }
   }
 
-  if (hasStdin) {
+  if (!process.stdin.isTTY) {
     const content = await readStdin();
-    if (content.length === 0) {
+    if (content.trim().length === 0) {
       process.stderr.write("Error: No prompt provided. Use --prompt, --file-prompt, or pipe via stdin.\n");
       process.exit(1);
     }
@@ -62,7 +61,7 @@ export const executeCommand = new Command("execute")
   .requiredOption("--with <executor>", "Executor to use: claude or codex")
   .option("--prompt <string>", "Prompt to send to the executor")
   .option("--file-prompt <path>", "Path to a file whose content is used as the prompt")
-  .option("--silent", "Suppress step-by-step output; show only the final summary")
+  .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .option("--model <string>", "Model identifier to pass to the executor")
   .action(async (options: ExecuteOptions) => {
     const executor = options.with.toLowerCase();

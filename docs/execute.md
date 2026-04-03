@@ -15,14 +15,20 @@ automata execute --with <executor> [prompt source] [options]
 | `--with <executor>` | **Yes** | Executor to use: `claude` or `codex` |
 | `--prompt <string>` | No† | Prompt text passed directly on the command line |
 | `--file-prompt <path>` | No† | Path to a file whose content is used as the prompt |
-| `--silent` | No | Suppress step-by-step output; show only the final summary |
+| `--silent` | No | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--model <string>` | No | Model identifier forwarded to the executor CLI |
 
-† Exactly one prompt source must be provided: `--prompt`, `--file-prompt`, or piped stdin.
+† Provide either `--prompt`, `--file-prompt`, or piped stdin. `--prompt` and `--file-prompt` are mutually exclusive. Piped stdin is used only when neither explicit option is provided.
 
 ## Prompt Sources
 
-The three prompt sources are mutually exclusive. `--prompt` cannot be combined with `--file-prompt` or piped stdin.
+Prompt resolution uses this precedence:
+
+1. `--prompt`
+2. `--file-prompt`
+3. piped stdin
+
+`--prompt` and `--file-prompt` are mutually exclusive. If stdin is piped while either explicit option is present, stdin is ignored.
 
 ### Inline prompt
 
@@ -50,8 +56,8 @@ cat prompt.md | automata execute --with codex
 1. Resolves the `claude` or `codex` binary from PATH.
 2. Reads the prompt from the selected source.
 3. Invokes the executor in **unattended mode** (permissions bypass enabled automatically).
-4. By default, streams step-by-step progress to stderr and the final result to stdout.
-5. With `--silent`, step-by-step output is suppressed; only the final result is written to stdout.
+4. Claude verbose mode streams step-by-step progress to stderr and the final result to stdout.
+5. With `--silent`, Claude step-by-step output is suppressed; Codex currently ignores this flag.
 6. When `--model` is provided, the model string is forwarded to the executor CLI via its `--model` flag.
 
 ## Output (default verbose mode — Claude)
