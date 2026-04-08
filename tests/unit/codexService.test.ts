@@ -42,6 +42,28 @@ describe("codexService.invokeCodexCode (sync mode)", () => {
     expect(args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "hello world"]);
   });
 
+  it("forwards --model to codex exec when model is specified", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeCodexCode } = await import("../../src/codex/codexService.js");
+    invokeCodexCode("hello world", { model: "o3" });
+
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["exec", "--model", "o3", "hello world"]);
+  });
+
+  it("forwards --model after --dangerously flag when both yolo and model are set", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeCodexCode } = await import("../../src/codex/codexService.js");
+    invokeCodexCode("hello world", { yolo: true, model: "o3" });
+
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "o3", "hello world"]);
+  });
+
   it("exits 1 when codex binary is not found (ENOENT)", async () => {
     const enoentError = new Error("spawn codex ENOENT") as NodeJS.ErrnoException;
     enoentError.code = "ENOENT";

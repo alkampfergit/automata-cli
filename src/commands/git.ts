@@ -199,6 +199,13 @@ function formatSonarFailures(sonarFailures: SonarFailureSummary, sonarcloudUrl: 
   return lines.join("\n") + "\n";
 }
 
+function sonarFailureNote(sonarFailures: SonarFailureSummary | undefined): string | undefined {
+  if (!sonarFailures) return undefined;
+  if (sonarFailures.status === "private") return sonarFailures.privateMessage;
+  if (sonarFailures.status === "unavailable") return sonarFailures.unavailableMessage;
+  return undefined;
+}
+
 const POLL_INTERVAL_MS = 10_000;
 
 const getPrInfoCmd = new Command("get-pr-info")
@@ -268,6 +275,10 @@ See docs/git.md for full output reference.`,
           ? "unavailable"
           : String(pr.sonarNewIssues);
         process.stdout.write(`Sonar New Issues: ${issueStr}\n`);
+        const failureNote = sonarFailureNote(pr.sonarFailures);
+        if (pr.sonarNewIssuesNote && pr.sonarNewIssuesNote !== failureNote) {
+          process.stdout.write(`Sonar Note: ${sanitizeText(pr.sonarNewIssuesNote)}\n`);
+        }
       }
       process.stdout.write(formatCheckSummary(pr.checks));
       process.stdout.write(formatChecks(pr.checks));

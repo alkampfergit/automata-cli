@@ -6,7 +6,6 @@ const mockResolveCurrentBranchComments = vi.fn();
 const mockReadConfig = vi.fn(() => ({}));
 const mockInvokeClaudeCode = vi.fn();
 const mockInvokeCodexCode = vi.fn();
-const mockResolveModelOption = vi.fn(() => undefined);
 
 vi.mock("../../src/git/gitService.js", () => ({
   resolveCurrentBranchComments: () => mockResolveCurrentBranchComments(),
@@ -20,7 +19,6 @@ vi.mock("../../src/config/configStore.js", () => ({
 
 vi.mock("../../src/claude/claudeService.js", () => ({
   invokeClaudeCode: (...args: unknown[]) => mockInvokeClaudeCode(...args),
-  resolveModelOption: (opts: unknown) => mockResolveModelOption(opts),
 }));
 
 vi.mock("../../src/codex/codexService.js", () => ({
@@ -73,7 +71,6 @@ describe("execute-prompt fix-comments command", () => {
     mockReadConfig.mockReset().mockReturnValue({});
     mockInvokeClaudeCode.mockReset();
     mockInvokeCodexCode.mockReset();
-    mockResolveModelOption.mockReset().mockReturnValue(undefined);
     out = captureStreams();
   });
 
@@ -86,7 +83,7 @@ describe("execute-prompt fix-comments command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]);
 
     expect(mockInvokeClaudeCode).toHaveBeenCalledOnce();
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
@@ -100,15 +97,15 @@ describe("execute-prompt fix-comments command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("Custom: fix the comments.");
   });
 
-  it("invokes Codex instead of Claude when --codex is passed", async () => {
+  it("invokes Codex instead of Claude when --with codex is passed", async () => {
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--codex"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "codex"]);
 
     expect(mockInvokeCodexCode).toHaveBeenCalledOnce();
     expect(mockInvokeClaudeCode).not.toHaveBeenCalled();
@@ -116,21 +113,31 @@ describe("execute-prompt fix-comments command", () => {
     expect(prompt).toContain("Please rename this variable.");
   });
 
-  it("passes verbose flag to Claude invocation", async () => {
+  it("passes verbose:true to Claude by default", async () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--verbose"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]);
 
     const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { verbose?: boolean }];
     expect(options.verbose).toBe(true);
+  });
+
+  it("passes verbose:false to Claude when --silent is passed", async () => {
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude", "--silent"]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { verbose?: boolean }];
+    expect(options.verbose).toBe(false);
   });
 
   it("always passes yolo:true to Claude invocation", async () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]);
 
     const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { yolo?: boolean }];
     expect(options.yolo).toBe(true);
@@ -138,17 +145,51 @@ describe("execute-prompt fix-comments command", () => {
 
   it("always passes yolo:true to Codex invocation", async () => {
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--codex"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "codex"]);
 
     const [, options] = mockInvokeCodexCode.mock.calls[0] as [string, { yolo?: boolean }];
     expect(options.yolo).toBe(true);
+  });
+
+  it("forwards --model to Claude invocation", async () => {
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "fix-comments",
+      "--with",
+      "claude",
+      "--model",
+      "claude-sonnet-4-6",
+    ]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { model?: string }];
+    expect(options.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("forwards --model to Codex invocation", async () => {
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "fix-comments",
+      "--with",
+      "codex",
+      "--model",
+      "o3",
+    ]);
+
+    const [, options] = mockInvokeCodexCode.mock.calls[0] as [string, { model?: string }];
+    expect(options.model).toBe("o3");
   });
 
   it("appends commit-and-push instruction to prompt when --push is passed", async () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--push"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude", "--push"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("commit");
@@ -159,7 +200,7 @@ describe("execute-prompt fix-comments command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).not.toMatch(/commit.*and.*push|push.*the.*changes/i);
@@ -170,7 +211,7 @@ describe("execute-prompt fix-comments command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("No open review comments");
@@ -182,7 +223,7 @@ describe("execute-prompt fix-comments command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("not supported");
@@ -194,7 +235,7 @@ describe("execute-prompt fix-comments command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("No pull request found");
@@ -206,10 +247,30 @@ describe("execute-prompt fix-comments command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("not a git repository");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 when --with has an invalid value", async () => {
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await expect(
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "invalid"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("--with must be 'claude' or 'codex'");
+    expect(out.exitCode).toBe(1);
+    expect(mockResolveCurrentBranchComments).not.toHaveBeenCalled();
+  });
+
+  it("exits non-zero when --with is missing", async () => {
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await expect(
+      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments"]),
+    ).rejects.toThrow("process.exit(1)");
+
     expect(out.exitCode).toBe(1);
   });
 });

@@ -2,9 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(ORIG_CWD(), "tmp-test-getready");
+
+function makeIssues(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    number: i + 10,
+    title: `Issue ${i + 1}`,
+    body: `Body ${i + 1}.`,
+    url: `https://github.com/o/r/issues/${i + 10}`,
+  }));
+}
 
 // ── CLI smoke tests ───────────────────────────────────────────────────────────
 
@@ -14,9 +25,19 @@ describe("automata implement-next (CLI smoke)", () => {
     expect(output).toContain("implement-next");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
-    expect(output).toContain("--codex");
+    expect(output).toContain("--with");
+    expect(output).toContain("--model");
+    expect(output).toContain("--silent");
     expect(output).toContain("--query-only");
     expect(output).toContain("--yolo");
+    expect(output).toContain("--take-first");
+    expect(output).toContain("--limit");
+    expect(output).not.toContain("--codex");
+    expect(output).not.toContain("--opus");
+    expect(output).not.toContain("--sonnet");
+    expect(output).not.toContain("--haiku");
+    expect(output).not.toContain("--verbose");
+    expect(output).toContain("--ask-copilot-review");
   });
 
   it("is listed in the top-level help", () => {
@@ -28,20 +49,60 @@ describe("automata implement-next (CLI smoke)", () => {
 // ── Unit tests for getReady command logic ─────────────────────────────────────
 
 const mockSpawnSync = vi.fn();
+const mockSpawn = vi.fn();
+const mockReadlineQuestion = vi.fn();
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
+    spawn: (...args: unknown[]) => mockSpawn(...args),
   };
 });
+
+vi.mock("node:readline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:readline")>();
+  return {
+    ...actual,
+    createInterface: (options: Parameters<typeof actual.createInterface>[0]) => {
+      if ("output" in options && options.output !== undefined) {
+        return {
+          question: (_prompt: string, cb: (answer: string) => void) => {
+            const answer = mockReadlineQuestion();
+            cb(answer);
+          },
+          close: () => undefined,
+        };
+      }
+      return actual.createInterface(options);
+    },
+  };
+});
+
+function createMockChildProcess(events: string[], exitCode: number): EventEmitter & { stdout: Readable } {
+  const stdout = new Readable({ read() {} });
+  const child = new EventEmitter() as EventEmitter & { stdout: Readable };
+  child.stdout = stdout;
+
+  setImmediate(() => {
+    for (const line of events) {
+      stdout.push(line + "\n");
+    }
+    stdout.push(null);
+    child.emit("close", exitCode);
+  });
+
+  return child;
+}
 
 describe("getReady command: config validation", () => {
   beforeEach(() => {
     mkdirSync(TEST_CWD, { recursive: true });
     process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
     vi.resetModules();
   });
 
@@ -99,6 +160,54 @@ describe("getReady command: config validation", () => {
 
     vi.restoreAllMocks();
   });
+
+  it("exits 1 when --limit is not a positive integer", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    try {
+      await implementNextCommand.parseAsync(["--limit", "0"], { from: "user" });
+    } catch {
+      // expected
+    }
+
+    expect(stderrLines.join("")).toContain("--limit must be a positive integer");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    vi.restoreAllMocks();
+  });
+
+  it("exits 1 when --limit is non-numeric", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    try {
+      await implementNextCommand.parseAsync(["--limit", "abc"], { from: "user" });
+    } catch {
+      // expected
+    }
+
+    expect(stderrLines.join("")).toContain("--limit must be a positive integer");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    vi.restoreAllMocks();
+  });
 });
 
 describe("getReady command: Claude Code invocation", () => {
@@ -106,6 +215,8 @@ describe("getReady command: Claude Code invocation", () => {
     mkdirSync(TEST_CWD, { recursive: true });
     process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
     vi.resetModules();
   });
 
@@ -137,7 +248,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -145,6 +256,36 @@ describe("getReady command: Claude Code invocation", () => {
     expect(claudeArgs[0]).toBe("-p");
     expect(claudeArgs[1]).toContain("You are senior engineer.");
     expect(claudeArgs[1]).toContain("Do the thing.");
+
+    vi.restoreAllMocks();
+  });
+
+  it("defaults to Claude and uses verbose streaming when --silent is omitted", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 4, title: "Verbose issue", body: "Show progress.", url: "https://github.com/o/r/issues/4" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawn.mockReturnValueOnce(createMockChildProcess([], 0));
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const claudeArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(claudeArgs).toEqual(["--verbose", "--output-format", "stream-json", "-p", expect.stringContaining("Show progress.")]);
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeUndefined();
 
     vi.restoreAllMocks();
   });
@@ -167,7 +308,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -175,6 +316,34 @@ describe("getReady command: Claude Code invocation", () => {
     expect(claudeArgs[0]).toBe("-p");
     expect(claudeArgs[1]).toContain("You are an expert software engineer.");
     expect(claudeArgs[1]).toContain("Fix this.");
+
+    vi.restoreAllMocks();
+  });
+
+  it("passes --model through to Claude", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 8, title: "Model issue", body: "Use a model.", url: "https://github.com/o/r/issues/8" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent", "--model", "claude-opus-4-6"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const claudeArgs = claudeCall![1] as string[];
+    expect(claudeArgs).toEqual(["--model", "claude-opus-4-6", "-p", expect.stringContaining("Use a model.")]);
 
     vi.restoreAllMocks();
   });
@@ -204,7 +373,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.restoreAllMocks();
   });
 
-  it("invokes codex instead of claude when --codex flag is passed", async () => {
+  it("invokes codex instead of claude when --with codex is passed", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({
       remoteType: "gh",
@@ -222,7 +391,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--codex"], { from: "user" });
+    await implementNextCommand.parseAsync(["--with", "codex"], { from: "user" });
 
     const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
     expect(codexCall).toBeDefined();
@@ -233,6 +402,719 @@ describe("getReady command: Claude Code invocation", () => {
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns that --silent has no effect when used with Codex", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 6, title: "Codex silent issue", body: "Codex ignores silent.", url: "https://github.com/o/r/issues/6" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--with", "codex", "--silent"], { from: "user" });
+
+    expect(stderrLines.join("")).toContain("--silent is only supported with Claude");
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("exits 1 for invalid --with values before posting a claim comment", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 12, title: "Invalid executor issue", body: "Bad executor.", url: "https://github.com/o/r/issues/12" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await expect(implementNextCommand.parseAsync(["--with", "invalid"], { from: "user" })).rejects.toThrow("exit");
+
+    expect(stderrLines.join("")).toContain("--with must be 'claude' or 'codex'");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    const commentCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("comment")
+    );
+    expect(commentCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("single issue: prints issue ID and title before AI invocation", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 7, title: "Single issue title", body: "Body text.", url: "https://github.com/o/r/issues/7" };
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    const combined = stdoutLines.join("");
+    expect(combined).toContain("#7");
+    expect(combined).toContain("Single issue title");
+
+    vi.restoreAllMocks();
+  });
+
+  it("prompt includes issue number (Claude)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Feature X", body: "Implement feature X.", url: "https://github.com/o/r/issues/42" };
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const prompt = (claudeCall![1] as string[])[1];
+    expect(prompt).toContain("Resolving issue #42");
+
+    vi.restoreAllMocks();
+  });
+
+  it("prompt includes issue number (Codex)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 99, title: "Codex task", body: "Do codex thing.", url: "https://github.com/o/r/issues/99" };
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--with", "codex"], { from: "user" });
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+    const prompt = (codexCall![1] as string[]).at(-1)!;
+    expect(prompt).toContain("Resolving issue #99");
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe("getReady command: multi-issue selection", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
+    mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
+  });
+
+  it("--take-first: selects first issue without prompting when multiple match", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--take-first", "--silent"], { from: "user" });
+
+    // readline should NOT have been called
+    expect(mockReadlineQuestion).not.toHaveBeenCalled();
+
+    const combined = stdoutLines.join("");
+    expect(combined).toContain("#10");
+    expect(combined).toContain("Issue 1");
+
+    vi.restoreAllMocks();
+  });
+
+  it("--take-first: prompt includes first issue number", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--take-first", "--silent"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const prompt = (claudeCall![1] as string[])[1];
+    expect(prompt).toContain("Resolving issue #10");
+
+    vi.restoreAllMocks();
+  });
+
+  it("interactive: presents numbered list and selects chosen issue", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(5);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("2");
+
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    const combined = stdoutLines.join("");
+    // Numbered list should appear
+    expect(combined).toContain("[1]");
+    expect(combined).toContain("[2]");
+    expect(combined).toContain("[5]");
+
+    // Selected issue is #11 (issues[1].number = 10 + 1 = 11)
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const prompt = (claudeCall![1] as string[])[1];
+    expect(prompt).toContain("Resolving issue #11");
+
+    vi.restoreAllMocks();
+  });
+
+  it("interactive: shows 'first N' message when issues.length equals limit", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(10); // exactly at default limit of 10
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("1");
+
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    const combined = stdoutLines.join("");
+    expect(combined).toContain("Showing first 10 matching issues");
+
+    vi.restoreAllMocks();
+  });
+
+  it("--json with multiple issues: keeps stdout machine-parseable", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("2");
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--json", "--no-claude"], { from: "user" });
+
+    expect(JSON.parse(stdoutLines.join(""))).toMatchObject({
+      number: 11,
+      title: "Issue 2",
+      body: "Body 2.",
+      url: "https://github.com/o/r/issues/11",
+    });
+    expect(stderrLines.join("")).toContain("[1]");
+    expect(stderrLines.join("")).toContain("Issue:  #11");
+
+    vi.restoreAllMocks();
+  });
+
+  it("interactive: exits 1 on out-of-range selection", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("5");
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    try {
+      await implementNextCommand.parseAsync([], { from: "user" });
+    } catch {
+      // expected
+    }
+
+    expect(stderrLines.join("")).toContain("Invalid selection");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    vi.restoreAllMocks();
+  });
+
+  it("interactive: exits 1 on non-numeric selection", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+
+    mockReadlineQuestion.mockReturnValue("foo");
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    try {
+      await implementNextCommand.parseAsync([], { from: "user" });
+    } catch {
+      // expected
+    }
+
+    expect(stderrLines.join("")).toContain("Invalid selection");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    vi.restoreAllMocks();
+  });
+
+  it("--query-only with multiple issues: prints list and exits without prompting", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(3);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    try {
+      await implementNextCommand.parseAsync(["--query-only"], { from: "user" });
+    } catch {
+      // expected exit
+    }
+
+    expect(mockReadlineQuestion).not.toHaveBeenCalled();
+    const combined = stdoutLines.join("");
+    expect(combined).toContain("[1]");
+    expect(combined).toContain("[3]");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    // gh issue comment should NOT have been called
+    const commentCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("comment")
+    );
+    expect(commentCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("--limit: passes correct limit to gh issue list", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issues = makeIssues(1);
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(issues), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--limit", "20", "--silent"], { from: "user" });
+
+    const ghCall = mockSpawnSync.mock.calls.find((c) => String(c[0]) === "gh");
+    expect(ghCall).toBeDefined();
+    const ghArgs = ghCall![1] as string[];
+    const limitIdx = ghArgs.indexOf("--limit");
+    expect(limitIdx).toBeGreaterThan(-1);
+    expect(ghArgs[limitIdx + 1]).toBe("20");
+
+    vi.restoreAllMocks();
+  });
+});
+
+// ── Post-AI linking tests ────────────────────────────────────────────────────
+
+describe("getReady command: post-AI PR linking", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
+    mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
+  });
+
+  it("edits comment and adds Closes ref when PR exists after AI", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Link PR", body: "Link it.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment → returns comment URL in stderr
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: claude (silent mode)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh api (editComment)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
+    // 6: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 7: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // Check editComment was called
+    const apiCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "api"
+    );
+    expect(apiCall).toBeDefined();
+    const apiArgs = apiCall![1] as string[];
+    expect(apiArgs).toContain("repos/o/r/issues/comments/111");
+    expect(apiArgs.at(-1)).toContain("PR #7");
+
+    // Check addClosesRefToPr was called (gh pr edit with --body containing Closes #42)
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+    const editArgs = editCall![1] as string[];
+    const bodyIdx = editArgs.indexOf("--body");
+    expect(editArgs[bodyIdx + 1]).toContain("Closes #42");
+
+    vi.restoreAllMocks();
+  });
+
+  it("skips linking when no PR exists after AI", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No PR", body: "No PR yet.", url: "https://github.com/o/r/issues/42" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view → no PR
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "no pull requests found for branch", status: 1 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // No editComment or addClosesRef calls after the PR lookup
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
+
+    vi.restoreAllMocks();
+  });
+
+  it("still links the PR when --no-claude is used", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No Claude", body: "Skip AI.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 4: gh api (editComment)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeUndefined();
+
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("requests Copilot review when --ask-copilot-review is passed and PR exists", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Copilot", body: "Review me.", url: "https://github.com/o/r/issues/42" };
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 7: gh pr edit (addCopilotReviewer)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent", "--ask-copilot-review"], { from: "user" });
+
+    // Check addCopilotReviewer was called
+    const copilotCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("@copilot")
+    );
+    expect(copilotCall).toBeDefined();
+    const copilotArgs = copilotCall![1] as string[];
+    expect(copilotArgs).toEqual(["pr", "edit", "7", "--add-reviewer", "@copilot"]);
+
+    vi.restoreAllMocks();
+  });
+
+  it("does not request Copilot review when flag is absent", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No copilot", body: "Skip copilot.", url: "https://github.com/o/r/issues/42" };
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // No @copilot call
+    const copilotCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("@copilot")
+    );
+    expect(copilotCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when editComment fails (non-fatal)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Edit fail", body: "Fail edit.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh api (editComment) → fails
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "HTTP 403", status: 1 });
+    // 6: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 7: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // Should have warned but not exited
+    expect(stderrLines.join("")).toContain("could not update issue comment");
+    // addClosesRefToPr should still have been called (gh pr edit with --body)
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when PR detection fails (non-fatal)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "PR lookup fails", body: "Warn only.", url: "https://github.com/o/r/issues/42" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr) -> unexpected error
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "network error", status: 1 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    expect(stderrLines.join("")).toContain("Warning: could not detect current branch PR: network error");
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
 
     vi.restoreAllMocks();
   });

@@ -1181,6 +1181,37 @@ describe("git get-pr-info SonarCloud fields", () => {
     expect(out.stdout).toContain("Sonar New Issues: 3");
   });
 
+  it("normalizes the Sonar URL to the current PR when GitHub only reports a generic SonarCloud URL", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://sonarcloud.io" },
+      ],
+    };
+    const enrichedLine = JSON.stringify({
+      name: "SonarCloud Code Analysis",
+      html_url: "https://github.com/org/repo/runs/99",
+      details_url: "https://sonarcloud.io",
+      output: {
+        title: "Quality Gate passed",
+        summary: "Some text [See analysis details](https://sonarcloud.io/dashboard?id=org_repo)\n",
+      },
+    });
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(ok(enrichedLine));
+
+    fetchMock.mockResolvedValueOnce(fetchOk({ paging: { total: 3 } }));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar: https://sonarcloud.io/summary/new_code?id=org_repo&pullRequest=42");
+    expect(out.stdout).toContain("Sonar New Issues: 3");
+  });
+
   it("shows 'unavailable' for new-issue count when SonarCloud API fails", async () => {
     const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
     const pr = {
@@ -1200,6 +1231,27 @@ describe("git get-pr-info SonarCloud fields", () => {
 
     expect(out.stdout).toContain("Sonar:");
     expect(out.stdout).toContain("Sonar New Issues: unavailable");
+  });
+
+  it("shows a note when the SonarCloud new-issue count is unavailable because the project is private", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: sonarUrl },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    fetchMock.mockResolvedValueOnce(fetchError(401));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+
+    expect(out.stdout).toContain("Sonar New Issues: unavailable");
+    expect(out.stdout).toContain("Sonar Note: SonarCloud project is private.");
   });
 
   it("does not show SonarCloud fields when no SonarCloud check is present", async () => {
@@ -1240,6 +1292,63 @@ describe("git get-pr-info SonarCloud fields", () => {
     const parsed = JSON.parse(out.stdout) as { sonarcloudUrl?: string; sonarNewIssues?: number };
     expect(parsed.sonarcloudUrl).toBe(sonarUrl);
     expect(parsed.sonarNewIssues).toBe(5);
+  });
+
+  it("JSON output normalizes sonarcloudUrl to the current PR when GitHub reports a generic SonarCloud URL", async () => {
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: "https://sonarcloud.io" },
+      ],
+    };
+    const enrichedLine = JSON.stringify({
+      name: "SonarCloud Code Analysis",
+      html_url: "https://github.com/org/repo/runs/99",
+      details_url: "https://sonarcloud.io",
+      output: {
+        title: "Quality Gate passed",
+        summary: "Some text [See analysis details](https://sonarcloud.io/dashboard?id=org_repo)\n",
+      },
+    });
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)))
+      .mockReturnValueOnce(ok("https://github.com/org/repo.git\n"))
+      .mockReturnValueOnce(ok(enrichedLine));
+
+    fetchMock.mockResolvedValueOnce(fetchOk({ paging: { total: 5 } }));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as { sonarcloudUrl?: string; sonarNewIssues?: number };
+    expect(parsed.sonarcloudUrl).toBe("https://sonarcloud.io/summary/new_code?id=org_repo&pullRequest=42");
+    expect(parsed.sonarNewIssues).toBe(5);
+  });
+
+  it("JSON output includes sonarNewIssuesNote when the SonarCloud new-issue count is unavailable", async () => {
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=42";
+    const pr = {
+      ...MERGED_PR,
+      statusCheckRollup: [
+        { name: "SonarCloud Code Analysis", status: "COMPLETED", conclusion: "SUCCESS", description: "", detailsUrl: sonarUrl },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok(JSON.stringify(pr)));
+
+    fetchMock.mockResolvedValueOnce(fetchError(401));
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info", "--json"]);
+
+    const parsed = JSON.parse(out.stdout) as {
+      sonarNewIssues: number | null;
+      sonarNewIssuesNote?: string;
+    };
+    expect(parsed.sonarNewIssues).toBeNull();
+    expect(parsed.sonarNewIssuesNote).toContain("authenticated browser");
   });
 
   it("shows gate violations and issue details for a failing public SonarCloud check", async () => {
