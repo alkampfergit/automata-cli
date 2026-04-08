@@ -41,6 +41,7 @@ A command-line interface tool built with TypeScript and commander.js.
 - N/A (no persistent data changes) (009-codex-flag-implement-next)
 - TypeScript 5.x (strict mode) + commander.js, ink + react (wizard), vitest (tests) (011-config-prompt-files)
 - `.automata/config.json` (existing), `.automata/*.md` (new prompt files) (011-config-prompt-files)
+- TypeScript 5.x (strict mode) + commander.js, node:child_process (022-unify-ai-options)
 
 ## Recent Changes
 - 001-config-wizard: Added TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector)

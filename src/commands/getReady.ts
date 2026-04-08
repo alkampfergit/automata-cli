@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
 import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
-import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
+import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 
 function writeOverflowHint(output: NodeJS.WriteStream, issues: GitHubIssue[], limit: number): void {
@@ -98,25 +98,21 @@ export const implementNextCommand = new Command("implement-next")
   .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
   .option("--json", "Output issue details as JSON")
   .option("--no-claude", "Skip all AI invocation (Claude or Codex) after claiming the issue")
-  .option("--codex",      "Use Codex CLI instead of Claude Code")
+  .option("--with <executor>", "Executor to use: claude or codex", "claude")
   .option("--query-only", "Print issue content and exit without claiming or invoking any AI tools")
   .option("--yolo",       "Launch with --dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)")
-  .option("--verbose",    "Show step-by-step progress summary and final result")
-  .option("--opus",       "Use claude-opus-4-6")
-  .option("--sonnet",     "Use claude-sonnet-4-6")
-  .option("--haiku",      "Use claude-haiku-4-5-20251001")
+  .option("--silent",     "Suppress step-by-step Claude output; show only the final summary")
+  .option("--model <string>", "Model identifier to pass to the executor")
   .option("--take-first", "When multiple issues match, pick the first without prompting")
   .option("--limit <n>",  "Max issues to fetch and display (default: 10)", "10")
   .action(async (options: {
     json?: boolean;
     claude: boolean;
-    codex?: boolean;
+    with: string;
     queryOnly?: boolean;
     yolo?: boolean;
-    verbose?: boolean;
-    opus?: boolean;
-    sonnet?: boolean;
-    haiku?: boolean;
+    silent?: boolean;
+    model?: string;
     takeFirst?: boolean;
     limit: string;
   }) => {
@@ -149,6 +145,16 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(0);
     }
 
+    let executor: "claude" | "codex" | undefined;
+    if (options.claude !== false) {
+      const requestedExecutor = options.with.toLowerCase();
+      if (requestedExecutor !== "claude" && requestedExecutor !== "codex") {
+        process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${options.with}'.\n`);
+        process.exit(1);
+      }
+      executor = requestedExecutor;
+    }
+
     try {
       postComment(issue.number, "working");
     } catch (err) {
@@ -159,11 +165,13 @@ export const implementNextCommand = new Command("implement-next")
     if (options.claude !== false) {
       const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
       const prompt = `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
-      if (options.codex) {
-        await invokeCodexCode(prompt, { yolo: options.yolo, verbose: options.verbose });
+      if (executor === "codex") {
+        if (options.silent) {
+          process.stderr.write("Warning: --silent is only supported with Claude and has no effect when used with Codex.\n");
+        }
+        invokeCodexCode(prompt, { yolo: options.yolo, model: options.model });
       } else {
-        const model = resolveModelOption(options);
-        await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: options.verbose, model });
+        await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: !options.silent, model: options.model });
       }
     }
   });
