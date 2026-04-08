@@ -7,7 +7,6 @@ const mockGetPrInfo = vi.fn();
 const mockReadConfig = vi.fn(() => ({}));
 const mockInvokeClaudeCode = vi.fn();
 const mockInvokeCodexCode = vi.fn();
-const mockResolveModelOption = vi.fn(() => undefined);
 
 vi.mock("../../src/git/gitService.js", () => ({
   getCurrentBranch: () => mockGetCurrentBranch(),
@@ -22,7 +21,6 @@ vi.mock("../../src/config/configStore.js", () => ({
 
 vi.mock("../../src/claude/claudeService.js", () => ({
   invokeClaudeCode: (...args: unknown[]) => mockInvokeClaudeCode(...args),
-  resolveModelOption: (opts: unknown) => mockResolveModelOption(opts),
 }));
 
 vi.mock("../../src/codex/codexService.js", () => ({
@@ -128,7 +126,6 @@ describe("execute-prompt sonar command", () => {
     mockReadConfig.mockReset().mockReturnValue({});
     mockInvokeClaudeCode.mockReset();
     mockInvokeCodexCode.mockReset();
-    mockResolveModelOption.mockReset().mockReturnValue(undefined);
     out = captureStreams();
   });
 
@@ -142,7 +139,7 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     expect(mockInvokeClaudeCode).toHaveBeenCalledOnce();
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
@@ -159,7 +156,7 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("Custom: fix it.");
@@ -167,11 +164,11 @@ describe("execute-prompt sonar command", () => {
     expect(prompt).toContain('"qualityGateStatus": "ERROR"');
   });
 
-  it("invokes Codex instead of Claude when --codex flag is passed", async () => {
+  it("invokes Codex instead of Claude when --with codex is passed", async () => {
     mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--codex"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "codex"]);
 
     expect(mockInvokeCodexCode).toHaveBeenCalledOnce();
     expect(mockInvokeClaudeCode).not.toHaveBeenCalled();
@@ -185,7 +182,7 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain('"metricKey": "new_security_hotspots_reviewed"');
@@ -193,16 +190,27 @@ describe("execute-prompt sonar command", () => {
     expect(prompt).toContain('"fixRecommendations": "Use a linear-time pattern or avoid regex for this parsing path."');
   });
 
-  it("passes verbose flag to Claude invocation", async () => {
+  it("passes verbose:true to Claude by default", async () => {
     mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--verbose"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     expect(mockInvokeClaudeCode).toHaveBeenCalledOnce();
     const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { verbose?: boolean }];
     expect(options.verbose).toBe(true);
+  });
+
+  it("passes verbose:false to Claude when --silent is passed", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude", "--silent"]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { verbose?: boolean }];
+    expect(options.verbose).toBe(false);
   });
 
   it("always passes yolo:true to Claude invocation", async () => {
@@ -210,7 +218,7 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { yolo?: boolean }];
     expect(options.yolo).toBe(true);
@@ -220,10 +228,47 @@ describe("execute-prompt sonar command", () => {
     mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--codex"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "codex"]);
 
     const [, options] = mockInvokeCodexCode.mock.calls[0] as [string, { yolo?: boolean }];
     expect(options.yolo).toBe(true);
+  });
+
+  it("forwards --model to Claude invocation", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "sonar",
+      "--with",
+      "claude",
+      "--model",
+      "claude-opus-4-6",
+    ]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { model?: string }];
+    expect(options.model).toBe("claude-opus-4-6");
+  });
+
+  it("forwards --model to Codex invocation", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "sonar",
+      "--with",
+      "codex",
+      "--model",
+      "o3",
+    ]);
+
+    const [, options] = mockInvokeCodexCode.mock.calls[0] as [string, { model?: string }];
+    expect(options.model).toBe("o3");
   });
 
   it("appends commit-and-push instruction to prompt when --push is passed", async () => {
@@ -231,11 +276,32 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--push"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude", "--push"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     expect(prompt).toContain("commit");
     expect(prompt).toContain("push");
+  });
+
+  it("exits 1 when --with has an invalid value", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await expect(
+      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "invalid"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("--with must be 'claude' or 'codex'");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("exits non-zero when --with is missing", async () => {
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await expect(
+      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.exitCode).toBe(1);
   });
 
   it("does not append commit-and-push instruction when --push is not passed", async () => {
@@ -243,7 +309,7 @@ describe("execute-prompt sonar command", () => {
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]);
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
 
     const [prompt] = mockInvokeClaudeCode.mock.calls[0] as [string, unknown];
     // The base prompt text doesn't mention committing/pushing
@@ -259,7 +325,7 @@ describe("execute-prompt sonar command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("No SonarCloud analysis found");
@@ -271,7 +337,7 @@ describe("execute-prompt sonar command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("No pull request found");
@@ -285,7 +351,7 @@ describe("execute-prompt sonar command", () => {
 
     const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
     await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar"]),
+      executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]),
     ).rejects.toThrow("process.exit(1)");
 
     expect(out.stderr).toContain("not a git repository");
