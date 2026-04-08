@@ -79,6 +79,24 @@ describe("githubService.postComment", () => {
     expect(args).toEqual(["issue", "comment", "42", "--body", "working"]);
   });
 
+  it("returns comment URL from stderr when present", async () => {
+    mockSpawnSync.mockReturnValue({
+      stdout: "",
+      stderr: "https://github.com/owner/repo/issues/42#issuecomment-123456\n",
+      status: 0,
+    });
+    const { postComment } = await import("../../src/config/githubService.js");
+    const url = postComment(42, "working");
+    expect(url).toBe("https://github.com/owner/repo/issues/42#issuecomment-123456");
+  });
+
+  it("returns undefined when stderr has no comment URL", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { postComment } = await import("../../src/config/githubService.js");
+    const url = postComment(42, "working");
+    expect(url).toBeUndefined();
+  });
+
   it("throws when gh comment fails", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403: forbidden", status: 1 });
     const { postComment } = await import("../../src/config/githubService.js");
@@ -90,5 +108,154 @@ describe("githubService.postComment", () => {
     mockSpawnSync.mockReturnValue({ error: enoentError, stdout: "", stderr: "", status: null });
     const { postComment } = await import("../../src/config/githubService.js");
     expect(() => postComment(42, "working")).toThrow("`gh` CLI is not installed or not on PATH.");
+  });
+});
+
+describe("githubService.editComment", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("calls gh api with PATCH to edit the comment", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "{}", stderr: "", status: 0 });
+    const { editComment } = await import("../../src/config/githubService.js");
+    editComment("https://github.com/owner/repo/issues/42#issuecomment-123456", "updated body");
+    const args: string[] = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual([
+      "api", "repos/owner/repo/issues/comments/123456",
+      "-X", "PATCH", "-f", "body=updated body",
+    ]);
+  });
+
+  it("throws when comment URL cannot be parsed", async () => {
+    const { editComment } = await import("../../src/config/githubService.js");
+    expect(() => editComment("https://example.com/bad", "body")).toThrow("Cannot parse comment URL");
+  });
+
+  it("throws when gh api fails", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 404", status: 1 });
+    const { editComment } = await import("../../src/config/githubService.js");
+    expect(() => editComment("https://github.com/o/r/issues/1#issuecomment-999", "x")).toThrow("HTTP 404");
+  });
+});
+
+describe("githubService.getCurrentBranchPr", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("returns PR info when a PR exists", async () => {
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(getCurrentBranchPr("my-branch")).toEqual(pr);
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "my-branch", "--json", "number,url,body"]);
+  });
+
+  it("returns null when no PR exists", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "no pull requests found for branch", status: 1 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(getCurrentBranchPr("my-branch")).toBeNull();
+  });
+
+  it("queries the current checkout when no branch is provided", async () => {
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(getCurrentBranchPr()).toEqual(pr);
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url,body"]);
+  });
+
+  it("throws on unexpected errors", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "network error", status: 1 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(() => getCurrentBranchPr("my-branch")).toThrow("network error");
+  });
+});
+
+describe("githubService.addClosesRefToPr", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("appends Closes #N to the PR body", async () => {
+    // First call: gh pr view (read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "Existing body", stderr: "", status: 0 });
+    // Second call: gh pr edit (write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    addClosesRefToPr(7, 42);
+
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+    const editArgs: string[] = mockSpawnSync.mock.calls[1][1] as string[];
+    expect(editArgs).toContain("--body");
+    const bodyIdx = editArgs.indexOf("--body");
+    expect(editArgs[bodyIdx + 1]).toContain("Closes #42");
+    expect(editArgs[bodyIdx + 1]).toContain("Existing body");
+  });
+
+  it("preserves leading whitespace when appending Closes #N", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "    Existing body\n", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    addClosesRefToPr(7, 42);
+
+    const editArgs: string[] = mockSpawnSync.mock.calls[1][1] as string[];
+    const bodyIdx = editArgs.indexOf("--body");
+    expect(editArgs[bodyIdx + 1]).toBe("    Existing body\n\nCloses #42");
+  });
+
+  it("skips edit when Closes #N already present", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "Body with Closes #42 already", stderr: "", status: 0 });
+
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    addClosesRefToPr(7, 42);
+
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when reading PR body fails", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "error", status: 1 });
+
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    expect(() => addClosesRefToPr(7, 42)).toThrow("Failed to read PR #7 body");
+  });
+});
+
+describe("githubService.addCopilotReviewer", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("calls gh pr edit --add-reviewer @copilot", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { addCopilotReviewer } = await import("../../src/config/githubService.js");
+    addCopilotReviewer(7);
+    const args: string[] = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["pr", "edit", "7", "--add-reviewer", "@copilot"]);
+  });
+
+  it("throws when gh pr edit fails", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "unknown reviewer", status: 1 });
+    const { addCopilotReviewer } = await import("../../src/config/githubService.js");
+    expect(() => addCopilotReviewer(7)).toThrow("unknown reviewer");
   });
 });

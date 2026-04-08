@@ -1,7 +1,11 @@
 import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
-import { listIssues, postComment, type GitHubIssue } from "../config/githubService.js";
+import {
+  listIssues, postComment, editComment,
+  getCurrentBranchPr, addClosesRefToPr, addCopilotReviewer,
+  type GitHubIssue,
+} from "../config/githubService.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 
@@ -105,6 +109,7 @@ export const implementNextCommand = new Command("implement-next")
   .option("--model <string>", "Model identifier to pass to the executor")
   .option("--take-first", "When multiple issues match, pick the first without prompting")
   .option("--limit <n>",  "Max issues to fetch and display (default: 10)", "10")
+  .option("--ask-copilot-review", "Request a Copilot code review on the PR after AI invocation finishes")
   .action(async (options: {
     json?: boolean;
     claude: boolean;
@@ -115,6 +120,7 @@ export const implementNextCommand = new Command("implement-next")
     model?: string;
     takeFirst?: boolean;
     limit: string;
+    askCopilotReview?: boolean;
   }) => {
     const config = readConfig();
     validateConfig(config);
@@ -155,8 +161,9 @@ export const implementNextCommand = new Command("implement-next")
       executor = requestedExecutor;
     }
 
+    let commentUrl: string | undefined;
     try {
-      postComment(issue.number, "working");
+      commentUrl = postComment(issue.number, "working");
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);
@@ -173,5 +180,33 @@ export const implementNextCommand = new Command("implement-next")
       } else {
         await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: !options.silent, model: options.model });
       }
+    }
+
+    // ── Post-claim: link PR to issue ───────────────────────────────────────
+    try {
+      const pr = getCurrentBranchPr();
+      if (pr) {
+        if (commentUrl) {
+          try {
+            editComment(commentUrl, `Working on this in PR #${pr.number} — ${pr.url}`);
+          } catch (err) {
+            process.stderr.write(`Warning: could not update issue comment: ${(err as Error).message}\n`);
+          }
+        }
+        try {
+          addClosesRefToPr(pr.number, issue.number);
+        } catch (err) {
+          process.stderr.write(`Warning: could not add Closes #${issue.number} to PR: ${(err as Error).message}\n`);
+        }
+        if (options.askCopilotReview) {
+          try {
+            addCopilotReviewer(pr.number);
+          } catch (err) {
+            process.stderr.write(`Warning: could not request Copilot review: ${(err as Error).message}\n`);
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`Warning: could not detect current branch PR: ${(err as Error).message}\n`);
     }
   });

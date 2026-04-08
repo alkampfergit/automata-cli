@@ -37,6 +37,7 @@ describe("automata implement-next (CLI smoke)", () => {
     expect(output).not.toContain("--sonnet");
     expect(output).not.toContain("--haiku");
     expect(output).not.toContain("--verbose");
+    expect(output).toContain("--ask-copilot-review");
   });
 
   it("is listed in the top-level help", () => {
@@ -831,6 +832,289 @@ describe("getReady command: multi-issue selection", () => {
     const limitIdx = ghArgs.indexOf("--limit");
     expect(limitIdx).toBeGreaterThan(-1);
     expect(ghArgs[limitIdx + 1]).toBe("20");
+
+    vi.restoreAllMocks();
+  });
+});
+
+// ── Post-AI linking tests ────────────────────────────────────────────────────
+
+describe("getReady command: post-AI PR linking", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
+    mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
+  });
+
+  it("edits comment and adds Closes ref when PR exists after AI", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Link PR", body: "Link it.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment → returns comment URL in stderr
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: claude (silent mode)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh api (editComment)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
+    // 6: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 7: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // Check editComment was called
+    const apiCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "api"
+    );
+    expect(apiCall).toBeDefined();
+    const apiArgs = apiCall![1] as string[];
+    expect(apiArgs).toContain("repos/o/r/issues/comments/111");
+    expect(apiArgs.at(-1)).toContain("PR #7");
+
+    // Check addClosesRefToPr was called (gh pr edit with --body containing Closes #42)
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+    const editArgs = editCall![1] as string[];
+    const bodyIdx = editArgs.indexOf("--body");
+    expect(editArgs[bodyIdx + 1]).toContain("Closes #42");
+
+    vi.restoreAllMocks();
+  });
+
+  it("skips linking when no PR exists after AI", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No PR", body: "No PR yet.", url: "https://github.com/o/r/issues/42" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view → no PR
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "no pull requests found for branch", status: 1 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // No editComment or addClosesRef calls after the PR lookup
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
+
+    vi.restoreAllMocks();
+  });
+
+  it("still links the PR when --no-claude is used", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No Claude", body: "Skip AI.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 4: gh api (editComment)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeUndefined();
+
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("requests Copilot review when --ask-copilot-review is passed and PR exists", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Copilot", body: "Review me.", url: "https://github.com/o/r/issues/42" };
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 7: gh pr edit (addCopilotReviewer)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent", "--ask-copilot-review"], { from: "user" });
+
+    // Check addCopilotReviewer was called
+    const copilotCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("@copilot")
+    );
+    expect(copilotCall).toBeDefined();
+    const copilotArgs = copilotCall![1] as string[];
+    expect(copilotArgs).toEqual(["pr", "edit", "7", "--add-reviewer", "@copilot"]);
+
+    vi.restoreAllMocks();
+  });
+
+  it("does not request Copilot review when flag is absent", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No copilot", body: "Skip copilot.", url: "https://github.com/o/r/issues/42" };
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // No @copilot call
+    const copilotCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("@copilot")
+    );
+    expect(copilotCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when editComment fails (non-fatal)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "Edit fail", body: "Fail edit.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 5: gh api (editComment) → fails
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "HTTP 403", status: 1 });
+    // 6: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 7: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    // Should have warned but not exited
+    expect(stderrLines.join("")).toContain("could not update issue comment");
+    // addClosesRefToPr should still have been called (gh pr edit with --body)
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when PR detection fails (non-fatal)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "PR lookup fails", body: "Warn only.", url: "https://github.com/o/r/issues/42" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr) -> unexpected error
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "network error", status: 1 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    expect(stderrLines.join("")).toContain("Warning: could not detect current branch PR: network error");
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
 
     vi.restoreAllMocks();
   });

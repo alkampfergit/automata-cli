@@ -29,6 +29,7 @@ automata implement-next [options]
 | `--model <string>` | Model identifier to pass to the executor (e.g. `claude-opus-4-6`) |
 | `--take-first` | When multiple issues match, pick the first without prompting |
 | `--limit <n>` | Max issues to fetch and display (default: `10`) |
+| `--ask-copilot-review` | After AI finishes, if a PR exists on the branch, request a Copilot code review via `gh pr edit --add-reviewer @copilot` |
 
 ## Behaviour
 
@@ -47,6 +48,11 @@ automata implement-next [options]
    - With `--yolo`: Claude uses `--dangerously-skip-permissions`; Codex uses `--dangerously-bypass-approvals-and-sandbox`.
   - With `--silent`: suppresses verbose Claude streaming output and shows only the final result. When combined with `--with codex`, a warning is printed and Codex behavior is unchanged.
    - With `--model`: passes the specified model identifier to the executor.
+9. After the AI tool finishes (or immediately after claiming when `--no-claude`), checks if the current branch has an open pull request:
+   - If a PR exists and a comment URL was captured in step 7, edits the "working" comment to include the PR number and link.
+   - If a PR exists, appends `Closes #<issue>` to the PR body so merging the PR auto-closes the issue.
+   - If `--ask-copilot-review` is passed and a PR exists, runs `gh pr edit --add-reviewer @copilot` to request a Copilot review.
+   - All post-AI operations are best-effort: failures are warned on stderr but do not change the exit code.
 
 ## Exit codes
 
@@ -84,4 +90,7 @@ automata implement-next --silent
 
 # Fetch and choose from up to 20 issues instead of the default 10
 automata implement-next --limit 20
+
+# Implement and request a Copilot review on the resulting PR
+automata implement-next --yolo --ask-copilot-review
 ```
