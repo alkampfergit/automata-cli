@@ -23,11 +23,18 @@ describe("automata implement-next (CLI smoke)", () => {
     expect(output).toContain("implement-next");
     expect(output).toContain("--json");
     expect(output).toContain("--no-claude");
-    expect(output).toContain("--codex");
+    expect(output).toContain("--with");
+    expect(output).toContain("--model");
+    expect(output).toContain("--silent");
     expect(output).toContain("--query-only");
     expect(output).toContain("--yolo");
     expect(output).toContain("--take-first");
     expect(output).toContain("--limit");
+    expect(output).not.toContain("--codex");
+    expect(output).not.toContain("--opus");
+    expect(output).not.toContain("--sonnet");
+    expect(output).not.toContain("--haiku");
+    expect(output).not.toContain("--verbose");
   });
 
   it("is listed in the top-level help", () => {
@@ -209,7 +216,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -239,7 +246,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -276,7 +283,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.restoreAllMocks();
   });
 
-  it("invokes codex instead of claude when --codex flag is passed", async () => {
+  it("invokes codex instead of claude when --with codex is passed", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({
       remoteType: "gh",
@@ -294,7 +301,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--codex"], { from: "user" });
+    await implementNextCommand.parseAsync(["--with", "codex"], { from: "user" });
 
     const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
     expect(codexCall).toBeDefined();
@@ -326,7 +333,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const combined = stdoutLines.join("");
     expect(combined).toContain("#7");
@@ -348,7 +355,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -371,7 +378,7 @@ describe("getReady command: Claude Code invocation", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--codex"], { from: "user" });
+    await implementNextCommand.parseAsync(["--with", "codex"], { from: "user" });
 
     const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
     expect(codexCall).toBeDefined();
@@ -414,7 +421,7 @@ describe("getReady command: multi-issue selection", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--take-first"], { from: "user" });
+    await implementNextCommand.parseAsync(["--take-first", "--silent"], { from: "user" });
 
     // readline should NOT have been called
     expect(mockReadlineQuestion).not.toHaveBeenCalled();
@@ -439,7 +446,7 @@ describe("getReady command: multi-issue selection", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--take-first"], { from: "user" });
+    await implementNextCommand.parseAsync(["--take-first", "--silent"], { from: "user" });
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeDefined();
@@ -468,7 +475,7 @@ describe("getReady command: multi-issue selection", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const combined = stdoutLines.join("");
     // Numbered list should appear
@@ -504,7 +511,7 @@ describe("getReady command: multi-issue selection", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync([], { from: "user" });
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
     const combined = stdoutLines.join("");
     expect(combined).toContain("Showing first 10 matching issues");
@@ -658,7 +665,7 @@ describe("getReady command: multi-issue selection", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
-    await implementNextCommand.parseAsync(["--limit", "20"], { from: "user" });
+    await implementNextCommand.parseAsync(["--limit", "20", "--silent"], { from: "user" });
 
     const ghCall = mockSpawnSync.mock.calls.find((c) => String(c[0]) === "gh");
     expect(ghCall).toBeDefined();
