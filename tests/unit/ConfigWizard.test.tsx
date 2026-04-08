@@ -25,8 +25,12 @@ const PROMPTS_MENU_HINT = "Esc to go back";
 const SONAR_SCREEN_TEXT = "Sonar prompt:";
 const FIX_COMMENTS_SCREEN_TEXT = "Fix-Comments prompt:";
 
-async function tick(ms = 50) {
-  await new Promise((r) => setTimeout(r, ms));
+async function tick() {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
 }
 
 async function navigateToPromptsMenu(stdin: { write: (s: string) => void }) {

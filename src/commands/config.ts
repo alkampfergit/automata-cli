@@ -1,7 +1,4 @@
 import { Command } from "commander";
-import { render } from "ink";
-import React from "react";
-import { ConfigWizard } from "../config/ConfigWizard.js";
 import { readRawConfig, writeConfig, type RemoteType, type IssueDiscoveryTechnique } from "../config/configStore.js";
 
 const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
@@ -62,6 +59,11 @@ export const configCommand = new Command("config")
   .description("Configure automata settings")
   .addCommand(configSet)
   .action(async () => {
+    const [{ render }, React, { ConfigWizard }] = await Promise.all([
+      import("ink"),
+      import("react"),
+      import("../config/ConfigWizard.js"),
+    ]);
     const { waitUntilExit } = render(React.createElement(ConfigWizard));
     await waitUntilExit();
   });
