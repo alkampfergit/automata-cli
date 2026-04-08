@@ -19,7 +19,7 @@ A developer runs `automata implement-next`. The tool posts a "working" comment o
 
 1. **Given** a claimed issue #42 with comment ID 12345, **When** the AI finishes and a PR #7 exists on the branch, **Then** the "working" comment is edited to include "PR: #7" and the PR body includes `Closes #42`.
 2. **Given** a claimed issue #42, **When** the AI finishes and no PR exists on the branch, **Then** no comment edit occurs and the process exits normally.
-3. **Given** a claimed issue #42, **When** `--no-claude` is used, **Then** no post-AI linking occurs (the "working" comment stays as-is).
+3. **Given** a claimed issue #42, **When** `--no-claude` is used, **Then** Claude is skipped but post-claim PR detection still runs; if a PR already exists on the branch, the "working" comment is updated to include it and the PR body includes `Closes #42`, otherwise the comment stays as-is.
 
 ---
 
@@ -48,7 +48,7 @@ After the AI finishes and a PR exists on the branch, if the `--ask-copilot-revie
 
 ## Assumptions
 
-- [AUTO] Comment ID retrieval: `gh issue comment` outputs the comment URL to stdout, from which we can extract the comment node ID or numeric ID. We will parse the comment URL from stdout to get the comment ID.
+- [AUTO] Comment ID retrieval: `gh issue comment` emits a comment URL that we can use to derive the comment node ID or numeric ID. The implementation should capture and parse the URL from the command output stream it actually appears on, rather than assuming stdout specifically.
 - [AUTO] PR detection reuse: We will reuse the existing `getPrInfoGh` pattern from `gitService.ts` to check for an open PR on the current branch, but use a lightweight version that only needs the PR number/URL.
 - [AUTO] State storage: No persistent state file needed. The comment ID is captured in-memory during the command run and used immediately after AI invocation completes. This avoids filesystem coupling.
 - [AUTO] `Closes #N` placement: The `Closes #N` keyword will be appended to the PR body via `gh pr edit --body` after the PR is detected, rather than requiring the AI skill to include it.

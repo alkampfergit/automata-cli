@@ -94,7 +94,7 @@ export function editComment(commentUrl: string, body: string): void {
 
 /**
  * Check if the current branch has an open pull request.
- * Returns the PR number and URL, or null if no PR exists.
+ * Returns the PR number, URL, and body, or null if no PR exists.
  */
 export function getCurrentBranchPr(branch?: string): { number: number; url: string; body: string } | null {
   const args = ["pr", "view"];
@@ -123,7 +123,7 @@ export function addClosesRefToPr(prNumber: number, issueNumber: number): void {
   if (viewStatus !== 0) {
     throw new Error(`Failed to read PR #${prNumber} body.`);
   }
-  const currentBody = stdout.trim();
+  const currentBody = stdout.trimEnd();
   const closesRef = `Closes #${issueNumber}`;
   if (currentBody.includes(closesRef)) {
     return; // already present

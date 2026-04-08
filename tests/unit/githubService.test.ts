@@ -207,6 +207,18 @@ describe("githubService.addClosesRefToPr", () => {
     expect(editArgs[bodyIdx + 1]).toContain("Existing body");
   });
 
+  it("preserves leading whitespace when appending Closes #N", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "    Existing body\n", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    addClosesRefToPr(7, 42);
+
+    const editArgs: string[] = mockSpawnSync.mock.calls[1][1] as string[];
+    const bodyIdx = editArgs.indexOf("--body");
+    expect(editArgs[bodyIdx + 1]).toBe("    Existing body\n\nCloses #42");
+  });
+
   it("skips edit when Closes #N already present", async () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "Body with Closes #42 already", stderr: "", status: 0 });
 

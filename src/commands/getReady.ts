@@ -182,7 +182,7 @@ export const implementNextCommand = new Command("implement-next")
       }
     }
 
-    // ── Post-AI: link PR to issue ──────────────────────────────────────────
+    // ── Post-claim: link PR to issue ───────────────────────────────────────
     try {
       const pr = getCurrentBranchPr();
       if (pr) {
@@ -206,7 +206,7 @@ export const implementNextCommand = new Command("implement-next")
           }
         }
       }
-    } catch {
-      // Post-AI linking is best-effort; ignore detection failures
+    } catch (err) {
+      process.stderr.write(`Warning: could not detect current branch PR: ${(err as Error).message}\n`);
     }
   });

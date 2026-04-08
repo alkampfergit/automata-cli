@@ -932,6 +932,44 @@ describe("getReady command: post-AI PR linking", () => {
     vi.restoreAllMocks();
   });
 
+  it("still links the PR when --no-claude is used", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "No Claude", body: "Skip AI.", url: "https://github.com/o/r/issues/42" };
+    const commentUrl = "https://github.com/o/r/issues/42#issuecomment-111";
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
+    // 3: gh pr view (getCurrentBranchPr)
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    // 4: gh api (editComment)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
+    // 5: gh pr view (addClosesRefToPr - read body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
+    // 6: gh pr edit (addClosesRefToPr - write body)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeUndefined();
+
+    const editCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
+    );
+    expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
   it("requests Copilot review when --ask-copilot-review is passed and PR exists", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
@@ -1046,6 +1084,37 @@ describe("getReady command: post-AI PR linking", () => {
       (c) => String(c[0]) === "gh" && (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--body")
     );
     expect(editCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns on stderr when PR detection fails (non-fatal)", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+
+    const issue = { number: 42, title: "PR lookup fails", body: "Warn only.", url: "https://github.com/o/r/issues/42" };
+
+    // 1: gh issue list
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    // 2: gh issue comment
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 3: claude (silent)
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    // 4: gh pr view (getCurrentBranchPr) -> unexpected error
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "network error", status: 1 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    expect(stderrLines.join("")).toContain("Warning: could not detect current branch PR: network error");
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
 
     vi.restoreAllMocks();
   });
