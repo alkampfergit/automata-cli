@@ -162,7 +162,7 @@ export const implementNextCommand = new Command("implement-next")
       const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
       const prompt = `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
       if (executor === "codex") {
-        await invokeCodexCode(prompt, { yolo: options.yolo, model: options.model });
+        invokeCodexCode(prompt, { yolo: options.yolo, model: options.model });
       } else {
         await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: !options.silent, model: options.model });
       }
