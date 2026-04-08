@@ -184,14 +184,7 @@ Use the completed `pr-report.md` followed by `spec-decisions.md` as the PR body,
      --base develop \
      --head <feature-branch>
    ```
-
-4. Request a Copilot code review via the GitHub API:
-
-   ```sh
-   gh pr edit --add-reviewer @copilot
-   ```
-
-5. Report the PR URL to the user.
+4. Report the PR URL to the user.
 
 ---
 
