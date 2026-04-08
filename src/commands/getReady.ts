@@ -1,5 +1,4 @@
 import { createInterface } from "node:readline";
-import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
 import {
@@ -185,9 +184,7 @@ export const implementNextCommand = new Command("implement-next")
 
     // ── Post-AI: link PR to issue ──────────────────────────────────────────
     try {
-      const branchResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
-      const branch = (branchResult.stdout ?? "").trim();
-      const pr = branch ? getCurrentBranchPr(branch) : null;
+      const pr = getCurrentBranchPr();
       if (pr) {
         if (commentUrl) {
           try {

@@ -869,15 +869,13 @@ describe("getReady command: post-AI PR linking", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
     // 3: claude (silent mode)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 4: git rev-parse --abbrev-ref HEAD
-    mockSpawnSync.mockReturnValueOnce({ stdout: "023-feature\n", stderr: "", status: 0 });
-    // 5: gh pr view (getCurrentBranchPr)
+    // 4: gh pr view (getCurrentBranchPr)
     mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
-    // 6: gh api (editComment)
+    // 5: gh api (editComment)
     mockSpawnSync.mockReturnValueOnce({ stdout: "{}", stderr: "", status: 0 });
-    // 7: gh pr view (addClosesRefToPr - read body)
+    // 6: gh pr view (addClosesRefToPr - read body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
-    // 8: gh pr edit (addClosesRefToPr - write body)
+    // 7: gh pr edit (addClosesRefToPr - write body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -893,7 +891,7 @@ describe("getReady command: post-AI PR linking", () => {
     expect(apiCall).toBeDefined();
     const apiArgs = apiCall![1] as string[];
     expect(apiArgs).toContain("repos/o/r/issues/comments/111");
-    expect(apiArgs[apiArgs.length - 1]).toContain("PR #7");
+    expect(apiArgs.at(-1)).toContain("PR #7");
 
     // Check addClosesRefToPr was called (gh pr edit with --body containing Closes #42)
     const editCall = mockSpawnSync.mock.calls.find(
@@ -919,9 +917,7 @@ describe("getReady command: post-AI PR linking", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
     // 3: claude (silent)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 4: git rev-parse
-    mockSpawnSync.mockReturnValueOnce({ stdout: "023-feature\n", stderr: "", status: 0 });
-    // 5: gh pr view → no PR
+    // 4: gh pr view → no PR
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "no pull requests found for branch", status: 1 });
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -930,8 +926,8 @@ describe("getReady command: post-AI PR linking", () => {
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
     await implementNextCommand.parseAsync(["--silent"], { from: "user" });
 
-    // No editComment or addClosesRef calls (only 5 spawnSync calls total)
-    expect(mockSpawnSync).toHaveBeenCalledTimes(5);
+    // No editComment or addClosesRef calls after the PR lookup
+    expect(mockSpawnSync).toHaveBeenCalledTimes(4);
 
     vi.restoreAllMocks();
   });
@@ -949,15 +945,13 @@ describe("getReady command: post-AI PR linking", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
     // 3: claude (silent)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 4: git rev-parse
-    mockSpawnSync.mockReturnValueOnce({ stdout: "023-feature\n", stderr: "", status: 0 });
-    // 5: gh pr view (getCurrentBranchPr)
+    // 4: gh pr view (getCurrentBranchPr)
     mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
-    // 6: gh pr view (addClosesRefToPr - read body)
+    // 5: gh pr view (addClosesRefToPr - read body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
-    // 7: gh pr edit (addClosesRefToPr - write body)
+    // 6: gh pr edit (addClosesRefToPr - write body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 8: gh pr edit (addCopilotReviewer)
+    // 7: gh pr edit (addCopilotReviewer)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -990,13 +984,11 @@ describe("getReady command: post-AI PR linking", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
     // 3: claude (silent)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 4: git rev-parse
-    mockSpawnSync.mockReturnValueOnce({ stdout: "023-feature\n", stderr: "", status: 0 });
-    // 5: gh pr view (getCurrentBranchPr)
+    // 4: gh pr view (getCurrentBranchPr)
     mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
-    // 6: gh pr view (addClosesRefToPr - read body)
+    // 5: gh pr view (addClosesRefToPr - read body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
-    // 7: gh pr edit (addClosesRefToPr - write body)
+    // 6: gh pr edit (addClosesRefToPr - write body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -1028,15 +1020,13 @@ describe("getReady command: post-AI PR linking", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: commentUrl + "\n", status: 0 });
     // 3: claude (silent)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
-    // 4: git rev-parse
-    mockSpawnSync.mockReturnValueOnce({ stdout: "023-feature\n", stderr: "", status: 0 });
-    // 5: gh pr view (getCurrentBranchPr)
+    // 4: gh pr view (getCurrentBranchPr)
     mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
-    // 6: gh api (editComment) → fails
+    // 5: gh api (editComment) → fails
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "HTTP 403", status: 1 });
-    // 7: gh pr view (addClosesRefToPr - read body)
+    // 6: gh pr view (addClosesRefToPr - read body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "PR body", stderr: "", status: 0 });
-    // 8: gh pr edit (addClosesRefToPr - write body)
+    // 7: gh pr edit (addClosesRefToPr - write body)
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
 
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);

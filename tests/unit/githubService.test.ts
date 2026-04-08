@@ -157,12 +157,21 @@ describe("githubService.getCurrentBranchPr", () => {
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
     const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
     expect(getCurrentBranchPr("my-branch")).toEqual(pr);
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "my-branch", "--json", "number,url,body"]);
   });
 
   it("returns null when no PR exists", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "no pull requests found for branch", status: 1 });
     const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
     expect(getCurrentBranchPr("my-branch")).toBeNull();
+  });
+
+  it("queries the current checkout when no branch is provided", async () => {
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(getCurrentBranchPr()).toEqual(pr);
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url,body"]);
   });
 
   it("throws on unexpected errors", async () => {

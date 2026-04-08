@@ -67,7 +67,7 @@ export function postComment(issueNumber: number, body: string): string | undefin
   if (status !== 0) {
     throw new Error(stderr.trim() || `Failed to post comment on issue #${issueNumber}.`);
   }
-  const match = stderr.match(/https:\/\/github\.com\/[^\s]+#issuecomment-\d+/);
+  const match = /https:\/\/github\.com\/[^\s]+#issuecomment-\d+/.exec(stderr);
   return match ? match[0] : undefined;
 }
 
@@ -94,10 +94,14 @@ export function editComment(commentUrl: string, body: string): void {
  * Check if the current branch has an open pull request.
  * Returns the PR number and URL, or null if no PR exists.
  */
-export function getCurrentBranchPr(branch: string): { number: number; url: string; body: string } | null {
-  const { stdout, stderr, status } = run("gh", [
-    "pr", "view", branch, "--json", "number,url,body",
-  ]);
+export function getCurrentBranchPr(branch?: string): { number: number; url: string; body: string } | null {
+  const args = ["pr", "view"];
+  if (branch) {
+    args.push(branch);
+  }
+  args.push("--json", "number,url,body");
+
+  const { stdout, stderr, status } = run("gh", args);
   if (status !== 0) {
     if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
       return null;
