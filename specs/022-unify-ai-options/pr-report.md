@@ -10,7 +10,10 @@ Unifies the `implement-next` command's AI configuration options with the `execut
 
 ## What's New
 
-[To be completed after implementation]
+- **Command options**: Replaced 5 flags (`--codex`, `--opus`, `--sonnet`, `--haiku`, `--verbose`) with 3 unified options (`--with <executor>`, `--model <string>`, `--silent`) matching the `execute` command's interface
+- **Default behavior**: Verbose output is now the default (previously opt-in via `--verbose`); use `--silent` to suppress it
+- **Executor selection**: `--with claude` (default) or `--with codex` replaces the `--codex` boolean flag, with validation for invalid values
+- **Model selection**: `--model <string>` accepts any model identifier directly, replacing the fixed `--opus`/`--sonnet`/`--haiku` shortcuts
 
 ## Breaking Changes
 
@@ -20,8 +23,11 @@ Unifies the `implement-next` command's AI configuration options with the `execut
 
 ## Testing
 
-[To be completed after implementation]
+- **Unit**: Updated CLI smoke test to verify new options appear and old options are absent
+- **Unit**: Updated Claude/Codex invocation tests to use `--with codex` and `--silent`
+- **Unit**: All 234 existing tests pass with zero failures
 
 ## Notes
 
-[To be completed after implementation]
+- `resolveModelOption` and `MODEL_IDS` remain in `claudeService.ts` because `executePrompt.ts` still uses them
+- `--no-claude` flag retained as-is (renaming out of scope)
