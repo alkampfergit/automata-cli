@@ -22,6 +22,8 @@ type ExecutePromptAiOptions = {
   push?: boolean;
 };
 
+type Executor = "claude" | "codex";
+
 function addAiOptions(cmd: Command): Command {
   return cmd
     .requiredOption("--with <executor>", "Executor to use: claude or codex")
@@ -30,7 +32,7 @@ function addAiOptions(cmd: Command): Command {
     .option("--push", "Append instruction to commit and push changes after the AI finishes")
 }
 
-function resolveExecutor(withOption: string): "claude" | "codex" {
+function resolveExecutor(withOption: string): Executor {
   const executor = withOption.toLowerCase();
   if (executor !== "claude" && executor !== "codex") {
     process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${withOption}'.\n`);
@@ -39,8 +41,7 @@ function resolveExecutor(withOption: string): "claude" | "codex" {
   return executor;
 }
 
-function invokeSelectedExecutor(prompt: string, options: ExecutePromptAiOptions): Promise<void> | void {
-  const executor = resolveExecutor(options.with);
+function invokeSelectedExecutor(prompt: string, executor: Executor, options: ExecutePromptAiOptions): Promise<void> | void {
   if (executor === "codex") {
     invokeCodexCode(prompt, { yolo: true, model: options.model });
     return;
@@ -54,6 +55,8 @@ const executeSonarCmd = addAiOptions(
     "Check the current branch for a SonarCloud analysis and invoke the AI with the Sonar prompt and analysis URL",
   ),
 ).action(async (options: ExecutePromptAiOptions) => {
+  const executor = resolveExecutor(options.with);
+
   let branch: string;
   try {
     branch = getCurrentBranch();
@@ -91,7 +94,7 @@ const executeSonarCmd = addAiOptions(
     options.push,
   );
 
-  await invokeSelectedExecutor(fullPrompt, options);
+  await invokeSelectedExecutor(fullPrompt, executor, options);
 });
 
 function formatComments(comments: PrComment[]): string {
@@ -108,6 +111,8 @@ const executeFixCommentsCmd = addAiOptions(
     "Fetch open review comments on the current PR and invoke the AI with the Fix-Comments prompt",
   ),
 ).action(async (options: ExecutePromptAiOptions) => {
+  const executor = resolveExecutor(options.with);
+
   const result = resolveCurrentBranchComments();
   if (!result.ok) {
     if (result.kind === "error") {
@@ -139,7 +144,7 @@ const executeFixCommentsCmd = addAiOptions(
     options.push,
   );
 
-  await invokeSelectedExecutor(fullPrompt, options);
+  await invokeSelectedExecutor(fullPrompt, executor, options);
 });
 
 export const executePromptCommand = new Command("execute-prompt")

@@ -293,6 +293,8 @@ describe("execute-prompt sonar command", () => {
 
     expect(out.stderr).toContain("--with must be 'claude' or 'codex'");
     expect(out.exitCode).toBe(1);
+    expect(mockGetCurrentBranch).not.toHaveBeenCalled();
+    expect(mockGetPrInfo).not.toHaveBeenCalled();
   });
 
   it("exits non-zero when --with is missing", async () => {
