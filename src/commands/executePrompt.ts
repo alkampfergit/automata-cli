@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment, type PrInfo } from "../git/gitService.js";
 import { readConfig, DEFAULT_SONAR_PROMPT, DEFAULT_FIX_COMMENTS_PROMPT } from "../config/configStore.js";
-import { invokeClaudeCode, resolveModelOption } from "../claude/claudeService.js";
+import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 
 const PUSH_INSTRUCTION =
@@ -15,30 +15,48 @@ function formatPrInfoContext(pr: PrInfo): string {
   return JSON.stringify(pr, null, 2);
 }
 
-type AiOptions = {
-  codex?: boolean;
-  verbose?: boolean;
+type ExecutePromptAiOptions = {
+  with: string;
+  model?: string;
+  silent?: boolean;
   push?: boolean;
-  opus?: boolean;
-  sonnet?: boolean;
-  haiku?: boolean;
 };
+
+type Executor = "claude" | "codex";
 
 function addAiOptions(cmd: Command): Command {
   return cmd
-    .option("--codex", "Use Codex CLI instead of Claude Code")
-    .option("--verbose", "Show step-by-step progress (Claude only; ignored for Codex)")
+    .requiredOption("--with <executor>", "Executor to use: claude or codex")
+    .option("--model <string>", "Model identifier to pass to the executor")
+    .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
     .option("--push", "Append instruction to commit and push changes after the AI finishes")
-    .option("--opus", "Use claude-opus-4-6 (Claude only)")
-    .option("--sonnet", "Use claude-sonnet-4-6 (Claude only)")
-    .option("--haiku", "Use claude-haiku-4-5-20251001 (Claude only)");
+}
+
+function resolveExecutor(withOption: string): Executor {
+  const executor = withOption.toLowerCase();
+  if (executor !== "claude" && executor !== "codex") {
+    process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${withOption}'.\n`);
+    process.exit(1);
+  }
+  return executor;
+}
+
+function invokeSelectedExecutor(prompt: string, executor: Executor, options: ExecutePromptAiOptions): Promise<void> | void {
+  if (executor === "codex") {
+    invokeCodexCode(prompt, { yolo: true, model: options.model });
+    return;
+  }
+
+  return invokeClaudeCode(prompt, { yolo: true, verbose: !options.silent, model: options.model });
 }
 
 const executeSonarCmd = addAiOptions(
   new Command("sonar").description(
     "Check the current branch for a SonarCloud analysis and invoke the AI with the Sonar prompt and analysis URL",
   ),
-).action(async (options: AiOptions) => {
+).action(async (options: ExecutePromptAiOptions) => {
+  const executor = resolveExecutor(options.with);
+
   let branch: string;
   try {
     branch = getCurrentBranch();
@@ -76,12 +94,7 @@ const executeSonarCmd = addAiOptions(
     options.push,
   );
 
-  if (options.codex) {
-    invokeCodexCode(fullPrompt, { yolo: true });
-  } else {
-    const model = resolveModelOption(options);
-    await invokeClaudeCode(fullPrompt, { yolo: true, verbose: options.verbose, model });
-  }
+  await invokeSelectedExecutor(fullPrompt, executor, options);
 });
 
 function formatComments(comments: PrComment[]): string {
@@ -97,7 +110,9 @@ const executeFixCommentsCmd = addAiOptions(
   new Command("fix-comments").description(
     "Fetch open review comments on the current PR and invoke the AI with the Fix-Comments prompt",
   ),
-).action(async (options: AiOptions) => {
+).action(async (options: ExecutePromptAiOptions) => {
+  const executor = resolveExecutor(options.with);
+
   const result = resolveCurrentBranchComments();
   if (!result.ok) {
     if (result.kind === "error") {
@@ -129,12 +144,7 @@ const executeFixCommentsCmd = addAiOptions(
     options.push,
   );
 
-  if (options.codex) {
-    invokeCodexCode(fullPrompt, { yolo: true });
-  } else {
-    const model = resolveModelOption(options);
-    await invokeClaudeCode(fullPrompt, { yolo: true, verbose: options.verbose, model });
-  }
+  await invokeSelectedExecutor(fullPrompt, executor, options);
 });
 
 export const executePromptCommand = new Command("execute-prompt")

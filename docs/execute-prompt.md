@@ -9,22 +9,20 @@ AI-powered prompt execution commands. These commands look up context from the cu
 Check the current branch's pull request for a SonarCloud analysis and invoke the AI assistant with the configured Sonar prompt, the analysis URL, and the structured `get-pr-info` Sonar context.
 
 ```bash
-automata execute-prompt sonar            # Use Claude (default)
-automata execute-prompt sonar --codex    # Use Codex CLI instead
-automata execute-prompt sonar --verbose  # Verbose Claude output
-automata execute-prompt sonar --push     # Commit and push after AI finishes
+automata execute-prompt sonar --with claude
+automata execute-prompt sonar --with codex --model o3
+automata execute-prompt sonar --with claude --silent
+automata execute-prompt sonar --with claude --push
 ```
 
 ### Options
 
 | Flag | Description |
 |---|---|
-| `--codex` | Use Codex CLI instead of Claude Code |
-| `--verbose` | Show step-by-step Claude output (Claude only; ignored for Codex) |
+| `--with <executor>` | Required executor selector: `claude` or `codex` |
+| `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--push` | Append instruction to commit and push changes after the AI finishes |
-| `--opus` | Use `claude-opus-4-6` model (Claude only) |
-| `--sonnet` | Use `claude-sonnet-4-6` model (Claude only) |
-| `--haiku` | Use `claude-haiku-4-5-20251001` model (Claude only) |
 
 ### How it works
 
@@ -32,6 +30,8 @@ automata execute-prompt sonar --push     # Commit and push after AI finishes
 2. Checks the PR status checks for a SonarCloud check (identified by `sonarcloud.io` hostname in the check URL).
 3. Builds a prompt from the configured `prompts.sonar` value (or the built-in default), appends the SonarCloud analysis URL, and appends the current PR's structured `automata git get-pr-info --json` payload.
 4. Invokes Claude Code or Codex with the composed prompt.
+
+Claude follows the same output behavior as `automata execute`: verbose progress is on by default, and `--silent` suppresses step-by-step output.
 
 This means the AI receives any already-resolved Sonar details from `get-pr-info`, including fields such as `sonarNewIssues` and `sonarFailures`, so it can start from terminal context instead of always re-querying SonarCloud first.
 
@@ -57,22 +57,20 @@ If no custom prompt is configured, the built-in default is used:
 Fetch open review comments on the current branch's pull request and invoke the AI assistant with the configured Fix-Comments prompt and the comment list as context.
 
 ```bash
-automata execute-prompt fix-comments            # Use Claude (default)
-automata execute-prompt fix-comments --codex    # Use Codex CLI instead
-automata execute-prompt fix-comments --verbose  # Verbose Claude output
-automata execute-prompt fix-comments --push     # Commit and push after AI finishes
+automata execute-prompt fix-comments --with claude
+automata execute-prompt fix-comments --with codex --model o3
+automata execute-prompt fix-comments --with claude --silent
+automata execute-prompt fix-comments --with claude --push
 ```
 
 ### Options
 
 | Flag | Description |
 |---|---|
-| `--codex` | Use Codex CLI instead of Claude Code |
-| `--verbose` | Show step-by-step Claude output (Claude only; ignored for Codex) |
+| `--with <executor>` | Required executor selector: `claude` or `codex` |
+| `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--push` | Append instruction to commit and push changes after the AI finishes |
-| `--opus` | Use `claude-opus-4-6` model (Claude only) |
-| `--sonnet` | Use `claude-sonnet-4-6` model (Claude only) |
-| `--haiku` | Use `claude-haiku-4-5-20251001` model (Claude only) |
 
 ### How it works
 
@@ -80,6 +78,8 @@ automata execute-prompt fix-comments --push     # Commit and push after AI finis
 2. Fetches all unresolved review thread comments on the PR via the GitHub GraphQL API.
 3. Builds a prompt from the configured `prompts.fixComments` value (or the built-in default) and appends the formatted comment list.
 4. Invokes Claude Code or Codex with the composed prompt.
+
+Claude follows the same output behavior as `automata execute`: verbose progress is on by default, and `--silent` suppresses step-by-step output.
 
 ### Configuring the Fix-Comments prompt
 
