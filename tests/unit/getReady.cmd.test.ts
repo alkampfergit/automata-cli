@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(ORIG_CWD(), "tmp-test-getready");
@@ -46,6 +48,7 @@ describe("automata implement-next (CLI smoke)", () => {
 // ── Unit tests for getReady command logic ─────────────────────────────────────
 
 const mockSpawnSync = vi.fn();
+const mockSpawn = vi.fn();
 const mockReadlineQuestion = vi.fn();
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -53,24 +56,51 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...actual,
     spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
+    spawn: (...args: unknown[]) => mockSpawn(...args),
   };
 });
 
-vi.mock("node:readline", () => ({
-  createInterface: () => ({
-    question: (_prompt: string, cb: (answer: string) => void) => {
-      const answer = mockReadlineQuestion();
-      cb(answer);
+vi.mock("node:readline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:readline")>();
+  return {
+    ...actual,
+    createInterface: (options: Parameters<typeof actual.createInterface>[0]) => {
+      if ("output" in options && options.output !== undefined) {
+        return {
+          question: (_prompt: string, cb: (answer: string) => void) => {
+            const answer = mockReadlineQuestion();
+            cb(answer);
+          },
+          close: () => undefined,
+        };
+      }
+      return actual.createInterface(options);
     },
-    close: () => undefined,
-  }),
-}));
+  };
+});
+
+function createMockChildProcess(events: string[], exitCode: number): EventEmitter & { stdout: Readable } {
+  const stdout = new Readable({ read() {} });
+  const child = new EventEmitter() as EventEmitter & { stdout: Readable };
+  child.stdout = stdout;
+
+  setImmediate(() => {
+    for (const line of events) {
+      stdout.push(line + "\n");
+    }
+    stdout.push(null);
+    child.emit("close", exitCode);
+  });
+
+  return child;
+}
 
 describe("getReady command: config validation", () => {
   beforeEach(() => {
     mkdirSync(TEST_CWD, { recursive: true });
     process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
     mockReadlineQuestion.mockReset();
     vi.resetModules();
   });
@@ -184,6 +214,7 @@ describe("getReady command: Claude Code invocation", () => {
     mkdirSync(TEST_CWD, { recursive: true });
     process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
     mockReadlineQuestion.mockReset();
     vi.resetModules();
   });
@@ -228,6 +259,36 @@ describe("getReady command: Claude Code invocation", () => {
     vi.restoreAllMocks();
   });
 
+  it("defaults to Claude and uses verbose streaming when --silent is omitted", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 4, title: "Verbose issue", body: "Show progress.", url: "https://github.com/o/r/issues/4" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawn.mockReturnValueOnce(createMockChildProcess([], 0));
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync([], { from: "user" });
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const claudeArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(claudeArgs).toEqual(["--verbose", "--output-format", "stream-json", "-p", expect.stringContaining("Show progress.")]);
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
   it("invokes claude with default system prompt when no system prompt configured", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     writeConfig({
@@ -254,6 +315,34 @@ describe("getReady command: Claude Code invocation", () => {
     expect(claudeArgs[0]).toBe("-p");
     expect(claudeArgs[1]).toContain("You are an expert software engineer.");
     expect(claudeArgs[1]).toContain("Fix this.");
+
+    vi.restoreAllMocks();
+  });
+
+  it("passes --model through to Claude", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 8, title: "Model issue", body: "Use a model.", url: "https://github.com/o/r/issues/8" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent", "--model", "claude-opus-4-6"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const claudeArgs = claudeCall![1] as string[];
+    expect(claudeArgs).toEqual(["--model", "claude-opus-4-6", "-p", expect.stringContaining("Use a model.")]);
 
     vi.restoreAllMocks();
   });
@@ -312,6 +401,74 @@ describe("getReady command: Claude Code invocation", () => {
 
     const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
     expect(claudeCall).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("warns that --silent has no effect when used with Codex", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 6, title: "Codex silent issue", body: "Codex ignores silent.", url: "https://github.com/o/r/issues/6" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--with", "codex", "--silent"], { from: "user" });
+
+    expect(stderrLines.join("")).toContain("--silent is only supported with Claude");
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+
+    vi.restoreAllMocks();
+  });
+
+  it("exits 1 for invalid --with values before posting a claim comment", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 12, title: "Invalid executor issue", body: "Bad executor.", url: "https://github.com/o/r/issues/12" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await expect(implementNextCommand.parseAsync(["--with", "invalid"], { from: "user" })).rejects.toThrow("exit");
+
+    expect(stderrLines.join("")).toContain("--with must be 'claude' or 'codex'");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    const commentCall = mockSpawnSync.mock.calls.find(
+      (c) => String(c[0]) === "gh" && (c[1] as string[]).includes("comment")
+    );
+    expect(commentCall).toBeUndefined();
 
     vi.restoreAllMocks();
   });
@@ -394,6 +551,7 @@ describe("getReady command: multi-issue selection", () => {
     mkdirSync(TEST_CWD, { recursive: true });
     process.cwd = () => TEST_CWD;
     mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
     mockReadlineQuestion.mockReset();
     vi.resetModules();
   });

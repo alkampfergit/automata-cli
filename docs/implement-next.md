@@ -25,7 +25,7 @@ automata implement-next [options]
 | `--with <executor>` | Executor to use: `claude` or `codex` (default: `claude`) |
 | `--query-only` | Print the issue content and exit (no claim, no AI) |
 | `--yolo` | Skip permissions: `--dangerously-skip-permissions` (Claude) or `--dangerously-bypass-approvals-and-sandbox` (Codex) |
-| `--silent` | Suppress step-by-step Claude output; show only the final summary |
+| `--silent` | Suppress step-by-step Claude output; show only the final summary. With `--with codex`, this prints a warning and has no effect. |
 | `--model <string>` | Model identifier to pass to the executor (e.g. `claude-opus-4-6`) |
 | `--take-first` | When multiple issues match, pick the first without prompting |
 | `--limit <n>` | Max issues to fetch and display (default: `10`) |
@@ -45,7 +45,7 @@ automata implement-next [options]
    - Default: invokes `claude -p` (Claude Code) with verbose output (step-by-step progress).
    - With `--with codex`: invokes `codex exec` (Codex CLI) using the same prompt.
    - With `--yolo`: Claude uses `--dangerously-skip-permissions`; Codex uses `--dangerously-bypass-approvals-and-sandbox`.
-   - With `--silent`: suppresses verbose streaming output and shows only the final result.
+  - With `--silent`: suppresses verbose Claude streaming output and shows only the final result. When combined with `--with codex`, a warning is printed and Codex behavior is unchanged.
    - With `--model`: passes the specified model identifier to the executor.
 
 ## Exit codes

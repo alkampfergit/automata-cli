@@ -145,6 +145,16 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(0);
     }
 
+    let executor: "claude" | "codex" | undefined;
+    if (options.claude !== false) {
+      const requestedExecutor = options.with.toLowerCase();
+      if (requestedExecutor !== "claude" && requestedExecutor !== "codex") {
+        process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${options.with}'.\n`);
+        process.exit(1);
+      }
+      executor = requestedExecutor;
+    }
+
     try {
       postComment(issue.number, "working");
     } catch (err) {
@@ -153,15 +163,12 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     if (options.claude !== false) {
-      const executor = options.with.toLowerCase();
-      if (executor !== "claude" && executor !== "codex") {
-        process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${options.with}'.\n`);
-        process.exit(1);
-      }
-
       const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
       const prompt = `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
       if (executor === "codex") {
+        if (options.silent) {
+          process.stderr.write("Warning: --silent is only supported with Claude and has no effect when used with Codex.\n");
+        }
         invokeCodexCode(prompt, { yolo: options.yolo, model: options.model });
       } else {
         await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: !options.silent, model: options.model });

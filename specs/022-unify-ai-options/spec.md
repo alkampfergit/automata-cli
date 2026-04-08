@@ -66,7 +66,7 @@ A developer runs `automata implement-next --silent` to suppress step-by-step Cla
 
 - What happens when `--with` and `--no-claude` are combined? `--no-claude` takes precedence and skips all AI invocation regardless of `--with`.
 - What happens when `--model` is used with `--no-claude`? The model flag is ignored since no AI executor is launched.
-- What happens when `--with codex` and `--silent` are combined? A warning is printed that `--silent` is not supported for Codex (matching existing Codex behavior with `--verbose`).
+- What happens when `--with codex` and `--silent` are combined? `--silent` has no effect for Codex, and the command prints a warning to stderr explaining that `--silent` is Claude-only.
 
 ## Requirements *(mandatory)*
 

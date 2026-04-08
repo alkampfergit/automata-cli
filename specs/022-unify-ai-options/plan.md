@@ -54,7 +54,7 @@ src/
 ├── commands/
 │   └── getReady.ts          # Main command file — replace options
 ├── claude/
-│   └── claudeService.ts     # Remove resolveModelOption (no longer needed here)
+│   └── claudeService.ts     # Retains resolveModelOption for executePrompt consumers
 └── codex/
     └── codexService.ts      # No changes
 
@@ -66,7 +66,7 @@ docs/
 └── implement-next.md        # Update documentation
 ```
 
-**Structure Decision**: Modify existing files only. The `resolveModelOption` function in `claudeService.ts` can be removed since `--model` passes the string directly — no mapping needed. The `MODEL_IDS` map can also be removed if no other consumer uses it.
+**Structure Decision**: Modify existing files only. `getReady.ts` will stop using `resolveModelOption`, but `claudeService.ts` must retain `resolveModelOption` and `MODEL_IDS` because `executePrompt.ts` still depends on them.
 
 ## Complexity Tracking
 
