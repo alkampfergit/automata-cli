@@ -58,9 +58,83 @@ export function listIssues(technique: IssueDiscoveryTechnique, value: string, li
   return JSON.parse(stdout) as GitHubIssue[];
 }
 
-export function postComment(issueNumber: number, body: string): void {
+/**
+ * Post a comment on a GitHub issue and return the comment URL (if available).
+ * The `gh issue comment` command writes the comment URL to stderr on success.
+ */
+export function postComment(issueNumber: number, body: string): string | undefined {
   const { stderr, status } = run("gh", ["issue", "comment", String(issueNumber), "--body", body]);
   if (status !== 0) {
     throw new Error(stderr.trim() || `Failed to post comment on issue #${issueNumber}.`);
+  }
+  const match = stderr.match(/https:\/\/github\.com\/[^\s]+#issuecomment-\d+/);
+  return match ? match[0] : undefined;
+}
+
+/**
+ * Edit an existing GitHub issue comment identified by its URL.
+ * Extracts owner/repo and comment ID from the URL.
+ */
+export function editComment(commentUrl: string, body: string): void {
+  const match = commentUrl.match(/github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)/);
+  if (!match) {
+    throw new Error(`Cannot parse comment URL: ${commentUrl}`);
+  }
+  const [, ownerRepo, commentId] = match;
+  const { stderr, status } = run("gh", [
+    "api", `repos/${ownerRepo}/issues/comments/${commentId}`,
+    "-X", "PATCH", "-f", `body=${body}`,
+  ]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to edit comment ${commentId}.`);
+  }
+}
+
+/**
+ * Check if the current branch has an open pull request.
+ * Returns the PR number and URL, or null if no PR exists.
+ */
+export function getCurrentBranchPr(branch: string): { number: number; url: string; body: string } | null {
+  const { stdout, stderr, status } = run("gh", [
+    "pr", "view", branch, "--json", "number,url,body",
+  ]);
+  if (status !== 0) {
+    if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
+      return null;
+    }
+    throw new Error(stderr.trim() || "Failed to query PR for current branch.");
+  }
+  return JSON.parse(stdout) as { number: number; url: string; body: string };
+}
+
+/**
+ * Append `Closes #N` to the PR body if not already present.
+ */
+export function addClosesRefToPr(prNumber: number, issueNumber: number): void {
+  const { stdout, status: viewStatus } = run("gh", [
+    "pr", "view", String(prNumber), "--json", "body", "-q", ".body",
+  ]);
+  if (viewStatus !== 0) {
+    throw new Error(`Failed to read PR #${prNumber} body.`);
+  }
+  const currentBody = stdout.trim();
+  const closesRef = `Closes #${issueNumber}`;
+  if (currentBody.includes(closesRef)) {
+    return; // already present
+  }
+  const newBody = currentBody + `\n\n${closesRef}`;
+  const { stderr, status } = run("gh", ["pr", "edit", String(prNumber), "--body", newBody]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to update PR #${prNumber} body.`);
+  }
+}
+
+/**
+ * Add @copilot as a reviewer on the given PR.
+ */
+export function addCopilotReviewer(prNumber: number): void {
+  const { stderr, status } = run("gh", ["pr", "edit", String(prNumber), "--add-reviewer", "@copilot"]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to add Copilot reviewer to PR #${prNumber}.`);
   }
 }
