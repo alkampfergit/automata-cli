@@ -20,10 +20,16 @@ Run the full speckit pipeline completely autonomously through to a merged-ready 
 
 1. Existing code patterns in `src/`
 2. Project conventions in `CLAUDE.md` and `.specify/memory/constitution.md`
-3. Industry-standard defaults for a TypeScript CLI tool
-4. Conservative scope (never add features not mentioned in the description)
+3. Persistent repo memory in `.specify/memory/speckit-memory.md` (if present)
+4. Relevant project-local helper skills under `.agents/skills/` (if present)
+5. Industry-standard defaults for a TypeScript CLI tool
+6. Conservative scope (never add features not mentioned in the description)
 
 Document every autonomous decision as an assumption in the spec's Assumptions section.
+
+Before Phase 1, load `.specify/memory/speckit-memory.md` if it exists. Treat it as reusable project memory, not as authority: current code, the constitution, and the active feature spec always win if they conflict.
+
+If a project-local helper skill exists for a repo-specific workflow discovered in prior runs, follow it rather than re-deriving the process from scratch.
 
 ---
 
@@ -161,7 +167,27 @@ git commit -m "docs: finalise PR artifacts for [FEATURE NAME]"
 
 ---
 
-## Phase 8 — Open Pull Request
+## Phase 8 — Update Run Memory
+
+After implementation is green and PR artifacts are final, persist reusable lessons from this execution for later runs.
+
+### Steps
+
+1. Execute the `speckit-memory` workflow in `.agents/skills/speckit-memory/SKILL.md`.
+2. Update `.specify/memory/speckit-memory.md` with stable, reusable lessons from this run only.
+3. If this run revealed a repeatable repo-specific workflow that deserves its own helper skill, create or update that skill under `.agents/skills/`.
+4. If the memory file or helper skill files changed, commit them:
+
+   ```sh
+   git add .specify/memory/speckit-memory.md <helper-skill-paths>
+   git commit -m "docs: refresh speckit memory for [FEATURE NAME]"
+   ```
+
+5. If no memory-related files changed, continue without creating a commit.
+
+---
+
+## Phase 9 — Open Pull Request
 
 Use the completed `pr-report.md` followed by `spec-decisions.md` as the PR body, keeping the two sections distinct.
 
@@ -201,6 +227,8 @@ After all phases complete, output:
 **Tasks**: <path to tasks.md>
 **PR Report**: <path to pr-report.md>
 **Spec Decisions**: <path to spec-decisions.md>
+**Memory**: <path to .specify/memory/speckit-memory.md>
+**Helper Skills Updated**: <list or "none">
 **Pull Request**: <PR URL>
 
 **Autonomous decisions made**: <count>
@@ -215,4 +243,5 @@ After all phases complete, output:
 - If the spec quality checklist fails after 3 iterations, document remaining issues and continue to Phase 2 rather than blocking.
 - If `gh` is not installed or not authenticated, print the contents of `pr-report.md` followed by `spec-decisions.md` with a clear separator and instruct the user to open the PR manually.
 - If the push fails, report the error and do NOT force-push.
+- If later phases fail after useful repo-specific lessons were discovered, update `.specify/memory/speckit-memory.md` before exiting when possible.
 - Never fabricate file paths or script outputs — always run scripts and use real output.

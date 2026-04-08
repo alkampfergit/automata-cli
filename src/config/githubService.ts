@@ -8,6 +8,8 @@ export interface GitHubIssue {
   url: string;
 }
 
+const GITHUB_ISSUE_COMMENT_URL_RE = /github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)/;
+
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(cmd, args, { encoding: "utf8" });
   if (result.error) {
@@ -76,7 +78,7 @@ export function postComment(issueNumber: number, body: string): string | undefin
  * Extracts owner/repo and comment ID from the URL.
  */
 export function editComment(commentUrl: string, body: string): void {
-  const match = commentUrl.match(/github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)/);
+  const match = GITHUB_ISSUE_COMMENT_URL_RE.exec(commentUrl);
   if (!match) {
     throw new Error(`Cannot parse comment URL: ${commentUrl}`);
   }
