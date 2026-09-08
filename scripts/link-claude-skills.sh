@@ -28,15 +28,13 @@ for skill_dir in "${skill_dirs[@]}"; do
   target="$TARGET_DIR/$skill_name"
   relative_source="../../.claude/skills/$skill_name"
 
-  if [[ -L "$target" ]]; then
+  if [[ -L "$target" && "$(readlink "$target")" == "$relative_source" ]]; then
     # Keep links created by this script.  A symlink test must come before
     # -e because -e is false for broken symlinks; conflicting or broken links
     # are user data and must take the same backup path as directories.
-    if [[ "$(readlink "$target")" == "$relative_source" ]]; then
-      printf 'Already linked %s -> %s\n' "$target" "$relative_source"
-      linked=$((linked + 1))
-      continue
-    fi
+    printf 'Already linked %s -> %s\n' "$target" "$relative_source"
+    linked=$((linked + 1))
+    continue
   fi
 
   if [[ -L "$target" || -e "$target" ]]; then

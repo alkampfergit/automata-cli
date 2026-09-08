@@ -52,7 +52,7 @@ else
     else
         resolve_status=$?
         rm -f "$IMPL_PLAN"
-        if [ "$resolve_status" -ne 1 ]; then
+        if [[ "$resolve_status" -ne 1 ]]; then
             exit "$resolve_status"
         fi
         if $JSON_MODE; then
