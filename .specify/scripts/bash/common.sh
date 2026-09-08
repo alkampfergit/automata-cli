@@ -216,10 +216,19 @@ get_feature_paths() {
         current_branch="${feature_dir_trimmed##*/}"
     fi
 
+    # Preserve the HAS_GIT output consumed by older bundled scripts.
+    # The feature resolver is intentionally usable outside Git, so report the
+    # repository capability independently of how the feature was resolved.
+    local has_git_repo="false"
+    if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+        has_git_repo="true"
+    fi
+
     # Use printf '%q' to safely quote values, preventing shell injection
     # via crafted branch names or paths containing special characters
     printf 'REPO_ROOT=%q\n' "$repo_root"
     printf 'CURRENT_BRANCH=%q\n' "$current_branch"
+    printf 'HAS_GIT=%q\n' "$has_git_repo"
     printf 'FEATURE_DIR=%q\n' "$feature_dir"
     printf 'FEATURE_SPEC=%q\n' "$feature_dir/spec.md"
     printf 'IMPL_PLAN=%q\n' "$feature_dir/plan.md"
