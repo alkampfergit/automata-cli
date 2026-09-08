@@ -148,3 +148,6 @@ vite.config.ts.timestamp-*
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+
+# Local backups created when linking Claude skills for Codex
+.agents/.claude-skill-backups/
