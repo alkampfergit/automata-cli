@@ -112,30 +112,83 @@ function handleTextEntry(input: string, key: InkKey, screen: TextScreen, cancel:
   }
 }
 
+interface MenuScreen {
+  index: number;
+  length: number;
+  setIndex: (update: (index: number) => number) => void;
+  onSelect: () => void;
+  /** Omitted means Escape cancels the wizard rather than going back. */
+  onBack?: () => void;
+}
+
 /** Shared behaviour of every arrow-navigated list screen. */
-function handleMenu(
-  input: string,
-  key: InkKey,
-  index: number,
-  length: number,
-  setIndex: (update: (index: number) => number) => void,
-  cancel: () => void,
-  onSelect: () => void,
-  onBack?: () => void,
-): void {
+function handleMenu(input: string, key: InkKey, menu: MenuScreen, cancel: () => void): void {
   if (key.upArrow) {
-    setIndex((i) => (i > 0 ? i - 1 : length - 1));
+    menu.setIndex((i) => (i > 0 ? i - 1 : menu.length - 1));
   } else if (key.downArrow) {
-    setIndex((i) => (i < length - 1 ? i + 1 : 0));
+    menu.setIndex((i) => (i < menu.length - 1 ? i + 1 : 0));
   } else if (key.return) {
-    onSelect();
+    menu.onSelect();
   } else if (key.escape) {
-    if (onBack) onBack();
+    if (menu.onBack) menu.onBack();
     else cancel();
   } else if (key.ctrl && input === "c") {
     cancel();
   }
 }
+
+interface TextView {
+  title: string;
+  label: string;
+  value: string;
+  hint: string;
+}
+
+interface MenuView {
+  title: string;
+  options: readonly string[];
+  index: number;
+  hint: string;
+}
+
+function TextEntryScreen({ title, label, value, hint }: TextView) {
+  return (
+    <Box flexDirection="column" marginY={1}>
+      <Text bold>{title}</Text>
+      <Text> </Text>
+      <Text>
+        {label}{" "}
+        <Text color="cyan">
+          {value}
+          <Text>_</Text>
+        </Text>
+      </Text>
+      <Text> </Text>
+      <Text dimColor>{hint}</Text>
+    </Box>
+  );
+}
+
+function MenuEntryScreen({ title, options, index, hint }: MenuView) {
+  return (
+    <Box flexDirection="column" marginY={1}>
+      <Text bold>{title}</Text>
+      <Text> </Text>
+      {options.map((option, optionIndex) => (
+        <Box key={option}>
+          <Text color={optionIndex === index ? "cyan" : undefined}>
+            {optionIndex === index ? "❯ " : "  "}
+            {option}
+          </Text>
+        </Box>
+      ))}
+      <Text> </Text>
+      <Text dimColor>{hint}</Text>
+    </Box>
+  );
+}
+
+const BACK = "Esc to go back · Ctrl+C to cancel";
 
 /** Write a prompt file (when non-empty) and store its filename in the config. */
 function savePrompt(
@@ -345,6 +398,57 @@ export function ConfigWizard() {
     },
   };
 
+  /** The arrow-navigated screens, described the same way as the text ones. */
+  const menus: Partial<Record<Screen, MenuScreen>> = {
+    main: {
+      index: mainMenuIndex,
+      length: MAIN_MENU_OPTIONS.length,
+      setIndex: setMainMenuIndex,
+      onSelect: () => {
+        const chosen = MAIN_MENU_OPTIONS[mainMenuIndex];
+        if (chosen === "Remote / Mode") setScreen("remote");
+        else if (chosen === "Implement-Next") setScreen("technique");
+        else if (chosen === "Issue Watch") setScreen("allowed-users");
+        else if (chosen === "Do Work") setScreen("do-work-base-branch");
+        else setScreen("prompts-menu");
+      },
+    },
+    remote: {
+      index: selectedRemoteIndex,
+      length: REMOTE_OPTIONS.length,
+      setIndex: setSelectedRemoteIndex,
+      onSelect: () => {
+        setPendingRemote(REMOTE_OPTIONS[selectedRemoteIndex].value);
+        setScreen("technique");
+      },
+      onBack: () => setScreen("main"),
+    },
+    technique: {
+      index: selectedTechIndex,
+      length: TECHNIQUE_OPTIONS.length,
+      setIndex: setSelectedTechIndex,
+      onSelect: () => {
+        setPendingTechnique(TECHNIQUE_OPTIONS[selectedTechIndex].value);
+        setScreen("value");
+      },
+      onBack: () => setScreen("main"),
+    },
+    "prompts-menu": {
+      index: promptsMenuIndex,
+      length: PROMPTS_MENU_OPTIONS.length,
+      setIndex: setPromptsMenuIndex,
+      onSelect: () => setScreen(PROMPT_SCREEN_BY_OPTION[PROMPTS_MENU_OPTIONS[promptsMenuIndex]]),
+      onBack: () => setScreen("main"),
+    },
+    "do-work-executor": {
+      index: doWorkExecutorIndex,
+      length: EXECUTOR_OPTIONS.length,
+      setIndex: setDoWorkExecutorIndex,
+      onSelect: () => setScreen("do-work-claude-model"),
+      onBack: () => setScreen("do-work-base-branch"),
+    },
+  };
+
   useInput((input, key) => {
     const textScreen = textScreens[screen];
     if (textScreen) {
@@ -352,388 +456,140 @@ export function ConfigWizard() {
       return;
     }
 
-    if (screen === "main") {
-      handleMenu(input, key, mainMenuIndex, MAIN_MENU_OPTIONS.length, setMainMenuIndex, exit, () => {
-        const chosen = MAIN_MENU_OPTIONS[mainMenuIndex];
-        if (chosen === "Remote / Mode") setScreen("remote");
-        else if (chosen === "Implement-Next") setScreen("technique");
-        else if (chosen === "Issue Watch") setScreen("allowed-users");
-        else if (chosen === "Do Work") setScreen("do-work-base-branch");
-        else setScreen("prompts-menu");
-      });
-    } else if (screen === "remote") {
-      handleMenu(
-        input,
-        key,
-        selectedRemoteIndex,
-        REMOTE_OPTIONS.length,
-        setSelectedRemoteIndex,
-        exit,
-        () => {
-          setPendingRemote(REMOTE_OPTIONS[selectedRemoteIndex].value);
-          setScreen("technique");
-        },
-        () => setScreen("main"),
-      );
-    } else if (screen === "technique") {
-      handleMenu(
-        input,
-        key,
-        selectedTechIndex,
-        TECHNIQUE_OPTIONS.length,
-        setSelectedTechIndex,
-        exit,
-        () => {
-          setPendingTechnique(TECHNIQUE_OPTIONS[selectedTechIndex].value);
-          setScreen("value");
-        },
-        () => setScreen("main"),
-      );
-    } else if (screen === "prompts-menu") {
-      handleMenu(input, key, promptsMenuIndex, PROMPTS_MENU_OPTIONS.length, setPromptsMenuIndex, exit, () => {
-        setScreen(PROMPT_SCREEN_BY_OPTION[PROMPTS_MENU_OPTIONS[promptsMenuIndex]]);
-      }, () => setScreen("main"));
-    } else if (screen === "do-work-executor") {
-      handleMenu(
-        input,
-        key,
-        doWorkExecutorIndex,
-        EXECUTOR_OPTIONS.length,
-        setDoWorkExecutorIndex,
-        exit,
-        () => setScreen("do-work-claude-model"),
-        () => setScreen("do-work-base-branch"),
-      );
+    const menu = menus[screen];
+    if (menu) {
+      handleMenu(input, key, menu, exit);
     }
   });
 
-  if (screen === "main") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Configure Automata</Text>
-        <Text> </Text>
-        {MAIN_MENU_OPTIONS.map((option, index) => (
-          <Box key={option}>
-            <Text color={index === mainMenuIndex ? "cyan" : undefined}>
-              {index === mainMenuIndex ? "❯ " : "  "}
-              {option}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Text dimColor>↑/↓ to move · Enter to select · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
+  const techLabel = TECHNIQUE_OPTIONS.find((o) => o.value === pendingTechnique)?.label ?? pendingTechnique;
 
-  if (screen === "remote") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Remote / Mode</Text>
-        <Text> </Text>
-        <Text>Remote environment type:</Text>
-        {REMOTE_OPTIONS.map((option, index) => (
-          <Box key={option.value}>
-            <Text color={index === selectedRemoteIndex ? "cyan" : undefined}>
-              {index === selectedRemoteIndex ? "❯ " : "  "}
-              {option.label}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Text dimColor>↑/↓ to move · Enter to confirm · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
+  /**
+   * The text-entry screens as data. Sixteen near-identical JSX blocks were what
+   * pushed this component past its complexity budget; the shape lives once, in
+   * `TextEntryScreen`.
+   */
+  const textViews: Partial<Record<Screen, TextView>> = {
+    value: {
+      title: "Implement-Next — Issue Discovery Value",
+      label: `${techLabel} value:`,
+      value: discoveryValue,
+      hint: `Type value · Enter to continue · ${BACK}`,
+    },
+    "system-prompt": {
+      title: "Implement-Next — Claude System Prompt",
+      label: "System prompt (optional):",
+      value: systemPrompt,
+      hint: `Type prompt · Enter to save and exit · ${BACK}`,
+    },
+    "sonar-prompt": {
+      title: "Prompts — Sonar",
+      label: "Sonar prompt:",
+      value: sonarPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "fix-comments-prompt": {
+      title: "Prompts — Fix-Comments",
+      label: "Fix-Comments prompt:",
+      value: fixCommentsPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "check-issue-prompt": {
+      title: "Prompts — Check-Issue",
+      label: "Check-Issue prompt:",
+      value: checkIssuePrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "allowed-users": {
+      title: "Issue Watch — Allowed Users",
+      label: "Logins allowed to instruct the agent (comma separated):",
+      value: allowedUsers,
+      hint: `Type logins · Enter to continue · ${BACK}`,
+    },
+    "agent-user": {
+      title: "Issue Watch — Agent User",
+      label: "Login the agent posts as:",
+      value: agentUser,
+      hint: `Type login · Enter to save and exit · ${BACK}`,
+    },
+    "do-work-base-branch": {
+      title: "Do Work — Base Branch",
+      label: "Branch discussion turns return to:",
+      value: doWorkBaseBranch,
+      hint: `Type branch · Enter to continue · ${BACK}`,
+    },
+    "do-work-claude-model": {
+      title: "Do Work — Claude Model",
+      label: "Default model when the executor is Claude (blank = the executor's own default):",
+      value: doWorkClaudeModel,
+      hint: `Type model · Enter to continue · ${BACK}`,
+    },
+    "do-work-codex-model": {
+      title: "Do Work — Codex Model",
+      label: "Default model when the executor is Codex (blank = the executor's own default):",
+      value: doWorkCodexModel,
+      hint: `Type model · Enter to continue · ${BACK}`,
+    },
+    "do-work-max-runs": {
+      title: "Do Work — Max Runs Per Tick",
+      label: "Model runs allowed per tick (0 = unlimited):",
+      value: doWorkMaxRuns,
+      hint: `Type a number · Enter to save · ${BACK}`,
+    },
+    "do-work-discuss-prompt": {
+      title: "Prompts — Do Work — Discuss",
+      label: "Discussion turn instructions:",
+      value: doWorkDiscussPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "do-work-pr-prompt": {
+      title: "Prompts — Do Work — PR",
+      label: "Pull request turn instructions:",
+      value: doWorkPrPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+  };
 
-  if (screen === "technique") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Implement-Next — Issue Discovery Technique</Text>
-        <Text> </Text>
-        <Text>How to find the next issue to work on:</Text>
-        {TECHNIQUE_OPTIONS.map((option, index) => (
-          <Box key={option.value}>
-            <Text color={index === selectedTechIndex ? "cyan" : undefined}>
-              {index === selectedTechIndex ? "❯ " : "  "}
-              {option.label}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Text dimColor>↑/↓ to move · Enter to confirm · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
+  const menuViews: Partial<Record<Screen, MenuView>> = {
+    main: {
+      title: "Configure Automata",
+      options: MAIN_MENU_OPTIONS,
+      index: mainMenuIndex,
+      hint: "↑/↓ to move · Enter to select · Ctrl+C to cancel",
+    },
+    remote: {
+      title: "Remote / Mode",
+      options: REMOTE_OPTIONS.map((o) => o.label),
+      index: selectedRemoteIndex,
+      hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
+    },
+    technique: {
+      title: "Implement-Next — Issue Discovery Technique",
+      options: TECHNIQUE_OPTIONS.map((o) => o.label),
+      index: selectedTechIndex,
+      hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
+    },
+    "prompts-menu": {
+      title: "Prompts",
+      options: PROMPTS_MENU_OPTIONS,
+      index: promptsMenuIndex,
+      hint: `↑/↓ to move · Enter to edit · ${BACK}`,
+    },
+    "do-work-executor": {
+      title: "Do Work — Executor",
+      options: EXECUTOR_OPTIONS.map((o) => o.label),
+      index: doWorkExecutorIndex,
+      hint: `↑/↓ to move · Enter to continue · ${BACK}`,
+    },
+  };
 
-  if (screen === "value") {
-    const techLabel = TECHNIQUE_OPTIONS.find((t) => t.value === pendingTechnique)?.label ?? pendingTechnique;
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Implement-Next — Issue Discovery Value</Text>
-        <Text> </Text>
-        <Text>
-          {techLabel} value:{" "}
-          <Text color="cyan">
-            {discoveryValue}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type value · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
+  const textView = textViews[screen];
+  if (textView) return <TextEntryScreen {...textView} />;
 
-  if (screen === "system-prompt") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Implement-Next — Claude System Prompt</Text>
-        <Text> </Text>
-        <Text>
-          System prompt (optional):{" "}
-          <Text color="cyan">
-            {systemPrompt}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type prompt · Enter to save and exit · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
+  const menuView = menuViews[screen];
+  if (menuView) return <MenuEntryScreen {...menuView} />;
 
-  if (screen === "prompts-menu") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Prompts</Text>
-        <Text> </Text>
-        {PROMPTS_MENU_OPTIONS.map((option, index) => (
-          <Box key={option}>
-            <Text color={index === promptsMenuIndex ? "cyan" : undefined}>
-              {index === promptsMenuIndex ? "❯ " : "  "}
-              {option}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Text dimColor>↑/↓ to move · Enter to edit · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "sonar-prompt") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Prompts — Sonar</Text>
-        <Text> </Text>
-        <Text>
-          Sonar prompt:{" "}
-          <Text color="cyan">
-            {sonarPrompt}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "check-issue-prompt") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Prompts — Check-Issue</Text>
-        <Text> </Text>
-        <Text>
-          Check-Issue prompt:{" "}
-          <Text color="cyan">
-            {checkIssuePrompt}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "allowed-users") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Issue Watch — Allowed Users</Text>
-        <Text> </Text>
-        <Text>
-          Logins allowed to instruct the agent (comma separated):{" "}
-          <Text color="cyan">
-            {allowedUsers}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type logins · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-base-branch") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Do Work — Base Branch</Text>
-        <Text> </Text>
-        <Text>
-          Branch discussion turns return to:{" "}
-          <Text color="cyan">
-            {doWorkBaseBranch}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type branch · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-executor") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Do Work — Executor</Text>
-        <Text> </Text>
-        {EXECUTOR_OPTIONS.map((option, index) => (
-          <Box key={option.value}>
-            <Text color={index === doWorkExecutorIndex ? "cyan" : undefined}>
-              {index === doWorkExecutorIndex ? "❯ " : "  "}
-              {option.label}
-            </Text>
-          </Box>
-        ))}
-        <Text> </Text>
-        <Text dimColor>↑/↓ to move · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-claude-model") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Do Work — Claude Model</Text>
-        <Text> </Text>
-        <Text>
-          Default model when the executor is Claude (blank = the executor&apos;s own default):{" "}
-          <Text color="cyan">
-            {doWorkClaudeModel}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type model · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-codex-model") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Do Work — Codex Model</Text>
-        <Text> </Text>
-        <Text>
-          Default model when the executor is Codex (blank = the executor&apos;s own default):{" "}
-          <Text color="cyan">
-            {doWorkCodexModel}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type model · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-max-runs") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Do Work — Max Runs Per Tick</Text>
-        <Text> </Text>
-        <Text>
-          Model runs allowed per tick (0 = unlimited):{" "}
-          <Text color="cyan">
-            {doWorkMaxRuns}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type a number · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-discuss-prompt") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Prompts — Do Work — Discuss</Text>
-        <Text> </Text>
-        <Text>
-          Discussion turn instructions:{" "}
-          <Text color="cyan">
-            {doWorkDiscussPrompt}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "do-work-pr-prompt") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Prompts — Do Work — PR</Text>
-        <Text> </Text>
-        <Text>
-          Pull request turn instructions:{" "}
-          <Text color="cyan">
-            {doWorkPrPrompt}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  if (screen === "agent-user") {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        <Text bold>Issue Watch — Agent User</Text>
-        <Text> </Text>
-        <Text>
-          Login the agent posts as:{" "}
-          <Text color="cyan">
-            {agentUser}
-            <Text>_</Text>
-          </Text>
-        </Text>
-        <Text> </Text>
-        <Text dimColor>Type login · Enter to save and exit · Esc to go back · Ctrl+C to cancel</Text>
-      </Box>
-    );
-  }
-
-  return (
-    <Box flexDirection="column" marginY={1}>
-      <Text bold>Prompts — Fix-Comments</Text>
-      <Text> </Text>
-      <Text>
-        Fix-Comments prompt:{" "}
-        <Text color="cyan">
-          {fixCommentsPrompt}
-          <Text>_</Text>
-        </Text>
-      </Text>
-      <Text> </Text>
-      <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
-    </Box>
-  );
+  // Every screen in the union is covered above; this keeps the type exhaustive
+  // rather than falling through to whichever block happened to be last.
+  return null;
 }
