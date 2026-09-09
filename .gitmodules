@@ -1,0 +1,3 @@
+[submodule "vendor/agent-plugins-base"]
+	path = vendor/agent-plugins-base
+	url = https://github.com/alkampfergit/agent-plugins-base.git

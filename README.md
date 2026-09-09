@@ -150,10 +150,18 @@ See [docs/do-work.md](docs/do-work.md) for the command reference, and the [wiki]
 ### Setup
 
 ```bash
-git clone https://github.com/alkampfergit/automata-cli.git
+git clone --recurse-submodules https://github.com/alkampfergit/automata-cli.git
 cd automata-cli
 npm install
 ```
+
+Already cloned without `--recurse-submodules`? Fetch the vendored agent plugins with:
+
+```bash
+git submodule update --init --recursive
+```
+
+`vendor/agent-plugins-base` is registered in `.claude/settings.json` as a project-scope Claude Code marketplace, and the `github-alk` plugin is enabled from it — so its skills load for anyone working in this repository. See [docs/plugins.md](docs/plugins.md).
 
 ### Scripts
 
@@ -164,6 +172,8 @@ npm install
 | `npm run lint` | Lint source files with ESLint |
 | `npm run typecheck` | Type-check with tsc (no emit) |
 | `npm run format` | Check formatting with Prettier |
+
+Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
 
 ## License
 
