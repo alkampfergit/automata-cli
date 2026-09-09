@@ -1,6 +1,13 @@
 import { Command } from "commander";
 import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment, type PrInfo } from "../git/gitService.js";
-import { readConfig, DEFAULT_SONAR_PROMPT, DEFAULT_FIX_COMMENTS_PROMPT } from "../config/configStore.js";
+import {
+  readConfig,
+  DEFAULT_SONAR_PROMPT,
+  DEFAULT_FIX_COMMENTS_PROMPT,
+  DEFAULT_CHECK_ISSUE_PROMPT,
+} from "../config/configStore.js";
+import { getIssueConversation, postComment, type IssueConversation } from "../config/githubService.js";
+import { analyzeConversation, formatConversation } from "../github/issueConversation.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 
@@ -147,7 +154,105 @@ const executeFixCommentsCmd = addAiOptions(
   await invokeSelectedExecutor(fullPrompt, executor, options);
 });
 
+type CheckIssueOptions = ExecutePromptAiOptions & { force?: boolean };
+
+const executeCheckIssueCmd = addAiOptions(
+  new Command("check-issue")
+    .description(
+      "Check a GitHub issue for a new message from an allowed user since the last agent run and invoke the AI with the issue conversation",
+    )
+    .argument("<issue-number>", "GitHub issue number to check"),
+)
+  .option("--force", "Skip the new-message check and invoke the AI directly")
+  .action(async (issueNumberArg: string, options: CheckIssueOptions) => {
+    const executor = resolveExecutor(options.with);
+
+    const issueNumber = Number.parseInt(issueNumberArg, 10);
+    if (Number.isNaN(issueNumber) || issueNumber <= 0) {
+      process.stderr.write(`Error: <issue-number> must be a positive integer (got '${issueNumberArg}').\n`);
+      process.exit(1);
+    }
+
+    const config = readConfig();
+
+    if (config.remoteType === "azdo") {
+      process.stderr.write(
+        "Error: check-issue is not supported for Azure DevOps. See docs/azdo-gap.md for details.\n",
+      );
+      process.exit(1);
+    }
+
+    const allowedUsers = (config.allowedUsers ?? []).filter((user) => user.trim().length > 0);
+    if (allowedUsers.length === 0) {
+      process.stderr.write(
+        "Error: No allowed users configured. Run `automata config` or `automata config set allowed-users <user1,user2>` to set them.\n",
+      );
+      process.exit(1);
+    }
+
+    const agentUser = (config.agentUser ?? "").trim();
+    if (agentUser.length === 0) {
+      process.stderr.write(
+        "Error: No agent user configured. Run `automata config` or `automata config set agent-user <login>` to set it.\n",
+      );
+      process.exit(1);
+    }
+
+    let conversation: IssueConversation;
+    try {
+      conversation = getIssueConversation(issueNumber);
+    } catch (err) {
+      process.stderr.write(`Error: ${(err as Error).message}\n`);
+      process.exit(1);
+    }
+
+    const analysis = analyzeConversation(conversation, allowedUsers, agentUser);
+
+    if (!analysis.hasNewMessage && !options.force) {
+      const since = analysis.lastAgentAt === null ? "" : ` (last agent message: ${analysis.lastAgentAt})`;
+      process.stdout.write(
+        `No new messages from allowed users on issue #${String(issueNumber)}${since}. Use --force to invoke the AI anyway.\n`,
+      );
+      return;
+    }
+
+    if (analysis.hasNewMessage) {
+      const plural = analysis.newMessageCount === 1 ? "" : "s";
+      process.stdout.write(
+        `Found ${String(analysis.newMessageCount)} new message${plural} on issue #${String(issueNumber)}. Invoking AI…\n`,
+      );
+    } else {
+      process.stdout.write(`No new messages on issue #${String(issueNumber)} — forced run. Invoking AI…\n`);
+    }
+
+    const promptText = config.prompts?.checkIssue ?? DEFAULT_CHECK_ISSUE_PROMPT;
+    const fullPrompt = withPush(
+      `${promptText}\n\nIssue #${String(issueNumber)}: ${conversation.title}\nURL: ${conversation.url}` +
+        `\n\nConversation (only messages from allowed users and the agent, oldest first):` +
+        `\n\n${formatConversation(analysis.messages)}`,
+      options.push,
+    );
+
+    // The marker comment is the only record of this run, so the AI must not
+    // start unless it is safely on the issue — otherwise the same message
+    // would start a fresh run on every later invocation.
+    const marker = analysis.hasNewMessage
+      ? `automata check-issue: picked up ${String(analysis.newMessageCount)} new message${analysis.newMessageCount === 1 ? "" : "s"}, starting an agent run.`
+      : "automata check-issue: forced run, starting an agent run.";
+    try {
+      postComment(issueNumber, marker);
+    } catch (err) {
+      process.stderr.write(
+        `Error: could not post the execution marker comment on issue #${String(issueNumber)}: ${(err as Error).message}\n`,
+      );
+      process.exit(1);
+    }
+
+    await invokeSelectedExecutor(fullPrompt, executor, options);
+  });
+
 export const executePromptCommand = new Command("execute-prompt")
   .description("Execute a configured custom prompt using an AI assistant")
   .addCommand(executeSonarCmd)
-  .addCommand(executeFixCommentsCmd);
+  .addCommand(executeFixCommentsCmd)
+  .addCommand(executeCheckIssueCmd);

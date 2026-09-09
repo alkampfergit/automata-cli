@@ -8,6 +8,7 @@ import {
   writeConfig,
   DEFAULT_SONAR_PROMPT,
   DEFAULT_FIX_COMMENTS_PROMPT,
+  DEFAULT_CHECK_ISSUE_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
 } from "./configStore.js";
@@ -29,9 +30,16 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
   { label: "By Title Contains", value: "title-contains" },
 ];
 
-const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts"] as const;
+const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts", "Issue Watch"] as const;
 
-const PROMPTS_MENU_OPTIONS = ["Sonar", "Fix-Comments"] as const;
+const PROMPTS_MENU_OPTIONS = ["Sonar", "Fix-Comments", "Check-Issue"] as const;
+
+function parseAllowedUsers(value: string): string[] {
+  return value
+    .split(",")
+    .map((user) => user.trim())
+    .filter((user) => user.length > 0);
+}
 
 type Screen =
   | "main"
@@ -41,7 +49,10 @@ type Screen =
   | "system-prompt"
   | "prompts-menu"
   | "sonar-prompt"
-  | "fix-comments-prompt";
+  | "fix-comments-prompt"
+  | "check-issue-prompt"
+  | "allowed-users"
+  | "agent-user";
 
 export function ConfigWizard() {
   const existing = readConfig();
@@ -60,6 +71,9 @@ export function ConfigWizard() {
   const [fixCommentsPrompt, setFixCommentsPrompt] = useState(
     existing.prompts?.fixComments ?? DEFAULT_FIX_COMMENTS_PROMPT,
   );
+  const [checkIssuePrompt, setCheckIssuePrompt] = useState(existing.prompts?.checkIssue ?? DEFAULT_CHECK_ISSUE_PROMPT);
+  const [allowedUsers, setAllowedUsers] = useState((existing.allowedUsers ?? []).join(", "));
+  const [agentUser, setAgentUser] = useState(existing.agentUser ?? "");
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -78,6 +92,8 @@ export function ConfigWizard() {
           setScreen("remote");
         } else if (chosen === "Implement-Next") {
           setScreen("technique");
+        } else if (chosen === "Issue Watch") {
+          setScreen("allowed-users");
         } else {
           setScreen("prompts-menu");
         }
@@ -162,8 +178,10 @@ export function ConfigWizard() {
         const chosen = PROMPTS_MENU_OPTIONS[promptsMenuIndex];
         if (chosen === "Sonar") {
           setScreen("sonar-prompt");
-        } else {
+        } else if (chosen === "Fix-Comments") {
           setScreen("fix-comments-prompt");
+        } else {
+          setScreen("check-issue-prompt");
         }
       } else if (key.escape) {
         setScreen("main");
@@ -213,6 +231,59 @@ export function ConfigWizard() {
         exit();
       } else if (input && !key.ctrl && !key.meta) {
         setFixCommentsPrompt((v) => v + input);
+      }
+    } else if (screen === "check-issue-prompt") {
+      if (key.return) {
+        let checkIssueValue: string | undefined;
+        if (checkIssuePrompt) {
+          writePromptFile("check-issue-prompt.md", checkIssuePrompt);
+          checkIssueValue = "check-issue-prompt.md";
+        }
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          prompts: { ...current.prompts, checkIssue: checkIssueValue },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setCheckIssuePrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setCheckIssuePrompt((v) => v + input);
+      }
+    } else if (screen === "allowed-users") {
+      if (key.return) {
+        setScreen("agent-user");
+      } else if (key.backspace || key.delete) {
+        setAllowedUsers((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("main");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setAllowedUsers((v) => v + input);
+      }
+    } else if (screen === "agent-user") {
+      if (key.return) {
+        const parsedUsers = parseAllowedUsers(allowedUsers);
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          allowedUsers: parsedUsers.length > 0 ? parsedUsers : undefined,
+          agentUser: agentUser.trim() || undefined,
+        });
+        exit();
+      } else if (key.backspace || key.delete) {
+        setAgentUser((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("allowed-users");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setAgentUser((v) => v + input);
       }
     }
   });
@@ -346,6 +417,60 @@ export function ConfigWizard() {
         </Text>
         <Text> </Text>
         <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "check-issue-prompt") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Prompts — Check-Issue</Text>
+        <Text> </Text>
+        <Text>
+          Check-Issue prompt:{" "}
+          <Text color="cyan">
+            {checkIssuePrompt}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "allowed-users") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Issue Watch — Allowed Users</Text>
+        <Text> </Text>
+        <Text>
+          Logins allowed to instruct the agent (comma separated):{" "}
+          <Text color="cyan">
+            {allowedUsers}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type logins · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "agent-user") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Issue Watch — Agent User</Text>
+        <Text> </Text>
+        <Text>
+          Login the agent posts as:{" "}
+          <Text color="cyan">
+            {agentUser}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type login · Enter to save and exit · Esc to go back · Ctrl+C to cancel</Text>
       </Box>
     );
   }

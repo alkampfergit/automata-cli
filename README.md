@@ -115,11 +115,12 @@ See [docs/execute.md](docs/execute.md) for full details.
 
 ## `automata execute-prompt`
 
-Run predefined AI workflows that gather context from the current branch before invoking Claude or Codex.
+Run predefined AI workflows that gather context from the current branch's PR — or from a GitHub issue's conversation — before invoking Claude or Codex.
 
 ```bash
 automata execute-prompt sonar --with claude
 automata execute-prompt fix-comments --with codex --model o3
+automata execute-prompt check-issue 34 --with claude
 ```
 
 See [docs/execute-prompt.md](docs/execute-prompt.md) for full details.

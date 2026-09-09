@@ -107,3 +107,67 @@ describe("automata config set claude-system-prompt", () => {
     expect(config.claudeSystemPrompt).toBe("You are a senior engineer.");
   });
 });
+
+describe("automata config set allowed-users", () => {
+  it("stores a comma-separated list of logins", () => {
+    const output = run(["config", "set", "allowed-users", "alice,bob"]);
+    expect(output.trim()).toBe("Allowed users set to: alice, bob");
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
+    expect(config.allowedUsers).toEqual(["alice", "bob"]);
+  });
+
+  it("trims whitespace and drops empty entries", () => {
+    run(["config", "set", "allowed-users", " alice , , bob ,"]);
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
+    expect(config.allowedUsers).toEqual(["alice", "bob"]);
+  });
+
+  it("exits with code 1 when no login is given", () => {
+    let errorOutput = "";
+    try {
+      run(["config", "set", "allowed-users", " , "]);
+    } catch (err: unknown) {
+      const execError = err as { status?: number; stderr?: Buffer };
+      expect(execError.status).toBe(1);
+      errorOutput = execError.stderr?.toString() ?? "";
+    }
+    expect(errorOutput).toContain("at least one login");
+    expect(existsSync(automataDir())).toBe(false);
+  });
+
+  it("preserves existing configuration values", () => {
+    run(["config", "set", "type", "gh"]);
+    run(["config", "set", "allowed-users", "alice"]);
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
+    expect(config.remoteType).toBe("gh");
+    expect(config.allowedUsers).toEqual(["alice"]);
+  });
+});
+
+describe("automata config set agent-user", () => {
+  it("stores the agent login and prints confirmation", () => {
+    const output = run(["config", "set", "agent-user", "agent-bot"]);
+    expect(output.trim()).toBe("Agent user set to: agent-bot");
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
+    expect(config.agentUser).toBe("agent-bot");
+  });
+
+  it("trims surrounding whitespace", () => {
+    run(["config", "set", "agent-user", "  agent-bot  "]);
+    const config = JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8"));
+    expect(config.agentUser).toBe("agent-bot");
+  });
+
+  it("exits with code 1 for an empty login", () => {
+    let errorOutput = "";
+    try {
+      run(["config", "set", "agent-user", "   "]);
+    } catch (err: unknown) {
+      const execError = err as { status?: number; stderr?: Buffer };
+      expect(execError.status).toBe(1);
+      errorOutput = execError.stderr?.toString() ?? "";
+    }
+    expect(errorOutput).toContain("non-empty login");
+    expect(existsSync(automataDir())).toBe(false);
+  });
+});

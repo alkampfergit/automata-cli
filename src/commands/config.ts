@@ -48,12 +48,45 @@ const configSetClaudeSystemPrompt = new Command("claude-system-prompt")
     process.stdout.write(`Claude system prompt set.\n`);
   });
 
+const configSetAllowedUsers = new Command("allowed-users")
+  .description("Set the comma-separated list of users allowed to instruct the agent on an issue")
+  .argument("<value>", "Comma-separated GitHub logins, e.g. alice,bob")
+  .action((value: string) => {
+    const users = value
+      .split(",")
+      .map((user) => user.trim())
+      .filter((user) => user.length > 0);
+    if (users.length === 0) {
+      process.stderr.write("Error: allowed-users requires at least one login.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeConfig({ ...current, allowedUsers: users });
+    process.stdout.write(`Allowed users set to: ${users.join(", ")}\n`);
+  });
+
+const configSetAgentUser = new Command("agent-user")
+  .description("Set the login the agent itself posts as")
+  .argument("<value>", "GitHub login used by the agent")
+  .action((value: string) => {
+    const user = value.trim();
+    if (user.length === 0) {
+      process.stderr.write("Error: agent-user requires a non-empty login.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeConfig({ ...current, agentUser: user });
+    process.stdout.write(`Agent user set to: ${user}\n`);
+  });
+
 const configSet = new Command("set")
   .description("Set a configuration value")
   .addCommand(configSetType)
   .addCommand(configSetIssueDiscoveryTechnique)
   .addCommand(configSetIssueDiscoveryValue)
-  .addCommand(configSetClaudeSystemPrompt);
+  .addCommand(configSetClaudeSystemPrompt)
+  .addCommand(configSetAllowedUsers)
+  .addCommand(configSetAgentUser);
 
 export const configCommand = new Command("config")
   .description("Configure automata settings")
