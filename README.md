@@ -137,7 +137,7 @@ One tick of the autonomous loop: answer the open issues whose newest message fro
 
 ### Prerequisites
 
-- Node.js LTS (20+)
+- Node.js 22.12 or newer (set by `commander` and `ink`; enforced via the `engines` field)
 - npm
 
 ### Setup
@@ -167,6 +167,10 @@ git submodule update --init --recursive
 | `npm run format` | Check formatting with Prettier |
 
 Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
+
+### Maintenance
+
+Dependency-refresh policy, the supported Node.js floor and the standing upgrade exceptions are documented in [docs/maintenance.md](docs/maintenance.md).
 
 ## License
 

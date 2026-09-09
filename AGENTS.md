@@ -9,7 +9,7 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Key Technologies
 
 - TypeScript 5.x (strict mode)
-- Node.js LTS (18+)
+- Node.js 22.12+ (floor set by `commander` 15 and `ink` 7; declared in `package.json` `engines`)
 - commander.js for CLI framework
 - vitest for testing
 - tsup for bundling
