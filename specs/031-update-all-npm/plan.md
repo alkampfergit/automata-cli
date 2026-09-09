@@ -107,5 +107,5 @@ documented Node floor and deferred-upgrade list must state what was actually ver
 |---|---|
 | A major upgrade breaks behaviour no test covers | `src/` is unchanged, so any behaviour change would have to originate upstream; the wizard (the only TUI surface) has 44 dedicated tests. |
 | Raising the Node floor breaks a consumer on Node 18/20 | Declared via `engines` so npm reports it at install time, and called out as a breaking change in the PR and docs. |
-| `esbuild` 0.27.2 becomes vulnerable later | The lockfile pins it and `npm audit` runs in CI, so a future advisory surfaces there. Recorded in `docs/maintenance.md` as a watch item tied to tsup widening its range. |
+| `esbuild` 0.27.2 becomes vulnerable later | The lockfile pins it, and the pin is recorded in `docs/maintenance.md` as a watch item tied to tsup widening its range. Detection is Dependabot plus a manual `npm audit` — CI runs no audit step, so this is not gated. |
 | TypeScript 7 stays deferred indefinitely | Recorded in `docs/maintenance.md` with its exact unblocking condition (typescript-eslint publishing TS 7 support). |

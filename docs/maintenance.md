@@ -37,6 +37,10 @@ Both must report `found 0 vulnerabilities`. Run `npm audit --omit=dev` as well a
 this project land in the dev toolchain (vitest/vite/esbuild/eslint) and never reach a published artifact, and the
 distinction matters when triaging urgency.
 
+**These checks are not run by CI.** `.github/workflows/ci.yml` runs `lint`, `typecheck`, `build` and the unit tests only,
+so an advisory published after this refresh will not fail a build — it surfaces as a Dependabot alert, or the next time
+someone runs `npm audit` by hand. Treat the audit as a manual step in every dependency refresh until a gate exists.
+
 ## Refresh policy
 
 1. Try `npm audit fix` first. It only moves versions within the ranges existing parents already declare, so it is the
@@ -84,8 +88,19 @@ The pin lives in `package-lock.json`. No `overrides` entry was added, because fo
 past the range it declares support for, for no security gain — `0.27.2` predates the vulnerable window entirely.
 
 **Revisit when** tsup widens its `esbuild` range to `^0.28.0`; at that point move `esbuild` forward and delete this
-entry. If a future advisory lands on `0.27.2` itself, `npm audit` in CI will surface it and the pin will need
-re-evaluating immediately.
+entry. If a future advisory lands on `0.27.2` itself, nothing in CI will catch it — it shows up as a Dependabot alert or
+in a manual `npm audit`, and the pin then needs re-evaluating immediately.
+
+## Next refresh — open items
+
+The order to work through when the next refresh starts. Each row points at the section above that holds the detail.
+
+| Item | Trigger | Action |
+|---|---|---|
+| Audit gate in CI | Any time — nothing upstream blocks it | Add an `npm audit --omit=dev` step to `.github/workflows/ci.yml` so a production advisory fails the build. Decide separately whether the full-tree audit should warn or fail, since a dev-toolchain advisory would otherwise block unrelated PRs. |
+| `typescript` 5 -> 7 | `typescript-eslint` declares TypeScript 7 support | See [Deferred upgrades](#typescript--held-at-593). Expect `@types/node` resolution work alongside it. |
+| `@types/node` `^25` -> next | Project's target Node line moves past what `^25` describes | See [Deferred upgrades](#typesnode--held-at-2550). Follow the Node LTS line, not the highest published version. |
+| `esbuild` 0.27.2 -> current | `tsup` widens its `esbuild` range | See [Watch items](#esbuild-is-pinned-below-its-latest-release). Move it forward and delete that entry. |
 
 ## Note for test authors
 
