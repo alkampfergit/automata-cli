@@ -111,3 +111,78 @@ Prompt-type fields (`claudeSystemPrompt`, `prompts.sonar`, `prompts.fixComments`
 | `prompts.sonar` | `.automata/sonar-prompt.md` |
 | `prompts.fixComments` | `.automata/fix-comments-prompt.md` |
 | `prompts.checkIssue` | `.automata/check-issue-prompt.md` |
+
+---
+
+## `doWork`
+
+Settings for [`automata do-work`](do-work.md). Every field is optional and has a working default, so the minimum configuration for `do-work` is none at all — but the shared keys it depends on (`remoteType`, `issueDiscoveryTechnique`, `issueDiscoveryValue`, `allowedUsers`, `agentUser`) are all required.
+
+```json
+{
+  "remoteType": "gh",
+  "issueDiscoveryTechnique": "label",
+  "issueDiscoveryValue": "automated",
+  "allowedUsers": ["alice", "bob"],
+  "agentUser": "automata-bot",
+  "doWork": {
+    "baseBranch": "develop",
+    "executor": "claude",
+    "models": {
+      "claude": "claude-opus-4-6",
+      "codex": "o3"
+    },
+    "maxRunsPerTick": 0,
+    "lockStaleMinutes": 120,
+    "prompts": {
+      "issueDiscuss": "do-work-issue-discuss.md",
+      "prWork": "do-work-pr-work.md"
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `baseBranch` | `develop` | The branch a discussion turn returns to, and the branch new work is expected to branch off. |
+| `protectedBranches` | `["main", "master"]` | Extra branches a build turn must never check out and push to. The base branch and the repository default are always refused; this covers the rest. In GitFlow the default branch is often `develop`, so without it a back-merge pull request `main → develop` carrying `Closes #N` would be worked on `main`. |
+| `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. |
+| `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
+| `models.codex` | *(none)* | Default model when the executor is Codex. |
+| `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
+| `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
+| `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
+| `prompts.prWork` | built-in | Instructions for a pull-request turn. |
+
+### Setting these non-interactively
+
+```bash
+automata config set do-work-base-branch main
+automata config set do-work-protected-branches main,master
+automata config set do-work-executor codex
+automata config set do-work-model claude claude-opus-4-6
+automata config set do-work-model codex o3
+automata config set do-work-max-runs 2
+automata config set do-work-lock-stale-minutes 45
+automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
+automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
+```
+
+`do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
+
+### The turn prompts
+
+The `doWork.prompts.*` values follow the same rules as every other prompt field — inline text, or a plain `.md` filename resolved inside `.automata/` (see [Prompt file references](#prompt-file-references)) — with one important difference:
+
+> **An unresolvable prompt reference is always an error.** `readConfig()` resolves every configured `.md` reference through the same throwing helper, so a missing file or one outside `.automata/` fails for any prompt field — there is no silent fallback anywhere. What `do-work` adds is a *clean* failure: it catches the error and exits 1 with an actionable message rather than surfacing a stack trace, because on an unattended loop the operator only sees the log.
+
+These prompts are where a **skill** gets named — automata itself has no concept of a skill. The built-in defaults name none, so `do-work` works with nothing installed. See [wiki/Prompts.md](wiki/Prompts.md) for the contract and a worked example.
+
+### Wizard filename mapping
+
+| Wizard screen | File written |
+|---|---|
+| Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
+| Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
+
+The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.

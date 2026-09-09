@@ -10,6 +10,9 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
   DEFAULT_CHECK_ISSUE_PROMPT: "default check-issue prompt",
+  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
+  DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
+  DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -28,6 +31,15 @@ const FIX_COMMENTS_SCREEN_TEXT = "Fix-Comments prompt:";
 const CHECK_ISSUE_SCREEN_TEXT = "Check-Issue prompt:";
 const ALLOWED_USERS_SCREEN_TEXT = "Logins allowed to instruct the agent";
 const AGENT_USER_SCREEN_TEXT = "Login the agent posts as:";
+const DO_WORK_BASE_BRANCH_SCREEN_TEXT = "Branch discussion turns return to:";
+const DO_WORK_PROTECTED_SCREEN_TEXT = "Branches a build turn must never push to";
+const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
+const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
+const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
+const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
+const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
+const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
+const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 
 async function tick() {
   for (let i = 0; i < 3; i += 1) {
@@ -349,5 +361,332 @@ describe("ConfigWizard — Issue Watch", () => {
     await tick();
 
     expect(lastFrame()).toContain("Configure Automata");
+  });
+});
+
+/**
+ * Press Enter until the named screen is showing.
+ *
+ * Counting keystrokes breaks whenever a screen is inserted into the flow, which
+ * has now happened twice; this states the destination instead.
+ */
+async function advanceTo(
+  stdin: { write: (s: string) => void },
+  lastFrame: () => string | undefined,
+  text: string,
+  max = 10,
+) {
+  for (let i = 0; i < max; i += 1) {
+    if ((lastFrame() ?? "").includes(text)) return;
+    stdin.write(ENTER);
+    await tick();
+  }
+  throw new Error(`never reached a screen containing ${JSON.stringify(text)}: ${lastFrame() ?? ""}`);
+}
+
+async function navigateToDoWork(stdin: { write: (s: string) => void }) {
+  // Main menu: Remote/Mode(0), Implement-Next(1), Prompts(2), Issue Watch(3), Do Work(4)
+  for (let i = 0; i < 4; i += 1) stdin.write(DOWN);
+  await tick();
+  stdin.write(ENTER);
+  await tick();
+}
+
+async function navigateToPromptsEntry(stdin: { write: (s: string) => void }, downs: number) {
+  await navigateToPromptsMenu(stdin);
+  for (let i = 0; i < downs; i += 1) stdin.write(DOWN);
+  await tick();
+  stdin.write(ENTER);
+  await tick();
+}
+
+describe("ConfigWizard — list screen back navigation", () => {
+  it("goes back to the main menu from the remote screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back to the main menu from the technique screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back to the main menu from the prompts menu", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsMenu(stdin);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back from the executor screen to the base branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
+  });
+});
+
+describe("ConfigWizard — Do Work section", () => {
+  it("reaches the base branch screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    expect(lastFrame()).toContain(DO_WORK_BASE_BRANCH_SCREEN_TEXT);
+    expect(lastFrame()).toContain("develop");
+  });
+
+  it("walks base branch, executor, both models, run cap and lock staleness, then saves", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    // Base branch: clear "develop" then type "main".
+    for (let i = 0; i < "develop".length; i += 1) stdin.write("\x7f");
+    stdin.write("main");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Protected branches: keep the default.
+    stdin.write(ENTER);
+    await tick();
+
+    // Executor: pick Codex.
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Claude model, then Codex model.
+    stdin.write("claude-opus-4-6");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write("o3");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Run cap: clear "0" then type "2".
+    stdin.write("\x7f");
+    stdin.write("2");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Lock staleness: clear "120" then type "45".
+    for (let i = 0; i < "120".length; i += 1) stdin.write("\x7f");
+    stdin.write("45");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    expect(writeConfig).toHaveBeenCalledWith({
+      doWork: {
+        baseBranch: "main",
+        protectedBranches: ["main", "master"],
+        executor: "codex",
+        models: { claude: "claude-opus-4-6", codex: "o3" },
+        maxRunsPerTick: 2,
+        lockStaleMinutes: 45,
+      },
+    });
+  });
+
+  it("reaches the lock staleness screen after the run cap", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_LOCK_STALE_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
+  });
+
+  it("keeps the operator on the run cap screen when the value is malformed", async () => {
+    // An omitted cap means unlimited, so accepting "2abc" would silently remove
+    // the operator'"'"'s spend limit on a typo.
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
+    stdin.write("abc");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
+    expect(lastFrame()).toContain("non-negative whole number");
+    // Nothing persisted: an omitted cap would have meant unlimited.
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
+  });
+
+  it("rejects a non-positive lock staleness in place", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_LOCK_STALE_SCREEN_TEXT);
+    for (let i = 0; i < "120".length; i += 1) stdin.write("\x7f");
+    stdin.write("0");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
+    expect(lastFrame()).toContain("greater than zero");
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
+  });
+
+  it("shows the executor options", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_EXECUTOR_SCREEN_TEXT);
+    expect(lastFrame()).toContain("Claude Code");
+    expect(lastFrame()).toContain("Codex");
+  });
+
+  it("goes back from the executor screen to the base branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
+  });
+
+  it("reaches the protected branches screen prefilled with the defaults", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_PROTECTED_SCREEN_TEXT);
+    expect(lastFrame()).toContain("main, master");
+  });
+
+  it("rejects an empty protected branch list in place", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_PROTECTED_SCREEN_TEXT);
+    for (let i = 0; i < "main, master".length; i += 1) stdin.write("\x7f");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
+    expect(lastFrame()).toContain("at least one branch name");
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
+  });
+
+  it("reaches the Claude model screen after the executor screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+  });
+
+  it("reaches the Codex model screen after the Claude one", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+  });
+
+  it("goes back from the run cap screen to the Codex model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+  });
+
+  it("goes back from the Codex model screen to the Claude one", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+  });
+
+  it("reaches the run cap screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
+  });
+});
+
+describe("ConfigWizard — Do Work prompts", () => {
+  it("reaches the discuss prompt screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 3);
+    expect(lastFrame()).toContain(DO_WORK_DISCUSS_SCREEN_TEXT);
+    expect(lastFrame()).toContain("default do-work discuss prompt");
+  });
+
+  it("writes the discuss prompt file and stores the filename", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 3);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("do-work-issue-discuss.md"),
+      "default do-work discuss prompt",
+      "utf8",
+    );
+    expect(writeConfig).toHaveBeenCalledWith({
+      doWork: { prompts: { issueDiscuss: "do-work-issue-discuss.md" } },
+    });
+  });
+
+  it("reaches the pull request prompt screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 4);
+    expect(lastFrame()).toContain(DO_WORK_PR_SCREEN_TEXT);
+    expect(lastFrame()).toContain("default do-work pr prompt");
+  });
+
+  it("writes the pull request prompt file and stores the filename", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 4);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("do-work-pr-work.md"),
+      "default do-work pr prompt",
+      "utf8",
+    );
+    expect(writeConfig).toHaveBeenCalledWith({
+      doWork: { prompts: { prWork: "do-work-pr-work.md" } },
+    });
+  });
+
+  it("returns to the prompts menu after saving a do-work prompt", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 3);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain("Do Work — Discuss");
+    expect(lastFrame()).toContain(PROMPTS_MENU_HINT);
+  });
+
+  it("leaves the existing prompt entries reachable at their original positions", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 0);
+    expect(lastFrame()).toContain(SONAR_SCREEN_TEXT);
   });
 });

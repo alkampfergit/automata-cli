@@ -1,4 +1,11 @@
 import type { IssueConversation } from "../config/githubService.js";
+import {
+  analyzeSurface,
+  formatMessages,
+  type AnalyzedMessage,
+  type Participants,
+  type RawMessage,
+} from "./conversation.js";
 
 export interface ConversationMessage {
   /** `issue` is the issue description; `comment` is a reply on the thread. */
@@ -23,62 +30,61 @@ export interface ConversationAnalysis {
  * Decide whether an allowed user has spoken since the agent's last comment, and
  * build the participant-filtered conversation to hand to the AI.
  *
- * The agent's newest comment is the last-execution boundary, so no local state
- * is needed. Agent messages are never counted as new — otherwise the marker
- * comment the agent posts would retrigger the next run indefinitely.
+ * The rules themselves live in `conversation.ts`, shared with `do-work`, so the
+ * two callers cannot drift apart on the boundary rule. This function is only the
+ * issue-shaped view of them.
  */
 export function analyzeConversation(
   conversation: IssueConversation,
   allowedUsers: string[],
   agentUser: string,
 ): ConversationAnalysis {
-  const agent = agentUser.toLowerCase();
-  const allowed = new Set(allowedUsers.map((user) => user.toLowerCase()));
+  const participants: Participants = { allowedUsers, agentUser };
 
-  let lastAgentAt: string | null = null;
-  for (const comment of conversation.comments) {
-    if (comment.author.toLowerCase() !== agent) continue;
-    if (lastAgentAt === null || comment.createdAt > lastAgentAt) {
-      lastAgentAt = comment.createdAt;
-    }
-  }
-
-  const entries: Omit<ConversationMessage, "isNew">[] = [
+  const messages: RawMessage[] = [
     {
-      kind: "issue" as const,
+      kind: "issue-body",
       author: conversation.author,
       body: conversation.body,
       createdAt: conversation.createdAt,
     },
-    ...conversation.comments.map((c) => ({
-      kind: "comment" as const,
-      author: c.author,
-      body: c.body,
-      createdAt: c.createdAt,
+    ...conversation.comments.map((comment) => ({
+      kind: "issue-comment" as const,
+      author: comment.author,
+      body: comment.body,
+      createdAt: comment.createdAt,
     })),
-  ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  ];
 
-  const messages: ConversationMessage[] = [];
-  for (const entry of entries) {
-    const author = entry.author.toLowerCase();
-    const isAgent = author === agent;
-    if (!isAgent && !allowed.has(author)) continue;
-    const isNew = !isAgent && (lastAgentAt === null || entry.createdAt > lastAgentAt);
-    messages.push({ ...entry, isNew });
-  }
+  const analysis = analyzeSurface(messages, participants);
 
-  const newMessageCount = messages.filter((m) => m.isNew).length;
+  return {
+    messages: analysis.messages.map(toConversationMessage),
+    newMessageCount: analysis.newMessageCount,
+    hasNewMessage: analysis.hasNewMessage,
+    lastAgentAt: analysis.lastAgentAt,
+  };
+}
 
-  return { messages, newMessageCount, hasNewMessage: newMessageCount > 0, lastAgentAt };
+function toConversationMessage(message: AnalyzedMessage): ConversationMessage {
+  return {
+    kind: message.kind === "issue-body" ? "issue" : "comment",
+    author: message.author,
+    body: message.body,
+    createdAt: message.createdAt,
+    isNew: message.isNew,
+  };
 }
 
 /** Render the filtered conversation as plain text for the AI prompt. */
 export function formatConversation(messages: ConversationMessage[]): string {
-  return messages
-    .map((message) => {
-      const kind = message.kind === "issue" ? "issue description" : "comment";
-      const marker = message.isNew ? " · NEW since last agent run" : "";
-      return `[${message.author}] ${kind} · ${message.createdAt}${marker}\n${message.body}`;
-    })
-    .join("\n\n");
+  return formatMessages(
+    messages.map((message) => ({
+      kind: message.kind === "issue" ? ("issue-body" as const) : ("issue-comment" as const),
+      author: message.author,
+      body: message.body,
+      createdAt: message.createdAt,
+      isNew: message.isNew,
+    })),
+  );
 }

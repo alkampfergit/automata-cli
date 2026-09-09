@@ -171,3 +171,160 @@ describe("automata config set agent-user", () => {
     expect(existsSync(automataDir())).toBe(false);
   });
 });
+
+function readConfigFile(): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(automataDir(), "config.json"), "utf8")) as Record<string, unknown>;
+}
+
+function runExpectingFailure(args: string[]): string {
+  let errorOutput = "";
+  try {
+    run(args);
+    throw new Error("expected the command to fail");
+  } catch (err) {
+    const execError = err as { status?: number; stderr?: Buffer };
+    expect(execError.status).toBe(1);
+    errorOutput = execError.stderr?.toString() ?? "";
+  }
+  return errorOutput;
+}
+
+describe("automata config set do-work-*", () => {
+  it("sets the base branch", () => {
+    const output = run(["config", "set", "do-work-base-branch", "main"]);
+    expect(output.trim()).toBe("do-work base branch set to: main");
+    expect(readConfigFile().doWork).toEqual({ baseBranch: "main" });
+  });
+
+  it("rejects an empty base branch", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-base-branch", "  "])).toMatch(/non-empty branch name/);
+  });
+
+  it("sets the protected branches", () => {
+    const output = run(["config", "set", "do-work-protected-branches", "main, release"]);
+    expect(output.trim()).toBe("do-work protected branches set to: main, release");
+    expect(readConfigFile().doWork).toEqual({ protectedBranches: ["main", "release"] });
+  });
+
+  it("rejects an empty protected branch list", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-protected-branches", " , "])).toMatch(
+      /at least one branch name/,
+    );
+  });
+
+  it("sets the executor", () => {
+    run(["config", "set", "do-work-executor", "codex"]);
+    expect(readConfigFile().doWork).toEqual({ executor: "codex" });
+  });
+
+  it("rejects an unknown executor", () => {
+    const errorOutput = runExpectingFailure(["config", "set", "do-work-executor", "gemini"]);
+    expect(errorOutput).toMatch(/invalid executor "gemini"/);
+    expect(errorOutput).toMatch(/claude, codex/);
+  });
+
+  it("sets a per-executor model", () => {
+    const output = run(["config", "set", "do-work-model", "codex", "o3"]);
+    expect(output.trim()).toBe("do-work codex model set to: o3");
+    expect(readConfigFile().doWork).toEqual({ models: { codex: "o3" } });
+  });
+
+  it("keeps each executor's model separate", () => {
+    run(["config", "set", "do-work-model", "claude", "claude-opus-4-6"]);
+    run(["config", "set", "do-work-model", "codex", "o3"]);
+    expect(readConfigFile().doWork).toEqual({
+      models: { claude: "claude-opus-4-6", codex: "o3" },
+    });
+  });
+
+  it("rejects an unknown executor for the model", () => {
+    const errorOutput = runExpectingFailure(["config", "set", "do-work-model", "gemini", "x"]);
+    expect(errorOutput).toMatch(/invalid executor "gemini"/);
+  });
+
+  it("rejects an empty model", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-model", "claude", "  "])).toMatch(
+      /non-empty model identifier/,
+    );
+  });
+
+  it("sets the per-tick run cap", () => {
+    const output = run(["config", "set", "do-work-max-runs", "3"]);
+    expect(output.trim()).toBe("do-work max runs per tick set to: 3");
+    expect(readConfigFile().doWork).toEqual({ maxRunsPerTick: 3 });
+  });
+
+  it("accepts zero as unlimited for the run cap", () => {
+    const output = run(["config", "set", "do-work-max-runs", "0"]);
+    expect(output.trim()).toBe("do-work max runs per tick set to: 0 (unlimited)");
+    expect(readConfigFile().doWork).toEqual({ maxRunsPerTick: 0 });
+  });
+
+  it("rejects a non-numeric run cap", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-max-runs", "many"])).toMatch(
+      /do-work-max-runs must be a non-negative integer/,
+    );
+  });
+
+  it("rejects a negative run cap", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-max-runs", "-1"])).toMatch(
+      /non-negative integer/,
+    );
+  });
+
+  it("sets the lock staleness window", () => {
+    run(["config", "set", "do-work-lock-stale-minutes", "45"]);
+    expect(readConfigFile().doWork).toEqual({ lockStaleMinutes: 45 });
+  });
+
+  it("rejects a zero lock staleness window", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-lock-stale-minutes", "0"])).toMatch(
+      /must be greater than zero/,
+    );
+  });
+
+  it("sets the issue-discuss prompt", () => {
+    const output = run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
+    expect(output.trim()).toBe("do-work issue-discuss prompt set.");
+    expect(readConfigFile().doWork).toEqual({ prompts: { issueDiscuss: "discuss.md" } });
+  });
+
+  it("sets the pr-work prompt", () => {
+    run(["config", "set", "do-work-prompt", "pr-work", "Fix the comments"]);
+    expect(readConfigFile().doWork).toEqual({ prompts: { prWork: "Fix the comments" } });
+  });
+
+  it("rejects an unknown turn kind", () => {
+    const errorOutput = runExpectingFailure(["config", "set", "do-work-prompt", "implement", "x.md"]);
+    expect(errorOutput).toMatch(/invalid turn kind "implement"/);
+    expect(errorOutput).toMatch(/issue-discuss, pr-work/);
+  });
+
+  it("rejects an empty prompt", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-prompt", "pr-work", "  "])).toMatch(
+      /requires a non-empty value/,
+    );
+  });
+
+  it("merges do-work fields instead of replacing the section", () => {
+    run(["config", "set", "do-work-base-branch", "main"]);
+    run(["config", "set", "do-work-executor", "codex"]);
+    run(["config", "set", "do-work-model", "codex", "o3"]);
+    run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
+    run(["config", "set", "do-work-prompt", "pr-work", "pr.md"]);
+    expect(readConfigFile().doWork).toEqual({
+      baseBranch: "main",
+      executor: "codex",
+      models: { codex: "o3" },
+      prompts: { issueDiscuss: "discuss.md", prWork: "pr.md" },
+    });
+  });
+
+  it("leaves unrelated configuration untouched", () => {
+    run(["config", "set", "type", "gh"]);
+    run(["config", "set", "do-work-base-branch", "main"]);
+    const config = readConfigFile();
+    expect(config.remoteType).toBe("gh");
+    expect(config.doWork).toEqual({ baseBranch: "main" });
+  });
+});

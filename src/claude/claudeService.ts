@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { truncate, handleSpawnError, handleExitCode } from "../cli/spawnUtils.js";
+import { trackChild, untrackChild } from "../cli/childRegistry.js";
 
 export function resolveCommand(name: string): string {
   const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
@@ -34,6 +35,85 @@ export function resolveModelOption(opts: { opus?: boolean; sonnet?: boolean; hai
   return selected.length === 1 ? MODEL_IDS[selected[0]] : undefined;
 }
 
+/**
+ * The argv `invokeClaudeCode` will spawn.
+ *
+ * Exported so `do-work --dry-run` can print the exact command it would run:
+ * building the arguments twice would let the dry run drift from reality, which
+ * is worse than not printing them at all.
+ */
+export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {}): string[] {
+  const args: string[] = [];
+  if (options.yolo) args.push("--dangerously-skip-permissions");
+  if (options.model) args.push("--model", options.model);
+  if (options.verbose) args.push("--verbose", "--output-format", "stream-json");
+  args.push("-p", prompt);
+  return args;
+}
+
+/**
+ * Run Claude for an unattended caller: always asynchronously spawned so it can be
+ * cancelled, always tracked so a signal handler can stop it, and **throwing**
+ * rather than exiting on a non-zero status.
+ *
+ * `invokeClaudeCode` below routes failures through `handleExitCode`, which calls
+ * `process.exit`. That is right for a one-shot CLI command but fatal for a tick:
+ * the process would die mid-loop, leaving the marker comment unreconciled, the
+ * remaining queue unprocessed and the `finally` that releases the lock skipped.
+ *
+ * `printSteps` controls output only; the argv is identical either way, so what
+ * `--dry-run` prints is what runs.
+ */
+export function runClaude(
+  prompt: string,
+  options: { model?: string; printSteps?: boolean } = {},
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const claudeBin = resolveCommand("claude");
+    const args = buildClaudeArgs(prompt, { yolo: true, model: options.model, verbose: true });
+    const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
+    trackChild(child);
+
+    const rl = createInterface({ input: child.stdout });
+    let turnCount = 0;
+    rl.on("line", (line) => {
+      if (options.printSteps !== true) return;
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        formatEvent(event, turnCount);
+        if (event["type"] === "assistant") turnCount++;
+      } catch {
+        // skip non-JSON lines
+      }
+    });
+
+    child.on("error", (err) => {
+      untrackChild(child);
+      const nodeErr = err as NodeJS.ErrnoException;
+      reject(
+        nodeErr.code === "ENOENT"
+          ? new Error("`claude` CLI is not installed or not on PATH.")
+          : new Error(nodeErr.message),
+      );
+    });
+
+    child.on("close", (code, signal) => {
+      untrackChild(child);
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal === null
+            ? `Claude Code exited with code ${String(code)}.`
+            : `Claude Code terminated on ${signal}.`,
+        ),
+      );
+    });
+  });
+}
+
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
     return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model);
@@ -43,10 +123,7 @@ export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = 
 
 function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | undefined): void {
   const claudeBin = resolveCommand("claude");
-  const args: string[] = [];
-  if (yolo) args.push("--dangerously-skip-permissions");
-  if (model) args.push("--model", model);
-  args.push("-p", prompt);
+  const args = buildClaudeArgs(prompt, { yolo, model, verbose: false });
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "claude");
   handleExitCode(result.status, "Claude Code");
@@ -55,10 +132,7 @@ function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | und
 function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | undefined): Promise<void> {
   return new Promise<void>((resolve) => {
     const claudeBin = resolveCommand("claude");
-    const args: string[] = [];
-    if (yolo) args.push("--dangerously-skip-permissions");
-    if (model) args.push("--model", model);
-    args.push("--verbose", "--output-format", "stream-json", "-p", prompt);
+    const args = buildClaudeArgs(prompt, { yolo, model, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     const rl = createInterface({ input: child.stdout });

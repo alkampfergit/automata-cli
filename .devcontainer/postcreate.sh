@@ -56,3 +56,9 @@ sudo apt-get install -y gnome-keyring libsecret-tools xvfb xdotool python3-dbus 
 # Initialise the GNOME Keyring default collection so credential-store
 # integration tests can run without a real desktop session.
 bash /workspaces/automata-cli/scripts/setup-keyring.sh || true
+# Fetch the vendored agent plugins. `.claude/settings.json` registers
+# vendor/agent-plugins-base as a project-scope marketplace, so without this the
+# github-alk plugin resolves to an empty directory.
+echo "Initialising git submodules..."
+git -C /workspaces/automata-cli submodule update --init --recursive || \
+  echo "Submodule init failed; the github-alk plugin will be unavailable."

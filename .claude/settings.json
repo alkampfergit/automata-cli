@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "agent-plugins-base": {
+      "source": {
+        "source": "directory",
+        "path": "./vendor/agent-plugins-base"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "github-alk@agent-plugins-base": true
+  }
+}
