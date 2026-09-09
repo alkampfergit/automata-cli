@@ -21,15 +21,17 @@
   only (leaves three packages behind); upgrading only packages named in an advisory (meets the security goal but not the
   currency goal, and makes the next refresh larger).
 
-- **TypeScript held at `^5.9.3`**: Defer `typescript@7.0.2`. **Rationale**: `typescript-eslint@8.70.0` depends on
-  `ts-api-utils@2.5.0`, whose `typescript` peer range rejects 7.x, so the install fails `ERESOLVE`; forced in, `tsc
+- **TypeScript held at `^5.9.3`**: Defer `typescript@7.0.2`. **Rationale**: `typescript-eslint@8.70.0` declares the peer range
+  `typescript >=4.8.4 <6.1.0`, whose upper bound rejects 7.x, so the install fails `ERESOLVE`. It is not
+  `ts-api-utils@2.5.0`, whose peer range `typescript >=4.8.4` accepts 7.x. Forced in, `tsc
   --noEmit` produces 324 errors because TS 7 does not resolve `@types/node`. `^5.9.3` is already the newest 5.x.
   **Alternatives considered**: `--legacy-peer-deps` (leaves typescript-eslint running against an unsupported compiler,
   so lint reports success while being unreliable); dropping typescript-eslint (far outside a dependency refresh and
   weakens a gate the constitution requires).
 
 - **`@types/node` held at `^25.5.0`**: Do not chase 26.x. **Rationale**: DefinitelyTyped tags `22.20.2` as `latest`, so
-  npm already considers the repo ahead of current and `npm outdated` does not flag it as behind; 26.x types APIs absent
+  npm already considers the repo ahead of current. `npm outdated` lists the package but shows `Latest` behind
+  `Current`, so it is not flagged as behind; 26.x types APIs absent
   from the Node 24 LTS that CI runs, inviting code that compiles then fails at runtime. It carries no advisory and is a
   devDependency. **Alternatives considered**: bump to `^26.5.1` (chases a number at the cost of type accuracy against the
   real runtime); drop to `^24` to match Node 24 (a downgrade the issue did not ask for; `^25` typechecks clean).
@@ -51,7 +53,9 @@
 
 - **Declare `engines.node: ">=22.12.0"`**: Write the floor down rather than leave it implicit. **Rationale**: measured
   engine fields — `commander@15.0.0` `>=22.12.0`, `ink@7.1.1` `>=22` — mean the real floor rises regardless; declaring it
-  makes npm refuse the install with a clear message instead of failing at first run. CI already uses `lts/*` (Node 24).
+  makes npm report a clear `EBADENGINE` warning at install time instead of failing opaquely at first run. It is a
+  signal, not a gate — npm refuses the install only when the consumer sets `engine-strict=true` themselves. CI already
+  uses `lts/*` (Node 24).
   **Alternatives considered**: leave `engines` absent (the floor still rises, but a Node 18 user gets an opaque error);
   stay on `commander@14`/`ink@6` to preserve Node 18 (does not meet the currency goal, and CI has not tested Node 18 for
   some time).

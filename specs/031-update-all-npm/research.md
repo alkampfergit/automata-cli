@@ -82,6 +82,12 @@ npm error While resolving: typescript-eslint@8.70.0
 npm error   peer typescript@">=4.8.4" from ts-api-utils@2.5.0
 ```
 
+**The blocking range is not the one this excerpt happens to print.** `ts-api-utils@2.5.0` declares the open-ended
+`typescript >=4.8.4` (`package-lock.json`), which *accepts* 7.x — the line above names a package in the resolution tree,
+not the constraint that failed. The rejecting constraint is `typescript-eslint@8.70.0`'s own peer range,
+`typescript >=4.8.4 <6.1.0`, whose `<6.1.0` upper bound excludes both 6.x and 7.x. This matters for the unblocking
+condition: a `ts-api-utils` release changes nothing, and only `typescript-eslint` widening its own range does.
+
 Installed anyway (via a separate step), `tsc --noEmit` produced **324 errors** — TS 7 could not resolve `@types/node`
 at all (`error TS2591: Cannot find name 'node:fs'`, `error TS2503: Cannot find namespace 'NodeJS'`). `^5.9.3` is already
 the newest 5.x release, so no in-line upgrade is available either.
@@ -98,7 +104,8 @@ the newest 5.x release, so no in-line upgrade is available either.
 **Decision**: Leave `@types/node` at `^25.5.0`.
 
 **Rationale**: DefinitelyTyped tags `22.20.2` as `latest` for `@types/node`, so by npm's own definition the repo is
-already ahead of "latest"; `npm outdated` does not list it. The highest published version is `26.5.1`, which types APIs
+already ahead of "latest". `npm outdated` does list the package, but with `Latest` (`22.20.2`) *behind* `Current`
+(`25.9.6`), so the row records a dist-tag quirk rather than an available upgrade. The highest published version is `26.5.1`, which types APIs
 absent from the Node 24 LTS that CI runs (`node-version: lts/*`), inviting code that compiles and then fails at runtime.
 It carries no advisory and is a devDependency.
 
@@ -152,8 +159,17 @@ still maps a lone ESC byte to `{name: 'escape'}`.
 **Rationale**: Measured engine fields of the new majors — `commander@15.0.0`: `node >=22.12.0`; `ink@7.1.1`:
 `node >=22`; `vitest@5.0.0`: `node ^22.12.0 || ^24.0.0 || >=26.0.0`. Two of those are runtime dependencies, so the real
 floor rises to 22.12.0 whether it is declared or not. `AGENTS.md` currently claims "Node.js LTS (18+)", which becomes
-false with this change. Declaring `engines` makes npm refuse the install with a clear message instead of failing at
-first run. CI already uses `node-version: lts/*` (Node 24), so no workflow change is needed.
+false with this change. Declaring `engines` makes npm print a clear `EBADENGINE` warning at install time instead of
+failing opaquely at first run — a diagnostic, not a gate, since npm proceeds with the install unless the consumer has
+set `engine-strict=true` in their own `.npmrc` (verified on npm 11.19.0). CI already uses `node-version: lts/*`
+(Node 24), so no workflow change is needed.
+
+The dev toolchain is stricter than the published floor: intersecting `eslint@10.10.0`'s
+`^20.19.0 || ^22.13.0 || >=24` with `vitest@5.0.0`'s `^22.12.0 || ^24.0.0 || >=26.0.0` gives
+`^22.13.0 || ^24.0.0 || >=26.0.0`, which excludes Node 22.12, 23 and 25. `engines.node` stays at the runtime floor of
+`>=22.12.0`, since it describes what consumers need to run the CLI; the narrower development range is documented in the
+README and `docs/maintenance.md` rather than declared, because tightening `engines` would misreport the requirement for
+installing the published package.
 
 **Alternatives considered**:
 

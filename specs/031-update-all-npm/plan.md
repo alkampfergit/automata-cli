@@ -22,7 +22,8 @@ window. `typescript` stays on 5.x because `typescript-eslint` peer-rejects 7.x. 
 
 **Storage**: N/A — no persistent data touched
 
-**Testing**: vitest 5, 668 tests across 26 files; `ink-testing-library` 4 for the wizard
+**Testing**: vitest 5, 674 tests across 27 files (668 across 26 pre-existing, plus this feature's `ciAuditGate.test.ts`);
+`ink-testing-library` 4 for the wizard
 
 **Target Platform**: Node.js >= 22.12.0 on Linux/macOS/Windows (raised from an undeclared 18+)
 
@@ -95,8 +96,8 @@ machinery, which is also what let it land at all — see Decision 8 on the `work
    `npm audit` and `npm audit --omit=dev` both report zero.
 2. **Test adaptation** — extend `tick()` in `ConfigWizard.test.tsx` past ink's flush window, with a comment naming the
    upstream change (FR-008).
-3. **Verification** — `npm run build`, `npm test`, `npm run lint`, `npm run typecheck`; confirm the test count still
-   reads 668/668 with no skips.
+3. **Verification** — `npm run build`, `npm test`, `npm run lint`, `npm run typecheck`; confirm all 668 pre-existing
+   tests still pass with no skips (the suite reads 674/674 across 27 files once this feature's own tests are added).
 4. **Documentation** — add `docs/maintenance.md`, correct the Node claim in `AGENTS.md`, add the prerequisite to the
    README dev-setup section, and link the new page from the README command table area per the documentation convention.
 5. **Publish-time audit gate** (converge pass) — add the `audit:prod` / `audit:all` npm scripts, gate `npm publish` on
@@ -115,7 +116,7 @@ have failed on its first run against the 9 baseline advisories.
 | Risk | Mitigation |
 |---|---|
 | A major upgrade breaks behaviour no test covers | `src/` is unchanged, so any behaviour change would have to originate upstream; the wizard (the only TUI surface) has 44 dedicated tests. |
-| Raising the Node floor breaks a consumer on Node 18/20 | Declared via `engines` so npm reports it at install time, and called out as a breaking change in the PR and docs. |
+| Raising the Node floor breaks a consumer on Node 18/20 | Declared via `engines` so npm reports it at install time as an `EBADENGINE` warning (npm does not refuse the install unless the consumer sets `engine-strict`), and called out as a breaking change in the PR and docs. |
 | `esbuild` 0.27.2 becomes vulnerable later | The lockfile pins it, and the pin is recorded in `docs/maintenance.md` as a watch item tied to tsup widening its range. Detection is Dependabot plus `npm run audit:all` — esbuild arrives through tsup, so it is dev-only and outside the release gate. |
 | A production advisory reaches a published release | `prepublishOnly` runs `audit:prod`, so `npm publish` aborts at the audit before packing. Verified by forcing the audit to exit 1 and confirming the dry run stops there. |
 | The gate is silently removed by a later manifest edit | `tests/unit/ciAuditGate.test.ts` fails if `prepublishOnly` disappears, points at the full tree, gains `--audit-level`, or if an audit is moved into an install- or build-time hook. Verified by mutating all four. |

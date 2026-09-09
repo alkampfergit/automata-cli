@@ -9,7 +9,10 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Key Technologies
 
 - TypeScript 5.x (strict mode)
-- Node.js 22.12+ (floor set by `commander` 15 and `ink` 7; declared in `package.json` `engines`)
+- Node.js 22.12+ to *run* the CLI (floor set by `commander` 15 and `ink` 7; declared in `package.json` `engines`,
+  which npm reports as an `EBADENGINE` warning rather than refusing the install)
+- Node.js `^22.13.0 || ^24.0.0 || >=26.0.0` to *develop* — the stricter intersection of `eslint@10` and `vitest@5`;
+  Node 24 LTS is what CI runs
 - commander.js for CLI framework
 - vitest for testing
 - tsup for bundling

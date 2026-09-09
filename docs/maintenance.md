@@ -20,15 +20,34 @@ The floor is set by the runtime dependencies, not by this project's own code:
 | `commander@15` | `node >=22.12.0` |
 | `ink@7` | `node >=22` |
 
-Installing on Node 18 or 20 fails at install time with an engine error rather than at first run. CI builds on
-`node-version: lts/*`.
+**`engines` warns; it does not refuse.** Under npm's default configuration an unsatisfied `engines.node` produces an
+`npm warn EBADENGINE` line and the install still succeeds — verified on npm 11.19.0. It becomes a hard error only when
+the *consumer* sets `engine-strict=true` in their own `.npmrc`, which a published package cannot do on their behalf.
+So the field's value here is a clear, early, machine-readable signal at install time instead of an opaque failure at
+first run; it is not a gate. CI builds on `node-version: lts/*`.
 
 > **Breaking change (from the 031 dependency refresh):** earlier releases documented Node 18+/20+. Consumers on Node 18
 > or 20 must upgrade to 22.12 or newer.
 
+### Developing is stricter than running
+
+The 22.12 floor covers the published CLI. Contributors need a *narrower* range, because the dev toolchain declares its
+own engines and they do not agree with each other:
+
+| Dev dependency | Declared engine |
+|---|---|
+| `eslint@10.10.0` | `^20.19.0 \|\| ^22.13.0 \|\| >=24` |
+| `vitest@5.0.0` | `^22.12.0 \|\| ^24.0.0 \|\| >=26.0.0` |
+
+Their intersection is **`^22.13.0 || ^24.0.0 || >=26.0.0`**. So three versions can install the CLI yet cannot run every
+development command: Node **22.12** (runs vitest, but is below eslint's `^22.13.0`), Node **23** (excluded by both), and
+Node **25** (lints, but falls in the gap between vitest's `^24.0.0` and `>=26.0.0`). CI uses
+`node-version: lts/*` (Node 24), which is inside the intersection; Node 24 is the safe choice locally.
+
 ## Checking the security report
 
-Two npm scripts, so a local check and CI run exactly the same thing:
+Two npm scripts, so a local check and the publish gate run exactly the same thing (CI runs neither yet — see
+[What CI does not yet enforce](#what-ci-does-not-yet-enforce)):
 
 ```bash
 npm run audit:prod  # npm audit --omit=dev  -> only what ships to consumers
@@ -62,7 +81,9 @@ The audit is deliberately **not** wired into `build`, `prepare`, `prepublish` or
 needs the registry, so an offline build or install would fail on a network hiccup rather than on a real defect (and
 `prepublish`, unlike `prepublishOnly`, still runs on a plain `npm install`).
 
-Neither script passes `--audit-level` — an advisory is resolved or recorded here, never silenced.
+Neither script passes `--audit-level`. The flag would not hide anything — a lower-severity advisory still appears in
+the report — but it lets the command exit 0 below the chosen threshold, so a moderate advisory would sail through the
+publish gate. An advisory is resolved or recorded here, never waved past.
 `tests/unit/ciAuditGate.test.ts` pins all of this: the two scripts' exact commands, the absence of `--audit-level`,
 that `prepublishOnly` runs the production audit and not the full-tree one, and that no install- or build-time hook runs
 an audit.
@@ -93,8 +114,11 @@ Standing exceptions to "latest". Each names the condition that unblocks it.
 
 ### `typescript` — held at `^5.9.3`
 
-`typescript@7.x` cannot be installed: `typescript-eslint` depends on `ts-api-utils`, whose `typescript` peer range
-excludes 6.x and 7.x, so `npm install` fails with `ERESOLVE`. Installed by force, `tsc --noEmit` reports several hundred
+`typescript@7.x` cannot be installed: `typescript-eslint@8.70.0` declares the peer range `typescript >=4.8.4 <6.1.0`,
+whose upper bound rejects 7.x, so `npm install` fails with `ERESOLVE`. (The blocker is *not* `ts-api-utils@2.5.0`, whose
+own peer range is the open-ended `typescript >=4.8.4` and accepts 7.x — see `package-lock.json`.)
+
+Installed by force, `tsc --noEmit` reports several hundred
 errors because TS 7 does not resolve `@types/node` (`Cannot find name 'node:fs'`, `Cannot find namespace 'NodeJS'`).
 
 **Unblocked when** `typescript-eslint` publishes a release declaring TypeScript 7 support. `^5.9.3` is already the newest
@@ -102,9 +126,10 @@ errors because TS 7 does not resolve `@types/node` (`Cannot find name 'node:fs'`
 
 ### `@types/node` — held at `^25.5.0`
 
-DefinitelyTyped tags `22.20.2` as the `latest` version of `@types/node`, so `npm outdated` does not list this package —
-by npm's own reckoning the project is already ahead. Higher majors exist (26.x) but type APIs that do not exist on the
-Node 24 LTS that CI runs, which invites code that compiles and then fails at runtime.
+DefinitelyTyped tags `22.20.2` as the `latest` version of `@types/node`. `npm outdated` *does* list the package, but
+its "Latest" column reads `22.20.2` against a "Current" of `25.9.6` — by npm's own reckoning the project is already
+ahead, so the row is not an upgrade to take. Higher majors exist (26.x) but type APIs that do not exist on the Node 24
+LTS that CI runs, which invites code that compiles and then fails at runtime.
 
 **Unblocked when** the project's target Node version moves past what `^25` describes. Track the Node LTS line, not the
 highest published `@types/node`.

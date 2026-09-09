@@ -33,7 +33,10 @@ describe("audit scripts", () => {
 
   it("does not weaken either audit with an audit-level threshold", () => {
     // FR-002: advisories are resolved or recorded, never silenced.
-    // `--audit-level` would let a low or moderate advisory pass unreported.
+    // `--audit-level` does not hide anything -- a lower-severity advisory is
+    // still printed in full. What it changes is the severity threshold that
+    // produces a nonzero exit, so a low or moderate advisory could let the
+    // publish gate proceed.
     const scripts = packageScripts();
     expect(scripts["audit:prod"]).not.toContain("--audit-level");
     expect(scripts["audit:all"]).not.toContain("--audit-level");

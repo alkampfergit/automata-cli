@@ -60,13 +60,14 @@ it did before the upgrade.
 **Why this priority**: A dependency refresh that silently breaks the tool is worse than the vulnerabilities it fixed.
 Equal in priority to P1 because it is the gate on shipping it.
 
-**Independent Test**: `npm test && npm run lint` passes with the same test count as the pre-change baseline (668 tests
-across 26 files), with no test deleted or skipped to make it pass.
+**Independent Test**: `npm test && npm run lint` passes with all 668 pre-existing tests across 26 files still present
+and passing, and no test deleted or skipped to make it pass. The total may exceed the baseline where this feature adds
+tests of its own (it ends at 674 across 27 files); it may never fall below it.
 
 **Acceptance Scenarios**:
 
-1. **Given** the upgraded dependencies, **When** `npm test` runs, **Then** all 668 tests pass and no test has been
-   removed, skipped or weakened.
+1. **Given** the upgraded dependencies, **When** `npm test` runs, **Then** all 668 pre-existing tests pass and no test
+   has been removed, skipped or weakened.
 2. **Given** the upgraded dependencies, **When** `npm run lint` and `npm run typecheck` run, **Then** both exit 0.
 3. **Given** the upgraded dependencies, **When** `npm run build` runs, **Then** tsup produces `dist/index.js` with no
    errors.
@@ -106,9 +107,11 @@ before packing. Run it with a clean audit and confirm the audit passes and publi
   override would force `esbuild@0.28.x` past the range tsup declares it supports.
 - **A major upgrade raises the minimum Node.js version.** `commander@15` requires Node `>=22.12.0` and `ink@7` requires
   Node `>=22`, whereas `AGENTS.md` currently claims Node 18+. Installing on Node 18 or 20 would fail at runtime with no
-  useful message, so the requirement is declared explicitly instead of left implicit.
+  useful message, so the requirement is declared explicitly instead of left implicit — as an install-time warning, since
+  npm does not refuse an `engines` mismatch by default.
 - **A latest release is rejected by another package's peer range.** `typescript@7.0.2` cannot be installed because
-  `typescript-eslint@8.70.0` depends on `ts-api-utils` whose `typescript` peer range excludes 6.x and 7.x. The upgrade is
+  `typescript-eslint@8.70.0` itself declares `typescript >=4.8.4 <6.1.0` (`package-lock.json`), whose upper bound
+  rejects 7.x. It is not `ts-api-utils@2.5.0`, whose peer range is the open-ended `typescript >=4.8.4`. The upgrade is
   deferred rather than forced with `--legacy-peer-deps`, which would leave linting silently broken.
 - **A package's `latest` dist-tag is behind the highest published version.** `@types/node` publishes `26.5.1` but tags
   `22.20.2` as `latest`; the repo already declares `^25.5.0`. Chasing the highest number would type Node APIs that do not
@@ -177,7 +180,9 @@ before packing. Run it with a clean audit and confirm the audit passes and publi
   package name, version, and the range that rejects it.
 - **FR-005**: The committed `package-lock.json` MUST be regenerated so a fresh `npm ci` reproduces the audited tree.
 - **FR-006**: `package.json` MUST declare an `engines.node` floor matching the strictest runtime requirement among its
-  runtime dependencies, so an unsupported Node version fails at install time rather than at first run.
+  runtime dependencies, so an unsupported Node version is reported at install time (`npm warn EBADENGINE`) rather than
+  surfacing as an opaque failure at first run. This is a signal, not a gate: npm only refuses the install when the
+  consumer sets `engine-strict=true` in their own `.npmrc`, which a published package cannot do for them.
 - **FR-007**: All existing tests MUST continue to pass. No test may be deleted, skipped, or have an assertion weakened
   in order to accommodate an upgrade.
 - **FR-008**: Where a major upgrade changes observable library behaviour, the test suite MUST be adapted to model the new
@@ -193,8 +198,9 @@ before packing. Run it with a clean audit and confirm the audit passes and publi
 - **FR-013a**: The audit MUST NOT run in any install-time or build-time script, so an offline install or build does not
   fail on registry unavailability.
 - **FR-014**: Both audits MUST be exposed as npm scripts invoked identically by the gate and by a maintainer locally,
-  and neither may pass `--audit-level` (which would let a lower-severity advisory through unreported, contradicting
-  FR-002).
+  and neither may pass `--audit-level`. The option does not hide anything from the report — a lower-severity advisory is
+  still printed in full — but it lets the command exit 0 below the chosen threshold, which would let such an advisory
+  pass the publish gate and so contradict FR-002.
 - **FR-015**: The gate's wiring MUST be covered by the unit suite — which audit it runs, that it is not the full-tree
   one, and that no install- or build-time hook runs an audit — so it cannot be removed or weakened by an unrelated
   manifest edit without a test failing.
@@ -216,10 +222,12 @@ before packing. Run it with a clean audit and confirm the audit passes and publi
 
 - **SC-001**: `npm audit` reports 0 vulnerabilities, down from 9 (1 low, 3 moderate, 5 high).
 - **SC-002**: `npm audit --omit=dev` reports 0 vulnerabilities, down from 1 high (`ws`, reached via `ink`).
-- **SC-003**: 668 tests across 26 files pass — the same count as the pre-change baseline, with zero skips.
+- **SC-003**: All 668 pre-existing tests across 26 files still pass, with zero skips — the baseline is a floor, not a
+  fixed total. The suite finishes at 674 across 27 files, the extra 6 being this feature's own `ciAuditGate` file.
 - **SC-004**: `npm run lint`, `npm run typecheck` and `npm run build` each exit 0.
 - **SC-005**: `npm outdated` lists no upgradable direct dependency other than those recorded as deferred here.
-- **SC-006**: Exactly one deferred upgrade is carried (`typescript`), and its blocker is named in the PR.
+- **SC-006**: Exactly two deferred upgrades are carried (`typescript` and `@types/node`), and each one's blocker is
+  named in the PR and in `docs/maintenance.md`.
 - **SC-007**: `npm run audit:prod` and `npm run audit:all` both exit 0 on the branch; a failing production audit aborts
   `npm publish` at the audit step; and removing the gate, pointing it at the full tree, adding `--audit-level`, or
   moving the audit to an install-time hook each fail the unit suite.
@@ -230,8 +238,8 @@ before packing. Run it with a clean audit and confirm the audit passes and publi
   or suppressing advisories, because every one of the 9 advisories has a fix reachable inside the ranges the project's
   parents already declare, so no override is needed.
 - [AUTO] **TypeScript stays on 5.x**: chose `^5.9.3` (the latest 5.x) over `^7.0.2`, because `typescript-eslint@8.70.0`
-  pulls `ts-api-utils@2.5.0` whose `typescript` peer range rejects 7.x — installing it fails `ERESOLVE`, and forcing it
-  would break `npm run lint`. Revisit when typescript-eslint ships TS 7 support.
+  declares the peer range `typescript >=4.8.4 <6.1.0`, whose upper bound rejects 7.x — installing it fails `ERESOLVE`,
+  and forcing it would break `npm run lint`. Revisit when typescript-eslint ships TS 7 support.
 - [AUTO] **`@types/node` stays on `^25.5.0`**: chose to leave it rather than move to `26.5.1`, because DefinitelyTyped
   tags `22.20.2` as `latest` (so npm already considers `^25` ahead of current), and 26.x describes APIs absent from the
   Node 24 LTS that CI runs. It is a devDependency with no advisory against it.

@@ -57,8 +57,12 @@ None. No package was added or removed; only versions changed.
 
 - **Minimum Node.js is now 22.12.0** (previously documented as 18+ in `AGENTS.md` and 20+ in the README). Consumers on
   Node 18 or 20 must upgrade. The floor comes from `commander@15` (`node >=22.12.0`) and `ink@7` (`node >=22`), not from
-  this project's own code. It is enforced by the new `engines` field, so npm reports it at install time. CI already runs
-  `node-version: lts/*` (Node 24) and needs no change.
+  this project's own code. The new `engines` field makes npm *report* it at install time as an `npm warn EBADENGINE`
+  line; it does not refuse the install, since npm only enforces `engines` when the consumer sets `engine-strict=true` in
+  their own `.npmrc`. CI already runs `node-version: lts/*` (Node 24) and needs no change.
+- **Developing needs a narrower range than running: `^22.13.0 || ^24.0.0 || >=26.0.0`.** `eslint@10` declares
+  `^20.19.0 || ^22.13.0 || >=24` and `vitest@5` declares `^22.12.0 || ^24.0.0 || >=26.0.0`, so Node 22.12, 23 and 25 can
+  install the CLI but cannot run every development command. Documented in the README and `docs/maintenance.md`.
 
 ## Testing
 
@@ -84,12 +88,13 @@ None. No package was added or removed; only versions changed.
 
 ## Notes
 
-- **`typescript` stays on `^5.9.3`.** `typescript@7.0.2` cannot be installed — `typescript-eslint@8.70.0` pulls
-  `ts-api-utils@2.5.0`, whose `typescript` peer range rejects 7.x, so `npm install` fails `ERESOLVE`. Forced in anyway,
+- **`typescript` stays on `^5.9.3`.** `typescript@7.0.2` cannot be installed — `typescript-eslint@8.70.0` declares the
+  peer range `typescript >=4.8.4 <6.1.0`, whose upper bound rejects 7.x, so `npm install` fails `ERESOLVE`. The blocker
+  is that direct peer range, not `ts-api-utils@2.5.0`, which accepts 7.x via its open-ended `typescript >=4.8.4`. Forced in anyway,
   `tsc --noEmit` reports 324 errors because TS 7 does not resolve `@types/node`. Not forced with `--legacy-peer-deps`,
   which would leave the lint gate silently unreliable. `^5.9.3` is already the newest 5.x.
-- **`@types/node` stays on `^25`.** DefinitelyTyped tags `22.20.2` as `latest`, so `npm outdated`'s "Latest" column is
-  *behind* what the repo already declares. 26.x would type APIs absent from the Node 24 LTS that CI runs.
+- **`@types/node` stays on `^25`.** DefinitelyTyped tags `22.20.2` as `latest`, so `npm outdated` lists the package
+  with its "Latest" column (`22.20.2`) *behind* the installed `25.9.6` — a dist-tag quirk, not an available upgrade. 26.x would type APIs absent from the Node 24 LTS that CI runs.
 - **`esbuild` resolves to 0.27.2, older than the available 0.28.2.** The advisory range is `0.27.3 - 0.28.0` and
   `tsup@8.5.1` (already the latest tsup) declares `esbuild@^0.27.0`, so 0.27.2 is the only safe version inside the range
   tsup supports. No `overrides` entry was added — forcing 0.28.x past tsup's declared range risks a bundler break for no

@@ -137,7 +137,11 @@ One tick of the autonomous loop: answer the open issues whose newest message fro
 
 ### Prerequisites
 
-- Node.js 22.12 or newer (set by `commander` and `ink`; enforced via the `engines` field)
+- Node.js `^22.13.0 || ^24.0.0 || >=26.0.0` — npm and the tests are the narrow constraint here, not the CLI.
+  The **published** floor is 22.12 (`engines.node`, set by `commander` and `ink`), but the dev toolchain is stricter:
+  `eslint@10` needs `^20.19.0 || ^22.13.0 || >=24` and `vitest@5` needs `^22.12.0 || ^24.0.0 || >=26.0.0`, so their
+  intersection excludes Node 22.12, 23 and 25. Node 24 LTS is what CI runs and the safe choice.
+  See [docs/maintenance.md](docs/maintenance.md).
 - npm
 
 ### Setup
