@@ -23,9 +23,9 @@ import {
   updateMarker,
   type MarkerRef,
   type PullRequestRef,
+  type IssueSurface,
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
-import type { IssueSurface } from "../github/ghWorkService.js";
 import {
   agentAnsweredAfter,
   decideWork,
@@ -318,7 +318,7 @@ function validateDoWorkConfig(doWork: AutomataDoWorkConfig): void {
     fail(`doWork.executor must be 'claude' or 'codex', got '${String(doWork.executor)}'.`);
   }
 
-  if (doWork.baseBranch !== undefined && doWork.baseBranch.trim().length === 0) {
+  if (doWork.baseBranch?.trim().length === 0) {
     fail("doWork.baseBranch must not be empty.");
   }
 
