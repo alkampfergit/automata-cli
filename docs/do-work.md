@@ -26,7 +26,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
 | `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
 | `--max-runs <n>` | Maximum model runs this tick. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
-| `--dry-run` | Print the work plan and stop. Nothing is assigned, posted, edited, deleted, checked out or invoked. |
+| `--dry-run` | Print the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is assigned, posted, edited, deleted, checked out or invoked. |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
 | `--silent` | Suppress step-by-step Claude output; show only the final summary. Ignored by Codex. |
 
@@ -82,6 +82,35 @@ One tick, in order:
 6. **Summarise** and exit.
 
 ---
+
+## Inspecting a tick without running it
+
+`--dry-run` prints the work plan and then, per item, a summary header and the exact command that would be launched:
+
+```text
+────────────────────────────────────────────────────────────────────────
+Issue #42 — Add a flag
+────────────────────────────────────────────────────────────────────────
+  Turn         issue-discuss
+  Why          1 new issue message, no open pull request
+  Branch       develop (would check out and pull)
+  Assign       would assign to automata-bot
+  Marker       would post on issue #42
+  Executor     claude · model claude-opus-4-6
+  Permissions  bypassed (do-work always runs unattended)
+  Prompt       1443 chars — frame + assembled context
+
+  Command that would be launched:
+────────────────────────────────────────────────────────────────────────
+/path/to/claude --dangerously-skip-permissions --model claude-opus-4-6 --verbose --output-format stream-json -p 'You are the agent…'
+────────────────────────────────────────────────────────────────────────
+```
+
+The command is built by the same argv builders the real invocation uses, so it cannot drift from what a real tick would spawn, and it is shell-quoted so it can be pasted and run by hand. It is printed **unindented** on purpose: the prompt is a multi-line quoted argument, so indenting the continuation lines would add whitespace to the prompt the command actually sends.
+
+`--dry-run --json` returns the same information as data — including `args` (the raw argv), `command`, and the full `prompt` — which is the easier form for diffing a prompt change.
+
+`--dry-run` respects the run cap, and reports how many items it did not describe.
 
 ## Turn kinds
 

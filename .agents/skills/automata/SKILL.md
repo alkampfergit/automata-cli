@@ -59,12 +59,18 @@ previous tick's marker forever. `do-work` refuses rather than start.
 automata do-work --dry-run
 ```
 
-This prints the decision and the reason for every candidate issue and changes
-nothing — nothing assigned, nothing posted, no branch touched, no model invoked.
-Use it whenever you are asked why a tick did or did not act on an issue: the
-reason string names the rule that fired.
+This prints the decision and the reason for every candidate issue, then a
+summary and the exact command that would be launched for each item — including
+the fully assembled prompt — and changes nothing: nothing assigned, nothing
+posted, no branch touched, no model invoked.
 
-`--dry-run --json` gives the same information as data.
+Use it whenever you are asked why a tick did or did not act on an issue (the
+reason string names the rule that fired), or to inspect what the model would
+actually receive before a prompt change is committed.
+
+`--dry-run --json` gives the same information as data, with the raw argv under
+`runs[].args` and the prompt under `runs[].prompt` — the easier form for
+diffing a prompt change.
 
 ### Running a tick
 

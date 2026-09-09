@@ -85,4 +85,4 @@ Work plan (2 of 4 issues need an answer):
   #45 nothing to do — no messages from authorized accounts
 ```
 
-`--json` gives the same information as data, including each item's `turn`, `branch`, `pr`, `needsAssignment` and `skipReason`.
+After the plan, `--dry-run` prints a summary and the exact command it would launch for each item — including the fully assembled prompt — so you can see precisely what the model would receive before spending anything. `--json` gives the same information as data, including each item's `turn`, `branch`, `pr`, `needsAssignment` and `skipReason`, plus the argv and prompt under `runs`.

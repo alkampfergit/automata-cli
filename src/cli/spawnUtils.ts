@@ -1,3 +1,13 @@
+/**
+ * Quote one argv entry so the printed command can be pasted into a shell and
+ * behave identically. Single quotes are literal in POSIX shells apart from the
+ * quote character itself, which has to be closed, escaped and reopened.
+ */
+export function shellQuote(arg: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
+  return `'${arg.replaceAll("'", `'\\''`)}'`;
+}
+
 export function truncate(str: string, max: number): string {
   return str.length > max ? str.slice(0, max) + "..." : str;
 }

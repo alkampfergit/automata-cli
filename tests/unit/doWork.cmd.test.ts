@@ -58,13 +58,20 @@ vi.mock("../../src/run/runLock.js", () => ({
   acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
 }));
 
-vi.mock("../../src/claude/claudeService.js", () => ({
-  invokeClaudeCode: (...a: unknown[]) => mockInvokeClaude(...a),
-}));
+vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/claude/claudeService.js")>();
+  return {
+    ...actual,
+    // Only the spawn is stubbed; buildClaudeArgs and resolveCommand stay real so
+    // the dry-run tests exercise the same argv builder the real run uses.
+    invokeClaudeCode: (...a: unknown[]) => mockInvokeClaude(...a),
+  };
+});
 
-vi.mock("../../src/codex/codexService.js", () => ({
-  invokeCodexCode: (...a: unknown[]) => mockInvokeCodex(...a),
-}));
+vi.mock("../../src/codex/codexService.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/codex/codexService.js")>();
+  return { ...actual, invokeCodexCode: (...a: unknown[]) => mockInvokeCodex(...a) };
+});
 
 /* ── fixtures ───────────────────────────────────────────────────────────── */
 
@@ -710,7 +717,103 @@ describe("do-work output modes", () => {
     expect(exitCode).toBeUndefined();
   });
 
-  it("--json emits the plan on stdout with progress on stderr", async () => {
+  it("--dry-run prints a summary header and the command per item", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Issue #42 — Issue 42");
+    expect(stdout).toContain("Turn         issue-discuss");
+    expect(stdout).toContain("Branch       develop (would check out and pull)");
+    expect(stdout).toContain("would assign to automata-bot");
+    expect(stdout).toContain("Marker       would post on issue #42");
+    expect(stdout).toContain("Executor     claude");
+    expect(stdout).toContain("Permissions  bypassed");
+    expect(stdout).toContain("Command that would be launched:");
+    expect(stdout).toContain("Dry run: nothing was assigned, posted, checked out or executed.");
+  });
+
+  it("--dry-run prints the same argv the real run would spawn", async () => {
+    // The printed command comes from the shared argv builder; rebuilding it
+    // separately would let the dry run drift from what actually happens.
+    await runDoWork(["--dry-run", "--model", "claude-opus-4-6"]);
+    expect(stdout).toContain("--dangerously-skip-permissions");
+    expect(stdout).toContain("--model claude-opus-4-6");
+    expect(stdout).toContain("--verbose --output-format stream-json");
+    expect(stdout).toContain("-p ");
+  });
+
+  it("--dry-run reflects --silent by dropping the streaming flags", async () => {
+    await runDoWork(["--dry-run", "--silent"]);
+    expect(stdout).toContain("--dangerously-skip-permissions");
+    expect(stdout).not.toContain("--output-format stream-json");
+  });
+
+  it("--dry-run shows the codex command when codex is selected", async () => {
+    await runDoWork(["--dry-run", "--with", "codex", "--model", "o3"]);
+    expect(stdout).toContain("Executor     codex · model o3");
+    expect(stdout).toContain("exec --dangerously-bypass-approvals-and-sandbox --model o3");
+  });
+
+  it("--dry-run shell-quotes the prompt so the command can be pasted", async () => {
+    await runDoWork(["--dry-run"]);
+    const command = stdout.slice(stdout.indexOf("-p "));
+    expect(command).toMatch(/-p '/);
+  });
+
+  it("--dry-run injects no indentation into the multi-line prompt", async () => {
+    // The command is printed unindented on purpose: indenting the continuation
+    // lines of a multi-line quoted argument would add leading whitespace to the
+    // prompt the command actually sends, making the printed command a lie.
+    // (The prompt cannot appear byte-identical inside a quoted argument, because
+    // shell quoting has to escape the apostrophes in it — so this checks the
+    // property that matters: newlines are not followed by injected padding.)
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain(
+      "--- Context assembled by automata ---\nRepository: acme/widget\nYou are: automata-bot",
+    );
+  });
+
+  it("--dry-run reports the branch differently for a build turn", async () => {
+    gh.getIssueSurface.mockReturnValue(settled(42));
+    gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
+    gh.getPrSurface.mockReturnValue(
+      prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Branch       feature/042 (would check out and fast-forward)");
+    expect(stdout).toContain("Marker       would post on pull request #57");
+  });
+
+  it("--dry-run still changes nothing while printing the command", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(mockPrepareBaseBranch).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("--dry-run honours the run cap and says how many were deferred", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43), issue(44)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--dry-run", "--max-runs", "1"]);
+    expect(stdout).toContain("Issue #42");
+    expect(stdout).not.toContain("Issue #43 —");
+    expect(stdout).toContain("2 further item(s) deferred by the run cap.");
+  });
+
+  it("--dry-run --json includes the argv, command and prompt", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as {
+      runs: { issue: number; turn: string; executor: string; args: string[]; command: string; prompt: string }[];
+    };
+    expect(payload.runs).toHaveLength(1);
+    const run = payload.runs[0];
+    expect(run).toMatchObject({ issue: 42, turn: "issue-discuss", executor: "claude" });
+    expect(run.args).toContain("--dangerously-skip-permissions");
+    expect(run.args.at(-2)).toBe("-p");
+    expect(run.args.at(-1)).toBe(run.prompt);
+    expect(run.command).toContain("-p ");
+  });
+
+  it("--json emits the plan on stdout with progress on stderr", async () =>{
     await runDoWork(["--dry-run", "--json"]);
     const payload = JSON.parse(stdout) as { dryRun: boolean; plan: Record<string, unknown>[] };
     expect(payload.dryRun).toBe(true);

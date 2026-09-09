@@ -34,6 +34,22 @@ export function resolveModelOption(opts: { opus?: boolean; sonnet?: boolean; hai
   return selected.length === 1 ? MODEL_IDS[selected[0]] : undefined;
 }
 
+/**
+ * The argv `invokeClaudeCode` will spawn.
+ *
+ * Exported so `do-work --dry-run` can print the exact command it would run:
+ * building the arguments twice would let the dry run drift from reality, which
+ * is worse than not printing them at all.
+ */
+export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {}): string[] {
+  const args: string[] = [];
+  if (options.yolo) args.push("--dangerously-skip-permissions");
+  if (options.model) args.push("--model", options.model);
+  if (options.verbose) args.push("--verbose", "--output-format", "stream-json");
+  args.push("-p", prompt);
+  return args;
+}
+
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
     return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model);
@@ -43,10 +59,7 @@ export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = 
 
 function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | undefined): void {
   const claudeBin = resolveCommand("claude");
-  const args: string[] = [];
-  if (yolo) args.push("--dangerously-skip-permissions");
-  if (model) args.push("--model", model);
-  args.push("-p", prompt);
+  const args = buildClaudeArgs(prompt, { yolo, model, verbose: false });
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "claude");
   handleExitCode(result.status, "Claude Code");
@@ -55,10 +68,7 @@ function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | und
 function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | undefined): Promise<void> {
   return new Promise<void>((resolve) => {
     const claudeBin = resolveCommand("claude");
-    const args: string[] = [];
-    if (yolo) args.push("--dangerously-skip-permissions");
-    if (model) args.push("--model", model);
-    args.push("--verbose", "--output-format", "stream-json", "-p", prompt);
+    const args = buildClaudeArgs(prompt, { yolo, model, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     const rl = createInterface({ input: child.stdout });

@@ -35,8 +35,9 @@ import {
 import { composePrompt } from "../github/workPrompt.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { acquireRunLock, type LockHandle } from "../run/runLock.js";
-import { invokeClaudeCode } from "../claude/claudeService.js";
-import { invokeCodexCode } from "../codex/codexService.js";
+import { invokeClaudeCode, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
+import { invokeCodexCode, buildCodexArgs } from "../codex/codexService.js";
+import { shellQuote } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
 
@@ -205,6 +206,66 @@ function checkAuthenticatedIdentity(agentUser: string, allowedUsers: string[]): 
       "The agent will not recognise its own messages and may repeat itself. " +
       "Authenticate as the agent account, or correct `agentUser`.\n",
   );
+}
+
+interface PlannedRun {
+  prompt: string;
+  bin: string;
+  args: string[];
+  /** The argv rendered as a shell-pasteable command line. */
+  command: string;
+}
+
+/**
+ * What would be executed for a work item, built with the same argv builders the
+ * real invocation uses so `--dry-run` cannot drift from what actually happens.
+ */
+function planRun(item: WorkItem, settings: Settings, silent: boolean): PlannedRun {
+  const prompt = composePrompt({
+    item,
+    repo: getRepoSlug(),
+    agentUser: settings.participants.agentUser,
+    baseBranch: settings.baseBranch,
+    frame: settings.prompts[item.turn],
+  });
+
+  // The resolved path, not the bare name: this is literally what gets spawned.
+  const bin = resolveCommand(settings.executor === "codex" ? "codex" : "claude");
+  const args =
+    settings.executor === "codex"
+      ? buildCodexArgs(prompt, { yolo: true, model: settings.model })
+      : buildClaudeArgs(prompt, { yolo: true, verbose: !silent, model: settings.model });
+
+  return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
+}
+
+/** The per-item summary header printed above the command on a dry run. */
+function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun): string {
+  const rule = "─".repeat(72);
+  const lines = [
+    rule,
+    `Issue #${String(item.issue.number)} — ${item.issue.title}`,
+    rule,
+    `  Turn         ${item.turn}`,
+    `  Why          ${item.reason}`,
+    `  Branch       ${item.branch} (would check out${item.turn === "pr-work" ? " and fast-forward" : " and pull"})`,
+    `  Assign       ${item.needsAssignment ? `would assign to ${settings.participants.agentUser}` : "already assigned"}`,
+    `  Marker       would post on ${item.turn === "pr-work" && item.pr ? `pull request #${String(item.pr.number)}` : `issue #${String(item.issue.number)}`}`,
+    `  Executor     ${settings.executor}${settings.model === undefined ? " (no model override)" : ` · model ${settings.model}`}`,
+    `  Permissions  bypassed (do-work always runs unattended)`,
+    `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
+    "",
+    "  Command that would be launched:",
+    // Printed flush-left and unindented on purpose: the prompt is a multi-line
+    // quoted argument, so indenting the continuation lines would inject leading
+    // whitespace into the prompt itself and the command would no longer be the
+    // one that runs.
+    rule,
+    run.command,
+    rule,
+    "",
+  ];
+  return lines.join("\n") + "\n";
 }
 
 function discoverIssues(settings: Settings): GitHubIssue[] {
@@ -429,7 +490,10 @@ export const doWorkCommand = new Command("do-work")
   .option("--issue <number>", "Restrict the tick to a single issue")
   .option("--limit <n>", "Maximum number of issues to fetch", "10")
   .option("--max-runs <n>", "Maximum number of model runs this tick")
-  .option("--dry-run", "Print the work plan and exit without changing anything")
+  .option(
+    "--dry-run",
+    "Print the work plan, plus a summary and the exact command that would be launched for each item, and exit without changing anything",
+  )
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
@@ -483,9 +547,40 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   }
 
   if (options.dryRun) {
+    const runnableInPlan = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
+    const planned = runnableInPlan.map((item) => planRun(item, settings, options.silent === true));
+
     if (options.json) {
-      out(JSON.stringify({ dryRun: true, plan: decisions.map(toPlanJson) }, null, 2) + "\n");
+      out(
+        JSON.stringify(
+          {
+            dryRun: true,
+            plan: decisions.map(toPlanJson),
+            runs: planned.map((run, index) => ({
+              issue: runnableInPlan[index].issue.number,
+              turn: runnableInPlan[index].turn,
+              executor: settings.executor,
+              model: settings.model ?? null,
+              bin: run.bin,
+              args: run.args,
+              command: run.command,
+              prompt: run.prompt,
+            })),
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+      return 0;
     }
+
+    for (const [index, run] of planned.entries()) {
+      out("\n" + describePlannedRun(runnableInPlan[index], settings, run));
+    }
+    if (items.length > runnableInPlan.length) {
+      out(`\n(${String(items.length - runnableInPlan.length)} further item(s) deferred by the run cap.)\n`);
+    }
+    out("\nDry run: nothing was assigned, posted, checked out or executed.\n");
     return 0;
   }
 
