@@ -27,7 +27,10 @@ function formatThreads(threads: ReviewThread[]): string {
       const newest = thread.comments.at(-1);
       const author = newest?.author ?? "unknown";
       const body = newest?.body ?? "";
-      return `[${author}] ${location}\n${body}`;
+      // The URL makes an in-thread reply achievable; without it the model can
+      // only answer on the conversation, which reads as leaving the thread open.
+      const link = thread.url === null ? "" : `\n${thread.url}`;
+      return `[${author}] ${location}${link}\n${body}`;
     })
     .join("\n\n");
 }

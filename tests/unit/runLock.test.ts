@@ -229,6 +229,36 @@ describe("acquireRunLock", () => {
     expect(readdirSync(join(TEST_CWD, ".automata")).filter((f) => f !== "automata.lock")).toEqual([]);
   });
 
+  it("serialises reclaim behind a claim file, so a contender cannot touch a live lock", () => {
+    // Verify-after-rename alone is not enough: with three contenders, one can
+    // rename a *live* lock away and, if the restore then loses a race, delete
+    // it. Only the winner of an exclusive `wx` claim may touch the lock at all.
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    writeFileSync(join(TEST_CWD, ".automata", "automata.lock.claim"), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+
+    const result = acquireRunLock("do-work", 120);
+
+    expect(result.ok).toBe(false);
+    // The stale lock is untouched — the contender that holds the claim owns it.
+    expect((JSON.parse(readFileSync(lockFile(), "utf8")) as { pid: number }).pid).toBe(4194304);
+  });
+
+  it("reclaims an abandoned claim file, so one crash cannot wedge the lock forever", () => {
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    const longAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    writeFileSync(join(TEST_CWD, ".automata", "automata.lock.claim"), JSON.stringify({ pid: 1, at: longAgo }));
+
+    expect(acquireRunLock("do-work", 120).ok).toBe(true);
+    // And the claim file is cleaned up behind it.
+    expect(existsSync(join(TEST_CWD, ".automata", "automata.lock.claim"))).toBe(false);
+  });
+
+  it("leaves no claim or candidate files behind after a successful reclaim", () => {
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    expect(acquireRunLock("do-work", 120).ok).toBe(true);
+    expect(readdirSync(join(TEST_CWD, ".automata")).filter((f) => f !== "automata.lock")).toEqual([]);
+  });
+
   it("reports no claim when there is no stale lock to take over", () => {
     expect(claimStaleLock(lockFile(), "token-a")).toBe(false);
   });

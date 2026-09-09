@@ -319,24 +319,89 @@ export function claimStaleLock(path: string, token: string, expected?: LockOwner
   return true;
 }
 
+/** How long a reclaim may hold the claim file before it is presumed abandoned. */
+const CLAIM_STALE_MS = 60_000;
+
+/**
+ * Serialise the whole reclaim behind an exclusive claim file.
+ *
+ * Verifying after the rename is not enough on its own. Three contenders can
+ * still interleave: A renames the stale lock away and writes its own; B, still
+ * acting on its earlier "stale" reading, renames *A's live lock* away, finds a
+ * token it did not expect, and tries to restore it — but if a third contender
+ * created the path in that gap, the restore fails and B deletes A's lock, so two
+ * ticks believe they hold it.
+ *
+ * Creating `<lock>.claim` with `wx` is a single atomic step that only one
+ * contender can win, and only the winner is allowed to touch the lock at all —
+ * which removes the "rename a live lock away" move entirely.
+ */
+function acquireClaim(path: string): string | null {
+  const claimPath = `${path}.claim`;
+  try {
+    writeFileSync(claimPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    return claimPath;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+
+  // A reclaim takes a handful of syscalls, so a claim file older than a minute
+  // belongs to a process that died holding it. Without this, one crash would
+  // make the stale lock permanently unreclaimable.
+  try {
+    const raw = JSON.parse(readFileSync(claimPath, "utf8")) as { at?: string };
+    const at = raw.at === undefined ? Number.NaN : Date.parse(raw.at);
+    if (!Number.isNaN(at) && Date.now() - at < CLAIM_STALE_MS) return null;
+    unlinkSync(claimPath);
+  } catch {
+    // Unparseable or already gone: fall through and try once more.
+  }
+
+  try {
+    writeFileSync(claimPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    return claimPath;
+  } catch {
+    return null;
+  }
+}
+
 function reclaim(path: string, command: string, token: string, expected: LockOwner | null): AcquireResult {
-  if (!claimStaleLock(path, token, expected)) {
-    // Someone else is taking it over; whatever they write is authoritative.
+  const claimPath = acquireClaim(path);
+  if (claimPath === null) {
+    // Another contender is reclaiming; whatever it writes is authoritative.
     return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
   }
 
-  const claimed = `${path}.stale.${token}`;
   try {
-    // The path is free and only this contender may fill it, so "wx" should
-    // succeed; if it does not, a third party got there and owns the lock.
-    write(path, command, token, "wx");
-    return { ok: true, handle: makeHandle(path, token) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
+    if (!claimStaleLock(path, token, expected)) {
+      return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
+    }
+
+    const claimed = `${path}.stale.${token}`;
+    try {
+      // The path is free and only this contender may fill it, so "wx" should
+      // succeed; if it does not, something outside this protocol wrote it.
+      write(path, command, token, "wx");
+      return { ok: true, handle: makeHandle(path, token) };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
+    } finally {
+      try {
+        unlinkSync(claimed);
+      } catch {
+        // Already gone.
+      }
+    }
   } finally {
     try {
-      unlinkSync(claimed);
+      unlinkSync(claimPath);
     } catch {
       // Already gone.
     }

@@ -46,7 +46,7 @@ Because a healthy idle loop stays at 0, cron mail stays meaningful: anything you
 | `answered` | The model posted its answer. The marker was deleted. |
 | `answered-no-reply` | The run finished but posted nothing. The marker was updated to say so; a human must reply. |
 | `failed` | The run errored before posting an answer. The marker was updated with the error. |
-| `skipped` | Nothing was attempted: dirty working tree, branch preparation failed, or the marker could not be posted. |
+| `skipped` | Nothing was attempted: dirty working tree, branch preparation failed, the marker or the issue pickup note could not be posted, the item stopped being actionable before it ran, or the pull request is unsafe to work on (it comes from a fork, or its head is the base or default branch). |
 | `deferred` | The run cap was reached; the item waits for the next tick. |
 
 `answered-no-reply` counts as degraded on purpose. A turn that produced nothing has stalled that issue until someone replies, and an unattended loop must surface that rather than report a healthy tick.

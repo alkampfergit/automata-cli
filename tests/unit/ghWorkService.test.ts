@@ -175,6 +175,7 @@ describe("getOpenPrLinkMap", () => {
       json({
         data: {
           repository: {
+            defaultBranchRef: { name: "main" },
             pullRequests: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [
@@ -193,7 +194,7 @@ describe("getOpenPrLinkMap", () => {
       }),
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
-    const map = getOpenPrLinkMap();
+    const map = getOpenPrLinkMap().byIssue;
     expect([...map.keys()]).toEqual([42]);
     expect(map.get(42)).toEqual([
       {
@@ -215,6 +216,7 @@ describe("getOpenPrLinkMap", () => {
       json({
         data: {
           repository: {
+            defaultBranchRef: { name: "main" },
             pullRequests: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [prNode(57, "2026-01-05T00:00:00Z"), prNode(58, "2026-01-09T00:00:00Z")],
@@ -224,7 +226,7 @@ describe("getOpenPrLinkMap", () => {
       }),
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
-    expect(getOpenPrLinkMap().get(42)?.map((pr) => pr.number)).toEqual([57, 58]);
+    expect(getOpenPrLinkMap().byIssue.get(42)?.map((pr) => pr.number)).toEqual([57, 58]);
   });
 
   it("ignores a closing reference to an issue in another repository", async () => {
@@ -234,6 +236,7 @@ describe("getOpenPrLinkMap", () => {
       json({
         data: {
           repository: {
+            defaultBranchRef: { name: "main" },
             pullRequests: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [prNode(57, "2026-01-05T00:00:00Z", 42, "other-org/lib")],
@@ -243,7 +246,7 @@ describe("getOpenPrLinkMap", () => {
       }),
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
-    expect([...getOpenPrLinkMap().keys()]).toEqual([]);
+    expect([...getOpenPrLinkMap().byIssue.keys()]).toEqual([]);
   });
 
   it("follows every page, because callers treat the map as authoritative", async () => {
@@ -276,7 +279,7 @@ describe("getOpenPrLinkMap", () => {
         }),
       );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
-    const map = getOpenPrLinkMap();
+    const map = getOpenPrLinkMap().byIssue;
     expect([...map.keys()].sort((a, b) => a - b)).toEqual([42, 43]);
     // The cursor from the first page must be sent with the second request.
     expect(calls().some((c) => c.args.includes("cursor=CURSOR1"))).toBe(true);
@@ -289,6 +292,7 @@ describe("getOpenPrLinkMap", () => {
       json({
         data: {
           repository: {
+            defaultBranchRef: { name: "main" },
             pullRequests: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [

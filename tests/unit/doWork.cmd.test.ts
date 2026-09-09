@@ -205,7 +205,7 @@ beforeEach(() => {
   mockAcquireRunLock.mockReturnValue({ ok: true, handle: { release: mockRelease } });
   gh.getRepoSlug.mockReturnValue({ owner: "acme", repo: "widget" });
   gh.getAuthenticatedLogin.mockReturnValue("automata-bot");
-  gh.getOpenPrLinkMap.mockReturnValue(new Map());
+  gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main" });
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
   mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
@@ -572,7 +572,10 @@ describe("do-work marker reconciliation", () => {
     expect(body).toMatch(/Reply on issue #42/);
     // Must not claim nothing changed: the run can push and still fail to comment.
     expect(body).not.toMatch(/Nothing was changed/);
-    expect(body).toMatch(/may still have changed the branch/);
+    // A discuss turn sits on the base branch, so naming it would be misleading;
+    // what it may have done is branch and open a pull request.
+    expect(body).toMatch(/may still have created a branch or opened a pull request/);
+    expect(body).not.toMatch(/changed the branch `develop`/);
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/answered-no-reply/);
   });
@@ -667,7 +670,7 @@ describe("do-work marker reconciliation", () => {
 
   it("counts a reply inside a review thread as an answer on a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
     gh.getPrSurface.mockImplementation(() =>
       gh.postMarker.mock.calls.length > 0
         ? prSurface({
@@ -694,7 +697,7 @@ describe("do-work build turn", () => {
   beforeEach(() => {
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );
@@ -941,7 +944,7 @@ describe("do-work queue handling", () => {
     gh.getOpenPrLinkMap.mockImplementation(() => {
       mapReads++;
       // Empty for the plan and #42's refresh; #43 gains a linked PR afterwards.
-      return mapReads >= 3 ? new Map([[43, [PR]]]) : new Map();
+      return { byIssue: mapReads >= 3 ? new Map([[43, [PR]]]) : new Map(), defaultBranch: "main" };
     });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
@@ -963,9 +966,13 @@ describe("do-work queue handling", () => {
       mapReads++;
       // Planned as pr-work; the pull request is merged by the time it runs, so
       // the turn becomes a discussion — and the report must say so.
-      return mapReads === 1
-        ? new Map([[42, [PR]]])
-        : new Map([[42, [{ ...PR, state: "MERGED" as const }]]]);
+      return {
+        byIssue:
+          mapReads === 1
+            ? new Map([[42, [PR]]])
+            : new Map([[42, [{ ...PR, state: "MERGED" as const }]]]),
+        defaultBranch: "main",
+      };
     });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
@@ -1101,7 +1108,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run reports the branch differently for a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );

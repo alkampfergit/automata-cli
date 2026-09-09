@@ -21,12 +21,11 @@ import {
   postMarker,
   updateMarker,
   type MarkerRef,
-  type PullRequestRef,
   type IssueSurface,
+  type OpenPrLinkMap,
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
 import {
-  agentAnsweredAfter,
   decideWork,
   selectLinkedPr,
   type Decision,
@@ -34,6 +33,7 @@ import {
   type WorkItem,
 } from "../github/workDetection.js";
 import { composePrompt } from "../github/workPrompt.js";
+import { analyseAnswer, promptWatermark, type AnswerAnalysis } from "../github/markerReconciliation.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
@@ -427,9 +427,9 @@ function issueMatchesFilter(surface: IssueSurface, settings: Settings): boolean 
   }
 }
 
-function buildIssueState(issue: GitHubIssue, linkMap: Map<number, PullRequestRef[]>): IssueState {
+function buildIssueState(issue: GitHubIssue, linkMap: OpenPrLinkMap): IssueState {
   const issueSurface = getIssueSurface(issue.number);
-  const linkedPrs = linkMap.get(issue.number) ?? [];
+  const linkedPrs = linkMap.byIssue.get(issue.number) ?? [];
   const selected = selectLinkedPr(linkedPrs);
   return {
     issueSurface,
@@ -512,31 +512,11 @@ function refreshItem(item: WorkItem, settings: Settings): Decision {
     buildIssueState(item.issue, linkMap),
     settings.participants,
     settings.baseBranch,
+    linkMap.defaultBranch,
   );
 }
 
-/**
- * Authorized messages that arrived after the marker.
- *
- * A stateless boundary cannot carry these forward: the agent's answer is newer
- * than they are, so the next tick will not see them as new. They are therefore
- * lost unless a human is told, which is what the caller does. Nothing can be
- * done about the loss itself without persisting state outside GitHub.
- */
-function authorizedMessagesSince(
-  messages: RawMessage[],
-  participants: Participants,
-  marker: MarkerRef,
-): RawMessage[] {
-  const allowed = participants.allowedUsers.map((user) => user.toLowerCase());
-  const agent = participants.agentUser.toLowerCase();
-  return messages.filter((message) => {
-    const author = message.author.toLowerCase();
-    return author !== agent && allowed.includes(author) && message.createdAt > marker.createdAt;
-  });
-}
-
-/** Re-read the surface the turn answered, flattened for the answer predicate. */
+/** Re-read the surface the turn answered, flattened for the answer analysis. */
 function readAnsweringSurface(item: WorkItem): RawMessage[] {
   if (item.turn === "issue-discuss" || item.pr === null) {
     return getIssueSurface(item.issue.number).messages;
@@ -545,16 +525,6 @@ function readAnsweringSurface(item: WorkItem): RawMessage[] {
   return [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)];
 }
 
-/**
- * Decide what becomes of the "working" marker now the run is over.
- *
- * The marker is the boundary while the run is in flight. Once the model has
- * posted its own answer, that answer is newer and holds the boundary, so the
- * marker is noise and is removed. When nothing was posted, the marker is the
- * only thing that can tell the humans what happened, so it is updated in place —
- * which keeps its creation time, and therefore the boundary, so a failing run is
- * not retried automatically on every later tick.
- */
 /** Which surface the turn answers, for marker text that points somewhere real. */
 function markerSurfaceLabel(item: WorkItem): string {
   return item.turn === "pr-work" && item.pr
@@ -562,89 +532,122 @@ function markerSurfaceLabel(item: WorkItem): string {
     : `issue #${String(item.issue.number)}`;
 }
 
+function markerSurfaceTarget(item: WorkItem): { surface: "issue" | "pr"; number: number } {
+  return item.turn === "pr-work" && item.pr
+    ? { surface: "pr", number: item.pr.number }
+    : { surface: "issue", number: item.issue.number };
+}
+
+/**
+ * Tell the humans about authorized messages the run overtook without seeing.
+ *
+ * A stateless boundary cannot carry them forward — the agent's answer is newer,
+ * so the next tick will not see them as new. Nothing can recover them; the only
+ * honest option is to say so and ask for a repost.
+ */
+function reportOvertakenMessages(item: WorkItem, analysis: AnswerAnalysis): void {
+  if (analysis.missed.length === 0) return;
+  const authors = [...new Set(analysis.toReport.map((message) => message.author))].join(", ");
+  const count = analysis.toReport.length;
+  const target = markerSurfaceTarget(item);
+  try {
+    postMarker(
+      target.surface,
+      target.number,
+      `automata do-work: ${authors} posted here while this run was already in progress, so ` +
+        `${count === 1 ? "that message was" : "those messages were"} not included in it. ` +
+        "Please post again to have them acted on.",
+    );
+  } catch (err) {
+    progress(`  warning: could not report the overtaken message(s): ${(err as Error).message}\n`);
+  }
+}
+
+/**
+ * Decide what becomes of the "working" marker now the run is over.
+ *
+ * The marker holds the boundary while the run is in flight. Once the model has
+ * posted its own answer, that answer is newer and holds the boundary, so the
+ * marker is noise and is removed. When nothing was posted, the marker is the
+ * only thing that can tell the humans what happened, so it is updated in place —
+ * which keeps its creation time, and therefore the boundary, so a failing run is
+ * not retried automatically on every later tick.
+ */
 function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
   participants: Participants,
+  watermark: string | null,
   runError: Error | null,
 ): { outcome: Outcome; detail: string } {
-  const agentUser = participants.agentUser;
-  let surfaceMessages: RawMessage[] = [];
-  let answered: boolean | "unknown";
+  let analysis: AnswerAnalysis;
   try {
-    surfaceMessages = readAnsweringSurface(item);
-    answered = agentAnsweredAfter(surfaceMessages, agentUser, marker);
+    analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
   } catch (err) {
     progress(
       `  warning: could not re-read issue #${String(item.issue.number)} to check for an answer: ${(err as Error).message}\n`,
     );
-    // Unknown is not the same as "no answer": an answer may exist and the read
-    // may simply have failed. Never delete the marker here — a stale marker is
-    // harmless, a lost boundary is not — but do not assert anything either.
-    answered = "unknown";
+    return reportUnverified(item, marker);
   }
 
-  if (answered === "unknown") {
-    const surface = markerSurfaceLabel(item);
-    try {
-      updateMarker(
-        marker,
-        `automata do-work: the agent run finished, but automata could not read ${surface} afterwards ` +
-          "to confirm whether an answer was posted. Check this thread and the branch before assuming either. " +
-          "Reply here to have another attempt made.",
-      );
-    } catch (updateErr) {
-      progress(`  warning: could not update the marker comment: ${(updateErr as Error).message}\n`);
-    }
-    return { outcome: "answered-no-reply", detail: "could not verify whether an answer was posted" };
-  }
-
-  if (answered) {
-    // Anything an authorized account posted while the run was in flight is older
-    // than the answer, so the next tick will not see it as new. Say so on the
-    // thread — the alternative is losing it in silence.
-    const interleaved = authorizedMessagesSince(surfaceMessages, participants, marker);
-    if (interleaved.length > 0) {
-      const authors = [...new Set(interleaved.map((message) => message.author))].join(", ");
-      try {
-        postMarker(
-          item.turn === "pr-work" ? "pr" : "issue",
-          item.turn === "pr-work" && item.pr ? item.pr.number : item.issue.number,
-          `automata do-work: ${authors} posted here while this run was already in progress, so ` +
-            `${interleaved.length === 1 ? "that message was" : "those messages were"} not included in it. ` +
-            "Please post again to have them acted on.",
-        );
-      } catch (err) {
-        progress(`  warning: could not report the interleaved message(s): ${(err as Error).message}\n`);
-      }
-    }
-
+  if (analysis.answeredAt !== null) {
+    reportOvertakenMessages(item, analysis);
     try {
       deleteMarker(marker);
     } catch (err) {
       progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
     }
-
-    const noted = interleaved.length > 0 ? ` (${String(interleaved.length)} message(s) arrived mid-run and were flagged)` : "";
-    if (interleaved.length > 0) {
-      return { outcome: "answered-no-reply", detail: `answered${noted}` };
+    if (analysis.missed.length > 0) {
+      return {
+        outcome: "answered-no-reply",
+        detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
+      };
     }
     return runError === null
       ? { outcome: "answered", detail: "answered" }
       : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}` };
   }
 
-  // Deliberately does not claim nothing changed: a run can commit and push and
-  // still fail to comment, and a failed run can leave partial work behind.
+  return reportNoAnswer(item, marker, runError);
+}
+
+/** The surface could not be re-read, so nothing about the answer is established. */
+function reportUnverified(item: WorkItem, marker: MarkerRef): { outcome: Outcome; detail: string } {
   const surface = markerSurfaceLabel(item);
+  try {
+    updateMarker(
+      marker,
+      `automata do-work: the agent run finished, but automata could not read ${surface} afterwards ` +
+        "to confirm whether an answer was posted. Check this thread and the branch before assuming either. " +
+        "Reply here to have another attempt made.",
+    );
+  } catch (err) {
+    progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
+  }
+  return { outcome: "answered-no-reply", detail: "could not verify whether an answer was posted" };
+}
+
+/**
+ * The run produced no answer. Deliberately does not claim nothing changed: a run
+ * can commit and push and still fail to comment, and a failed run can leave
+ * partial work behind.
+ */
+function reportNoAnswer(
+  item: WorkItem,
+  marker: MarkerRef,
+  runError: Error | null,
+): { outcome: Outcome; detail: string } {
+  const surface = markerSurfaceLabel(item);
+  const sideEffects =
+    item.turn === "issue-discuss"
+      ? "It may still have created a branch or opened a pull request — check before assuming otherwise."
+      : `It may still have changed the branch \`${item.branch}\` — check it before assuming otherwise.`;
   const explanation =
     runError === null
       ? `automata do-work: the agent run finished without posting an answer on ${surface}. ` +
-        `It may still have changed the branch \`${item.branch}\` — check it before assuming otherwise. ` +
-        `Reply on ${surface} to have another attempt made.`
+        `${sideEffects} Reply on ${surface} to have another attempt made.`
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
-        `It may have left partial changes on the branch \`${item.branch}\`. ` +
-        `Reply on ${surface} to have another attempt made.`;
+        `${sideEffects} Reply on ${surface} to have another attempt made.`;
   try {
     updateMarker(marker, explanation);
   } catch (err) {
@@ -653,7 +656,6 @@ function reconcileMarker(
         `  the humans have not been told that this run produced no answer.\n`,
     );
   }
-
   return runError === null
     ? { outcome: "answered-no-reply", detail: "run finished but posted no answer" }
     : { outcome: "failed", detail: `run failed: ${runError.message}` };
@@ -680,29 +682,31 @@ async function invokeExecutor(prompt: string, settings: Settings, silent: boolea
  * release PR into `main`, say) and appending `Closes #<issue>` to it would make
  * an unrelated merge close this issue.
  */
-function repairIssueLink(item: WorkItem, baseBranch: string): void {
+function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
   try {
     const branch = getCurrentBranch();
     if (branch === baseBranch) {
       progress(`  issue #${String(item.issue.number)} is still in discussion (no branch was created).\n`);
-      return;
+      return false;
     }
 
     const pr = getCurrentBranchPr();
     if (!pr) {
       progress(`  issue #${String(item.issue.number)} is still in discussion (no pull request).\n`);
-      return;
+      return false;
     }
     // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
     const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(item.issue.number) + String.raw`\b`, "i");
     if (closesRef.test(pr.body)) {
       progress(`  pull request #${String(pr.number)} already closes issue #${String(item.issue.number)}.\n`);
-      return;
+      return true;
     }
     addClosesRefToPr(pr.number, item.issue.number);
     progress(`  linked pull request #${String(pr.number)} to issue #${String(item.issue.number)}.\n`);
+    return true;
   } catch (err) {
     progress(`  warning: could not link a pull request to issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+    return false;
   }
 }
 
@@ -770,6 +774,15 @@ async function processItem(
     return { ...base, outcome: "skipped", detail: "issue pickup note failed" };
   }
 
+  // Measured from the messages the prompt actually carries, not from the marker:
+  // the marker is posted several API calls later (link-map pagination, branch
+  // fetch and checkout, assignment), so measuring against it would declare a
+  // message seen when the prompt never contained it.
+  const watermark = promptWatermark([
+    item.issueAnalysis,
+    ...(item.prAnalysis === null ? [] : [item.prAnalysis]),
+  ]);
+
   const prompt = composePrompt({
     item,
     repo: getRepoSlug(),
@@ -812,14 +825,23 @@ async function processItem(
   const ranExecutor = true;
 
   inFlightMarker = null;
-  const reconciled = reconcileMarker(item, marker, settings.participants, runError);
+  const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError);
   progress(`  ${reconciled.detail}\n`);
 
+  let outcome = reconciled;
   if (item.turn === "issue-discuss") {
-    repairIssueLink(item, settings.baseBranch);
+    const linked = repairIssueLink(item, settings.baseBranch);
+    // A discuss turn that implemented and opened a pull request has plainly not
+    // stalled, even if the model never commented on the issue. Reporting it as
+    // "produced no answer" would raise a false alarm; the pull request is the
+    // answer, and its `Closes #N` is the durable record.
+    if (linked && outcome.outcome === "answered-no-reply") {
+      outcome = { outcome: "answered", detail: "opened a pull request (no issue comment)" };
+      progress("  a pull request was opened, so the turn is counted as answered.\n");
+    }
   }
 
-  return { ...base, outcome: reconciled.outcome, detail: reconciled.detail, ranExecutor };
+  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor };
 }
 
 function summarize(reports: ItemReport[]): void {
@@ -955,7 +977,14 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
 
-  const decisions = issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, settings.baseBranch));
+  const decisions = issues.map((issue) =>
+    decideWork(
+      buildIssueState(issue, linkMap),
+      settings.participants,
+      settings.baseBranch,
+      linkMap.defaultBranch,
+    ),
+  );
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 
   const planText = `Work plan (${String(items.length)} of ${String(issues.length)} issues need an answer):\n${describePlan(decisions)}`;

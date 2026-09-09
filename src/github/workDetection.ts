@@ -70,12 +70,31 @@ function isAssignedToAgent(assignees: string[], agentUser: string): boolean {
  * still unresolved — resolving is the reviewer's action, so treating unresolved
  * as actionable would retrigger the same thread on every tick forever.
  */
-function findActionableThreads(threads: ReviewThread[], p: Participants): ReviewThread[] {
+function findActionableThreads(
+  threads: ReviewThread[],
+  p: Participants,
+  prLastAgentAt: string | null,
+): ReviewThread[] {
   const actionable: ReviewThread[] = [];
   for (const thread of threads) {
     if (thread.isResolved) continue;
     const comments = thread.comments.filter((comment) => classifyForThread(comment.author, p) !== "other");
     if (lastAuthorClass(comments, p) !== "authorized") continue;
+
+    // "Answered" cannot mean only "answered *inside this thread*". The prompt
+    // gives the model a file and a line, not a comment id, so replying in-thread
+    // is not reliably achievable — and the shipped prompt explicitly allows
+    // answering on the pull request instead. Judging in-thread alone left every
+    // such thread actionable forever: a full model session on every cron firing
+    // until a human resolved the thread by hand.
+    //
+    // So an agent message anywhere on the pull request that is newer than the
+    // thread's newest authorized comment counts as the answer.
+    const newestAuthorized = comments.at(-1)?.createdAt;
+    if (newestAuthorized !== undefined && prLastAgentAt !== null && prLastAgentAt > newestAuthorized) {
+      continue;
+    }
+
     actionable.push({ ...thread, comments });
   }
   return actionable;
@@ -95,7 +114,12 @@ function plural(count: number, noun: string): string {
   return `${String(count)} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export function decideWork(state: IssueState, p: Participants, baseBranch: string): Decision {
+export function decideWork(
+  state: IssueState,
+  p: Participants,
+  baseBranch: string,
+  defaultBranch: string | null = null,
+): Decision {
   const { issueSurface, prSurface } = state;
   const issue = issueSurface.issue;
 
@@ -160,12 +184,21 @@ export function decideWork(state: IssueState, p: Participants, baseBranch: strin
       detail: `pull request #${String(surface.pr.number)} comes from a fork; its head branch is not in this repository`,
     };
   }
-  if (surface.pr.headRefName === baseBranch) {
+  // Both the base branch and the repository default branch are refused. A
+  // back-merge pull request `main -> develop` carrying `Closes #42` keeps the
+  // literal promise (its head is not the base branch) while defeating the reason
+  // the guard exists: the model would be told to commit and push to `main`.
+  const protectedHead = [baseBranch, defaultBranch].filter(
+    (branch): branch is string => branch !== null && branch.length > 0,
+  );
+  if (protectedHead.includes(surface.pr.headRefName)) {
     return {
       kind: "skip",
       issue,
       reason: "unsafe-pr-branch",
-      detail: `pull request #${String(surface.pr.number)} has the base branch (${baseBranch}) as its head`,
+      detail:
+        `pull request #${String(surface.pr.number)} has a protected branch (${surface.pr.headRefName}) ` +
+        "as its head, so a turn would have to push to it",
     };
   }
 
@@ -185,7 +218,7 @@ export function decideWork(state: IssueState, p: Participants, baseBranch: strin
     .flatMap((thread) => thread.comments)
     .filter((comment) => comment.author.toLowerCase() === p.agentUser.toLowerCase());
   const prAnalysis = analyzeSurface([...surface.messages, ...agentThreadMessages], p);
-  const actionableThreads = findActionableThreads(surface.threads, p);
+  const actionableThreads = findActionableThreads(surface.threads, p, prAnalysis.lastAgentAt);
   const hasPrWork = prAnalysis.hasNewMessage || actionableThreads.length > 0;
 
   if (!hasPrWork && !issueAnalysis.hasNewMessage) {

@@ -83,7 +83,7 @@ One tick, in order:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
    3. assign the issue to the agent, if it is not already assigned;
-   4. post a `working…` marker comment;
+   4. post a `working…` marker comment. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
    5. invoke the executor;
    6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
    7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
@@ -194,6 +194,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 | Code | Meaning |
 |---|---|
 | `0` | The tick completed and every work item was answered. Also used for "nothing to do", "`--dry-run`", and "another instance is running". |
+| `2` | Also used when the run lock is held by a process that looks alive but has outlived `doWork.lockStaleMinutes` and whose identity cannot be verified. No work is attempted, but exiting 0 there would hide a loop that has quietly stopped — see [the lock](#the-run-lock). |
 | `1` | A precondition or configuration check failed. Nothing was attempted. |
 | `2` | The tick ran, but at least one item ended in any outcome other than `answered`. |
 

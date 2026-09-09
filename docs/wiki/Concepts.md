@@ -60,6 +60,10 @@ Deleting is guarded by actually re-reading the surface, never by the executor's 
 
 So a finished, healthy conversation contains only human messages and real agent answers — no leftover `working…` comments — while every run that produced nothing has left exactly one marker explaining itself.
 
+**One other comment is permanent.** When a build turn is triggered by messages on the *issue* rather than the pull request, the agent also leaves a short note on the issue pointing at the pull request. That is not scaffolding: the two surfaces keep separate boundaries, so an answer posted on the pull request would never advance the issue's, and the issue comment would start a fresh build turn on every tick forever. The note advances that boundary and tells a reader where the work went.
+
+**And one is an apology.** If an authorized account posts while a run is already in flight, that message cannot reach the run — and because the agent's answer is newer than it, the next tick will not see it as new either. A stateless boundary simply cannot carry it forward. Rather than lose it in silence, the agent says so on the thread and asks for it to be posted again. Seeing that comment means the timing was unlucky, not that anything is broken.
+
 ## A tick
 
 One run of `automata do-work`. It takes the run lock, discovers the candidate issues, decides a turn for each, and processes every item that needs one — sequentially, one model run each — then exits. A tick with nothing to do costs a handful of API calls and no model calls at all.

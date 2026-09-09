@@ -105,7 +105,9 @@ export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
   "If it does: create a branch off the base branch named below, implement the change following the project's existing conventions, " +
   "run the tests and the linter, and open a pull request whose body contains `Closes #<issue number>`.\n\n" +
   "Otherwise do not touch the code at all: reply on the issue with the specification, the plan, or the open questions you need answered. " +
-  "Keep the reply short and concrete, and always post a reply — silence looks like a crash.";
+  "Keep the reply short and concrete.\n\n" +
+  "Either way, always post a reply on the issue before you finish — including when you implemented and opened a pull request. " +
+  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.";
 
 /** Default instructions for a build turn on an existing pull request. */
 export const DEFAULT_DO_WORK_PR_WORK_PROMPT =

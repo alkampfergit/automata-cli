@@ -485,7 +485,33 @@ describe("decideWork — unsafe pull request branches", () => {
     );
     expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
     if (decision.kind !== "skip") return;
-    expect(decision.detail).toMatch(/base branch/);
+    expect(decision.detail).toMatch(/protected branch \(develop\)/);
+  });
+
+  it("refuses a build turn whose head is the repository default branch", () => {
+    // A back-merge `main -> develop` carrying `Closes #42` keeps the literal
+    // promise — its head is not the base branch — while defeating the reason the
+    // guard exists: the model would be told to push to `main`.
+    const backMerge = pullRequest({ headRefName: "main", baseRefName: BASE });
+    const decision = decideWork(
+      state({ linkedPrs: [backMerge], prSurface: prSurface({ pr: backMerge }) }),
+      P,
+      BASE,
+      "main",
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+    if (decision.kind !== "skip") return;
+    expect(decision.detail).toMatch(/protected branch \(main\)/);
+  });
+
+  it("still allows an ordinary feature branch when a default branch is known", () => {
+    const decision = decideWork(
+      state({ linkedPrs: [pullRequest()], prSurface: prSurface() }),
+      P,
+      BASE,
+      "main",
+    );
+    expect(decision.kind).toBe("work");
   });
 });
 

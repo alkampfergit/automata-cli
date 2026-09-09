@@ -32,6 +32,8 @@ export interface ReviewThread {
   isResolved: boolean;
   /** Every comment in the thread, oldest first. */
   comments: RawMessage[];
+  /** The newest comment's URL, so the model can actually reply in the thread. */
+  url: string | null;
 }
 
 export interface IssueSurface {
@@ -92,6 +94,7 @@ interface RawPrView {
 interface RawLinkMapResponse {
   data: {
     repository: {
+      defaultBranchRef: { name: string } | null;
       pullRequests: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: {
@@ -126,7 +129,7 @@ interface RawThreadsResponse {
             line: number | null;
             comments: {
               pageInfo: { hasPreviousPage: boolean };
-              nodes: { author?: RawAuthor; body: string; createdAt: string }[];
+              nodes: { author?: RawAuthor; body: string; createdAt: string; url?: string }[];
             };
           }[];
         };
@@ -266,6 +269,7 @@ export function getIssueSurface(issueNumber: number): IssueSurface {
 const LINK_MAP_QUERY = `
 query($owner:String!,$repo:String!,$cursor:String){
   repository(owner:$owner,name:$repo){
+    defaultBranchRef{ name }
     pullRequests(states:OPEN, first:100, after:$cursor, orderBy:{field:UPDATED_AT, direction:DESC}){
       pageInfo{ hasNextPage endCursor }
       nodes{
@@ -333,9 +337,16 @@ function indexPullRequest(
  * The link is GitHub's own closing reference, which is what `Closes #N` in a PR
  * body produces — the same link `implement-next` already creates.
  */
-export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
+export interface OpenPrLinkMap {
+  byIssue: Map<number, PullRequestRef[]>;
+  /** The repository default branch, so a build turn can refuse to push to it. */
+  defaultBranch: string | null;
+}
+
+export function getOpenPrLinkMap(): OpenPrLinkMap {
   const { owner, repo } = getRepoSlug();
   const map = new Map<number, PullRequestRef[]>();
+  let defaultBranch: string | null = null;
 
   // Every page is fetched: callers treat this map as authoritative, so a
   // truncated result would make `do-work` open a competing implementation on an
@@ -346,6 +357,7 @@ export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
     if (cursor !== null) args.push("-f", `cursor=${cursor}`);
 
     const response = ghJson<RawLinkMapResponse>(args, "query open pull requests");
+    defaultBranch = response.data.repository.defaultBranchRef?.name ?? defaultBranch;
     const connection = response.data.repository.pullRequests;
 
     for (const node of connection.nodes) {
@@ -353,7 +365,7 @@ export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
     }
 
     if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
-      return map;
+      return { byIssue: map, defaultBranch };
     }
     cursor = connection.pageInfo.endCursor;
   }
@@ -375,7 +387,7 @@ query($owner:String!,$repo:String!,$prNumber:Int!,$cursor:String){
           isResolved isOutdated path line
           comments(last:100){
             pageInfo{ hasPreviousPage }
-            nodes{ author{login} body createdAt }
+            nodes{ author{login} body createdAt url }
           }
         }
       }
@@ -439,6 +451,7 @@ function getReviewThreads(prNumber: number): ReviewThread[] {
         path: node.path,
         line: node.line ?? null,
         isResolved: node.isResolved,
+        url: node.comments.nodes.at(-1)?.url ?? null,
         comments: node.comments.nodes
           .map((comment) => ({
             kind: "thread-comment" as const,
