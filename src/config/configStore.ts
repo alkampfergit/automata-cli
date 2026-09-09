@@ -8,6 +8,7 @@ export type IssueDiscoveryTechnique = "label" | "assignee" | "title-contains";
 export interface AutomataPrompts {
   sonar?: string;
   fixComments?: string;
+  checkIssue?: string;
 }
 
 export interface AutomataConfig {
@@ -15,6 +16,8 @@ export interface AutomataConfig {
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
   issueDiscoveryValue?: string;
   claudeSystemPrompt?: string;
+  allowedUsers?: string[];
+  agentUser?: string;
   prompts?: AutomataPrompts;
 }
 
@@ -39,6 +42,13 @@ export const DEFAULT_SONAR_PROMPT =
   "Fix all new issues and quality-gate failures reported. " +
   "Focus on code smells, bugs, vulnerabilities, and blocking quality-gate conditions flagged in this PR. " +
   "Make targeted, minimal changes that resolve each issue without altering unrelated code.";
+
+export const DEFAULT_CHECK_ISSUE_PROMPT =
+  "You are an expert software engineer working on a GitHub issue. " +
+  "Below is the conversation on that issue, restricted to the people allowed to instruct you and your own previous replies. " +
+  "Messages marked as new arrived after your last run: treat them as the current instruction and read the earlier messages only as context. " +
+  "Do what the new messages ask, following the project's existing conventions and style, and make minimal, targeted changes. " +
+  "Run tests and linting before finishing, then reply on the issue with a short summary of what you did.";
 
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
@@ -107,6 +117,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.prompts?.fixComments) {
     config.prompts.fixComments = resolvePromptRef(config.prompts.fixComments, dir);
+  }
+  if (config.prompts?.checkIssue) {
+    config.prompts.checkIssue = resolvePromptRef(config.prompts.checkIssue, dir);
   }
   return config;
 }

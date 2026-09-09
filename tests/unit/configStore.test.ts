@@ -106,6 +106,22 @@ describe("prompts config field", () => {
   });
 });
 
+describe("allowedUsers and agentUser config fields", () => {
+  it("round-trips allowedUsers and agentUser", () => {
+    writeConfig({ allowedUsers: ["alice", "bob"], agentUser: "agent-bot" });
+    expect(readConfig()).toEqual({ allowedUsers: ["alice", "bob"], agentUser: "agent-bot" });
+  });
+
+  it("preserves them alongside other fields", () => {
+    writeConfig({ remoteType: "gh", agentUser: "agent-bot", prompts: { checkIssue: "Inline prompt." } });
+    expect(readConfig()).toEqual({
+      remoteType: "gh",
+      agentUser: "agent-bot",
+      prompts: { checkIssue: "Inline prompt." },
+    });
+  });
+});
+
 describe("DEFAULT_SONAR_PROMPT", () => {
   it("is exported and non-empty", async () => {
     const { DEFAULT_SONAR_PROMPT } = await import("../../src/config/configStore.js");
@@ -196,6 +212,15 @@ describe("readConfig with .md file references", () => {
       JSON.stringify({ prompts: { sonar: "sonar-prompt.md" } }),
     );
     expect(readConfig()).toEqual({ prompts: { sonar: "Fix sonar issues" } });
+  });
+
+  it("resolves prompts.checkIssue file reference", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "check-issue-prompt.md"), "Act on new issue messages");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ prompts: { checkIssue: "check-issue-prompt.md" } }),
+    );
+    expect(readConfig()).toEqual({ prompts: { checkIssue: "Act on new issue messages" } });
   });
 
   it("resolves prompts.fixComments file reference", () => {
