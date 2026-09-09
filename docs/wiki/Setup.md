@@ -72,7 +72,9 @@ automata config set issue-discovery-value automated
 automata config set allowed-users alice,bob          # who may command the agent
 automata config set agent-user automata-bot          # the agent's own login
 automata config set do-work-base-branch develop
-automata config set do-work-executor claude
+automata config set do-work-executor claude          # claude is the default; codex is the alternative
+automata config set do-work-model claude claude-opus-4-6   # optional, per executor
+automata config set do-work-model codex o3                 # optional, per executor
 automata config set do-work-max-runs 3               # a safety valve while you build trust
 ```
 
@@ -126,7 +128,8 @@ The built-in prompts work out of the box and name no skill. To change how the ag
 | `agentUser` | yes | `config set agent-user` |
 | `doWork.baseBranch` | no (`develop`) | `config set do-work-base-branch` |
 | `doWork.executor` | no (`claude`) | `config set do-work-executor` |
-| `doWork.model` | no | `config set do-work-model` |
+| `doWork.models.claude` | no | `config set do-work-model claude <id>` |
+| `doWork.models.codex` | no | `config set do-work-model codex <id>` |
 | `doWork.maxRunsPerTick` | no (`0` = unlimited) | `config set do-work-max-runs` |
 | `doWork.lockStaleMinutes` | no (`120`) | `config set do-work-lock-stale-minutes` |
 | `doWork.prompts.*` | no (built-in) | `config set do-work-prompt <turn-kind> <value>` |

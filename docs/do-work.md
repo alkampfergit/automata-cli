@@ -22,7 +22,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | Option | Description |
 |---|---|
 | `--with <executor>` | Executor to use: `claude` or `codex`. Default: `doWork.executor`, else `claude`. |
-| `--model <string>` | Model identifier passed to the executor. Default: `doWork.model`. |
+| `--model <string>` | Model identifier passed to the executor, overriding the configured default for it. Default: `doWork.models.<executor>`, else the executor's own default. |
 | `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
 | `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
 | `--max-runs <n>` | Maximum model runs this tick. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
@@ -31,6 +31,18 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--silent` | Suppress step-by-step Claude output; show only the final summary. Ignored by Codex. |
 
 Command-line options take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults.
+
+### Executor and model defaults
+
+`do-work` always invokes the executor with **permission prompts bypassed** — an unattended run cannot answer a prompt, so there is no option to change this. It defaults to **Claude**, and Codex is selected with `--with codex` or `doWork.executor`.
+
+Model defaults are held **per executor**, because a Claude model identifier is not a valid Codex model and vice versa:
+
+```json
+{ "doWork": { "executor": "claude", "models": { "claude": "claude-opus-4-6", "codex": "o3" } } }
+```
+
+Resolution for one run is: `--model` if given, else the default for the executor actually being used, else nothing (the executor picks its own). So `--with codex` on the configuration above sends `o3`, never the Claude identifier.
 
 ---
 

@@ -34,6 +34,8 @@ const AGENT_USER_SCREEN_TEXT = "Login the agent posts as:";
 const DO_WORK_BASE_BRANCH_SCREEN_TEXT = "Branch discussion turns return to:";
 const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
+const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
+const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 
@@ -384,7 +386,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor and run cap, then saves the doWork section", async () => {
+  it("walks base branch, executor, both models and run cap, then saves the doWork section", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
@@ -402,6 +404,16 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
+    // Claude model, then Codex model.
+    stdin.write("claude-opus-4-6");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write("o3");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
     // Run cap: clear "0" then type "2".
     stdin.write("\x7f");
     stdin.write("2");
@@ -410,7 +422,12 @@ describe("ConfigWizard — Do Work section", () => {
     await tick();
 
     expect(writeConfig).toHaveBeenCalledWith({
-      doWork: { baseBranch: "main", executor: "codex", maxRunsPerTick: 2 },
+      doWork: {
+        baseBranch: "main",
+        executor: "codex",
+        models: { claude: "claude-opus-4-6", codex: "o3" },
+        maxRunsPerTick: 2,
+      },
     });
   });
 
@@ -434,13 +451,45 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain(DO_WORK_BASE_BRANCH_SCREEN_TEXT);
   });
 
-  it("reaches the run cap screen prefilled with the default", async () => {
+  it("reaches the Claude model screen after the executor screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
     stdin.write(ENTER);
     await tick();
     stdin.write(ENTER);
     await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+  });
+
+  it("reaches the Codex model screen after the Claude one", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    for (let i = 0; i < 3; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+  });
+
+  it("goes back from the Codex model screen to the Claude one", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    for (let i = 0; i < 3; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+  });
+
+  it("reaches the run cap screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    for (let i = 0; i < 4; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
     expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
   });
 });

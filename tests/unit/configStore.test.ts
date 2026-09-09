@@ -302,7 +302,7 @@ describe("doWork configuration", () => {
     const doWork = {
       baseBranch: "main",
       executor: "codex" as const,
-      model: "o3",
+      models: { claude: "claude-opus-4-6", codex: "o3" },
       maxRunsPerTick: 2,
       lockStaleMinutes: 30,
     };

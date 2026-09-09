@@ -26,10 +26,20 @@ export interface DoWorkPrompts {
   prWork?: string;
 }
 
+/**
+ * Default model per executor. One shared field would be wrong: a Claude model
+ * identifier handed to Codex (or the reverse) is not a valid model there, so
+ * switching executor would silently pass nonsense.
+ */
+export interface DoWorkModels {
+  claude?: string;
+  codex?: string;
+}
+
 export interface AutomataDoWorkConfig {
   baseBranch?: string;
   executor?: Executor;
-  model?: string;
+  models?: DoWorkModels;
   /** 0 means unlimited. */
   maxRunsPerTick?: number;
   lockStaleMinutes?: number;

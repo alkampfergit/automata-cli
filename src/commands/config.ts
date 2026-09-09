@@ -131,16 +131,24 @@ const configSetDoWorkExecutor = new Command("do-work-executor")
   });
 
 const configSetDoWorkModel = new Command("do-work-model")
-  .description("Set the model identifier `do-work` passes to the executor")
+  .description("Set the default model `do-work` passes to one executor")
+  .argument("<executor>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
   .argument("<value>", "Model identifier")
-  .action((value: string) => {
+  .action((executor: string, value: string) => {
+    if (!VALID_EXECUTORS.includes(executor as Executor)) {
+      process.stderr.write(
+        `Error: invalid executor "${executor}". Must be one of: ${VALID_EXECUTORS.join(", ")}\n`,
+      );
+      process.exit(1);
+    }
     const model = value.trim();
     if (model.length === 0) {
       process.stderr.write("Error: do-work-model requires a non-empty model identifier.\n");
       process.exit(1);
     }
-    writeDoWork({ model });
-    process.stdout.write(`do-work model set to: ${model}\n`);
+    const current = readRawConfig();
+    writeDoWork({ models: { ...current.doWork?.models, [executor as Executor]: model } });
+    process.stdout.write(`do-work ${executor} model set to: ${model}\n`);
   });
 
 const configSetDoWorkMaxRuns = new Command("do-work-max-runs")

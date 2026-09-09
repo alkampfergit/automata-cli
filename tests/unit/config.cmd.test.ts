@@ -211,9 +211,29 @@ describe("automata config set do-work-*", () => {
     expect(errorOutput).toMatch(/claude, codex/);
   });
 
-  it("sets the model", () => {
-    run(["config", "set", "do-work-model", "o3"]);
-    expect(readConfigFile().doWork).toEqual({ model: "o3" });
+  it("sets a per-executor model", () => {
+    const output = run(["config", "set", "do-work-model", "codex", "o3"]);
+    expect(output.trim()).toBe("do-work codex model set to: o3");
+    expect(readConfigFile().doWork).toEqual({ models: { codex: "o3" } });
+  });
+
+  it("keeps each executor's model separate", () => {
+    run(["config", "set", "do-work-model", "claude", "claude-opus-4-6"]);
+    run(["config", "set", "do-work-model", "codex", "o3"]);
+    expect(readConfigFile().doWork).toEqual({
+      models: { claude: "claude-opus-4-6", codex: "o3" },
+    });
+  });
+
+  it("rejects an unknown executor for the model", () => {
+    const errorOutput = runExpectingFailure(["config", "set", "do-work-model", "gemini", "x"]);
+    expect(errorOutput).toMatch(/invalid executor "gemini"/);
+  });
+
+  it("rejects an empty model", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-model", "claude", "  "])).toMatch(
+      /non-empty model identifier/,
+    );
   });
 
   it("sets the per-tick run cap", () => {
@@ -277,11 +297,13 @@ describe("automata config set do-work-*", () => {
   it("merges do-work fields instead of replacing the section", () => {
     run(["config", "set", "do-work-base-branch", "main"]);
     run(["config", "set", "do-work-executor", "codex"]);
+    run(["config", "set", "do-work-model", "codex", "o3"]);
     run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
     run(["config", "set", "do-work-prompt", "pr-work", "pr.md"]);
     expect(readConfigFile().doWork).toEqual({
       baseBranch: "main",
       executor: "codex",
+      models: { codex: "o3" },
       prompts: { issueDiscuss: "discuss.md", prWork: "pr.md" },
     });
   });

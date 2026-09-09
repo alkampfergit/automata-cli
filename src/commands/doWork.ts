@@ -146,7 +146,8 @@ function resolveSettings(options: DoWorkOptions): Settings {
   return {
     baseBranch: doWork.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
     executor,
-    model: options.model ?? doWork.model,
+    // --model wins; otherwise take the default for the executor in use.
+    model: options.model ?? doWork.models?.[executor],
     maxRuns:
       options.maxRuns !== undefined
         ? parsePositiveInt(options.maxRuns, "--max-runs")
@@ -424,7 +425,7 @@ export const doWorkCommand = new Command("do-work")
     "Run one tick of the autonomous loop: find the issues whose newest authorized message the agent has not answered, and answer them",
   )
   .option("--with <executor>", "Executor to use: claude or codex (default: from config, else claude)")
-  .option("--model <string>", "Model identifier to pass to the executor")
+  .option("--model <string>", "Model identifier to pass to the executor, overriding the configured default for it")
   .option("--issue <number>", "Restrict the tick to a single issue")
   .option("--limit <n>", "Maximum number of issues to fetch", "10")
   .option("--max-runs <n>", "Maximum number of model runs this tick")

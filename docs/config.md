@@ -128,7 +128,10 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
   "doWork": {
     "baseBranch": "develop",
     "executor": "claude",
-    "model": "claude-opus-4-6",
+    "models": {
+      "claude": "claude-opus-4-6",
+      "codex": "o3"
+    },
     "maxRunsPerTick": 0,
     "lockStaleMinutes": 120,
     "prompts": {
@@ -143,7 +146,8 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 |---|---|---|
 | `baseBranch` | `develop` | The branch a discussion turn returns to, and the branch new work is expected to branch off. |
 | `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. |
-| `model` | *(none)* | Model identifier passed through to the executor. |
+| `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
+| `models.codex` | *(none)* | Default model when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock may be held before it is treated as stale and reclaimed. |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
@@ -154,14 +158,15 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 ```bash
 automata config set do-work-base-branch main
 automata config set do-work-executor codex
-automata config set do-work-model o3
+automata config set do-work-model claude claude-opus-4-6
+automata config set do-work-model codex o3
 automata config set do-work-max-runs 2
 automata config set do-work-lock-stale-minutes 45
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
 automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 ```
 
-`do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename.
+`do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
 
 ### The turn prompts
 

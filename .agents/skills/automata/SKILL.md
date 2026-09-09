@@ -72,7 +72,8 @@ reason string names the rule that fired.
 automata do-work                    # one tick over every issue needing an answer
 automata do-work --issue 42         # restrict the tick to one issue
 automata do-work --max-runs 1       # cap the model runs this tick
-automata do-work --with codex       # override the configured executor
+automata do-work --with codex       # override the configured executor (claude is the default)
+automata do-work --model o3         # override the configured model for that executor
 automata do-work --silent           # only the final summary from Claude
 ```
 

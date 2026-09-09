@@ -759,10 +759,55 @@ describe("do-work executor selection", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
   });
 
-  it("uses the configured executor and model when no option is given", async () => {
-    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { executor: "codex", model: "o4-mini" } });
+  it("always bypasses permission prompts, since an unattended run cannot answer one", async () => {
     await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ yolo: true });
+  });
+
+  it("defaults to Claude when nothing is configured", async () => {
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("uses the configured executor and that executor's configured model", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "codex", models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
+    });
+    await runDoWork();
+    // The Claude default must not leak into a Codex run.
     expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { yolo: true, model: "o4-mini" });
+  });
+
+  it("picks the Claude default when the executor is Claude", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
+    });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "claude-opus-4-6" });
+  });
+
+  it("picks the Codex default when --with codex overrides a Claude-configured executor", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
+    });
+    await runDoWork(["--with", "codex"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { yolo: true, model: "o4-mini" });
+  });
+
+  it("lets --model override the configured default for the executor in use", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { models: { claude: "claude-opus-4-6" } } });
+    await runDoWork(["--model", "claude-sonnet-4-6"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "claude-sonnet-4-6" });
+  });
+
+  it("passes no model when neither a flag nor a default for that executor is set", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { models: { codex: "o4-mini" } } });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: undefined });
   });
 
   it("lets the command line override the configured executor", async () => {

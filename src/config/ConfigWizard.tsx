@@ -72,6 +72,8 @@ type Screen =
   | "agent-user"
   | "do-work-base-branch"
   | "do-work-executor"
+  | "do-work-claude-model"
+  | "do-work-codex-model"
   | "do-work-max-runs"
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt";
@@ -101,6 +103,8 @@ export function ConfigWizard() {
   );
   const initialExecutorIndex = EXECUTOR_OPTIONS.findIndex((o) => o.value === existing.doWork?.executor);
   const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(Math.max(initialExecutorIndex, 0));
+  const [doWorkClaudeModel, setDoWorkClaudeModel] = useState(existing.doWork?.models?.claude ?? "");
+  const [doWorkCodexModel, setDoWorkCodexModel] = useState(existing.doWork?.models?.codex ?? "");
   const [doWorkMaxRuns, setDoWorkMaxRuns] = useState(
     String(existing.doWork?.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
   );
@@ -144,11 +148,41 @@ export function ConfigWizard() {
       } else if (key.downArrow) {
         setDoWorkExecutorIndex((i) => (i < EXECUTOR_OPTIONS.length - 1 ? i + 1 : 0));
       } else if (key.return) {
-        setScreen("do-work-max-runs");
+        setScreen("do-work-claude-model");
       } else if (key.escape) {
         setScreen("do-work-base-branch");
       } else if (key.ctrl && input === "c") {
         exit();
+      }
+      return true;
+    }
+
+    if (screen === "do-work-claude-model") {
+      if (key.return) {
+        setScreen("do-work-codex-model");
+      } else if (key.backspace || key.delete) {
+        setDoWorkClaudeModel((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("do-work-executor");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkClaudeModel((v) => v + input);
+      }
+      return true;
+    }
+
+    if (screen === "do-work-codex-model") {
+      if (key.return) {
+        setScreen("do-work-max-runs");
+      } else if (key.backspace || key.delete) {
+        setDoWorkCodexModel((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("do-work-claude-model");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkCodexModel((v) => v + input);
       }
       return true;
     }
@@ -163,6 +197,10 @@ export function ConfigWizard() {
             ...current.doWork,
             baseBranch: doWorkBaseBranch.trim() || undefined,
             executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
+            models: {
+              claude: doWorkClaudeModel.trim() || undefined,
+              codex: doWorkCodexModel.trim() || undefined,
+            },
             maxRunsPerTick: Number.isNaN(parsedMaxRuns) || parsedMaxRuns < 0 ? undefined : parsedMaxRuns,
           },
         });
@@ -660,6 +698,42 @@ export function ConfigWizard() {
         ))}
         <Text> </Text>
         <Text dimColor>↑/↓ to move · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-claude-model") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Do Work — Claude Model</Text>
+        <Text> </Text>
+        <Text>
+          Default model when the executor is Claude (blank = the executor&apos;s own default):{" "}
+          <Text color="cyan">
+            {doWorkClaudeModel}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type model · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-codex-model") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Do Work — Codex Model</Text>
+        <Text> </Text>
+        <Text>
+          Default model when the executor is Codex (blank = the executor&apos;s own default):{" "}
+          <Text color="cyan">
+            {doWorkCodexModel}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type model · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
       </Box>
     );
   }
