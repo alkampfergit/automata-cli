@@ -200,6 +200,18 @@ describe("automata config set do-work-*", () => {
     expect(runExpectingFailure(["config", "set", "do-work-base-branch", "  "])).toMatch(/non-empty branch name/);
   });
 
+  it("sets the protected branches", () => {
+    const output = run(["config", "set", "do-work-protected-branches", "main, release"]);
+    expect(output.trim()).toBe("do-work protected branches set to: main, release");
+    expect(readConfigFile().doWork).toEqual({ protectedBranches: ["main", "release"] });
+  });
+
+  it("rejects an empty protected branch list", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-protected-branches", " , "])).toMatch(
+      /at least one branch name/,
+    );
+  });
+
   it("sets the executor", () => {
     run(["config", "set", "do-work-executor", "codex"]);
     expect(readConfigFile().doWork).toEqual({ executor: "codex" });

@@ -72,6 +72,7 @@ type Screen =
   | "allowed-users"
   | "agent-user"
   | "do-work-base-branch"
+  | "do-work-protected-branches"
   | "do-work-executor"
   | "do-work-claude-model"
   | "do-work-codex-model"
@@ -247,6 +248,9 @@ export function ConfigWizard() {
   );
   const initialExecutorIndex = EXECUTOR_OPTIONS.findIndex((o) => o.value === existing.doWork?.executor);
   const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(Math.max(initialExecutorIndex, 0));
+  const [doWorkProtectedBranches, setDoWorkProtectedBranches] = useState(
+    (existing.doWork?.protectedBranches ?? DEFAULT_DO_WORK.protectedBranches).join(", "),
+  );
   const [doWorkClaudeModel, setDoWorkClaudeModel] = useState(existing.doWork?.models?.claude ?? "");
   const [doWorkCodexModel, setDoWorkCodexModel] = useState(existing.doWork?.models?.codex ?? "");
   const [doWorkLockStale, setDoWorkLockStale] = useState(
@@ -353,8 +357,23 @@ export function ConfigWizard() {
     },
     "do-work-base-branch": {
       setValue: setDoWorkBaseBranch,
-      onSubmit: () => setScreen("do-work-executor"),
+      onSubmit: () => setScreen("do-work-protected-branches"),
       onBack: () => setScreen("main"),
+    },
+    "do-work-protected-branches": {
+      setValue: (update) => {
+        setValidationError("");
+        setDoWorkProtectedBranches(update);
+      },
+      onSubmit: () => {
+        if (parseAllowedUsers(doWorkProtectedBranches).length === 0) {
+          setValidationError("Enter at least one branch name.");
+          return;
+        }
+        setValidationError("");
+        setScreen("do-work-executor");
+      },
+      onBack: () => setScreen("do-work-base-branch"),
     },
     "do-work-claude-model": {
       setValue: setDoWorkClaudeModel,
@@ -403,6 +422,7 @@ export function ConfigWizard() {
           doWork: {
             ...current.doWork,
             baseBranch: doWorkBaseBranch.trim() || undefined,
+            protectedBranches: parseAllowedUsers(doWorkProtectedBranches),
             executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
             models: {
               claude: doWorkClaudeModel.trim() || undefined,
@@ -487,7 +507,7 @@ export function ConfigWizard() {
       length: EXECUTOR_OPTIONS.length,
       setIndex: setDoWorkExecutorIndex,
       onSelect: () => setScreen("do-work-claude-model"),
-      onBack: () => setScreen("do-work-base-branch"),
+      onBack: () => setScreen("do-work-protected-branches"),
     },
   };
 
@@ -559,6 +579,12 @@ export function ConfigWizard() {
       label: "Branch discussion turns return to:",
       value: doWorkBaseBranch,
       hint: `Type branch · Enter to continue · ${BACK}`,
+    },
+    "do-work-protected-branches": {
+      title: "Do Work — Protected Branches",
+      label: "Branches a build turn must never push to (comma separated):",
+      value: doWorkProtectedBranches,
+      hint: `Type branches · Enter to continue · ${BACK}`,
     },
     "do-work-claude-model": {
       title: "Do Work — Claude Model",

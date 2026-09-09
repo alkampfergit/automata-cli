@@ -123,6 +123,22 @@ const configSetDoWorkBaseBranch = new Command("do-work-base-branch")
     process.stdout.write(`do-work base branch set to: ${branch}\n`);
   });
 
+const configSetDoWorkProtectedBranches = new Command("do-work-protected-branches")
+  .description("Set the branches a `do-work` build turn must never check out and push to")
+  .argument("<value>", `Comma-separated branch names (default: ${DEFAULT_DO_WORK.protectedBranches.join(",")})`)
+  .action((value: string) => {
+    const branches = value
+      .split(",")
+      .map((branch) => branch.trim())
+      .filter((branch) => branch.length > 0);
+    if (branches.length === 0) {
+      process.stderr.write("Error: do-work-protected-branches requires at least one branch name.\n");
+      process.exit(1);
+    }
+    writeDoWork({ protectedBranches: branches });
+    process.stdout.write(`do-work protected branches set to: ${branches.join(", ")}\n`);
+  });
+
 const configSetDoWorkExecutor = new Command("do-work-executor")
   .description("Set the default executor `do-work` invokes")
   .argument("<value>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
@@ -216,6 +232,7 @@ const configSet = new Command("set")
   .addCommand(configSetAllowedUsers)
   .addCommand(configSetAgentUser)
   .addCommand(configSetDoWorkBaseBranch)
+  .addCommand(configSetDoWorkProtectedBranches)
   .addCommand(configSetDoWorkExecutor)
   .addCommand(configSetDoWorkModel)
   .addCommand(configSetDoWorkMaxRuns)

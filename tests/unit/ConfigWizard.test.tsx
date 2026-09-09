@@ -32,6 +32,7 @@ const CHECK_ISSUE_SCREEN_TEXT = "Check-Issue prompt:";
 const ALLOWED_USERS_SCREEN_TEXT = "Logins allowed to instruct the agent";
 const AGENT_USER_SCREEN_TEXT = "Login the agent posts as:";
 const DO_WORK_BASE_BRANCH_SCREEN_TEXT = "Branch discussion turns return to:";
+const DO_WORK_PROTECTED_SCREEN_TEXT = "Branches a build turn must never push to";
 const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
@@ -363,6 +364,26 @@ describe("ConfigWizard — Issue Watch", () => {
   });
 });
 
+/**
+ * Press Enter until the named screen is showing.
+ *
+ * Counting keystrokes breaks whenever a screen is inserted into the flow, which
+ * has now happened twice; this states the destination instead.
+ */
+async function advanceTo(
+  stdin: { write: (s: string) => void },
+  lastFrame: () => string | undefined,
+  text: string,
+  max = 10,
+) {
+  for (let i = 0; i < max; i += 1) {
+    if ((lastFrame() ?? "").includes(text)) return;
+    stdin.write(ENTER);
+    await tick();
+  }
+  throw new Error(`never reached a screen containing ${JSON.stringify(text)}: ${lastFrame() ?? ""}`);
+}
+
 async function navigateToDoWork(stdin: { write: (s: string) => void }) {
   // Main menu: Remote/Mode(0), Implement-Next(1), Prompts(2), Issue Watch(3), Do Work(4)
   for (let i = 0; i < 4; i += 1) stdin.write(DOWN);
@@ -411,11 +432,10 @@ describe("ConfigWizard — list screen back navigation", () => {
   it("goes back from the executor screen to the base branch screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    stdin.write(ENTER);
-    await tick();
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
-    expect(lastFrame()).toContain(DO_WORK_BASE_BRANCH_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
   });
 });
 
@@ -436,6 +456,10 @@ describe("ConfigWizard — Do Work section", () => {
     for (let i = 0; i < "develop".length; i += 1) stdin.write("\x7f");
     stdin.write("main");
     await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Protected branches: keep the default.
     stdin.write(ENTER);
     await tick();
 
@@ -472,6 +496,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(writeConfig).toHaveBeenCalledWith({
       doWork: {
         baseBranch: "main",
+        protectedBranches: ["main", "master"],
         executor: "codex",
         models: { claude: "claude-opus-4-6", codex: "o3" },
         maxRunsPerTick: 2,
@@ -483,10 +508,7 @@ describe("ConfigWizard — Do Work section", () => {
   it("reaches the lock staleness screen after the run cap", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    for (let i = 0; i < 5; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_LOCK_STALE_SCREEN_TEXT);
     expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
   });
 
@@ -497,11 +519,7 @@ describe("ConfigWizard — Do Work section", () => {
     const writesBefore = vi.mocked(writeConfig).mock.calls.length;
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    // base branch -> executor -> claude model -> codex model -> run cap
-    for (let i = 0; i < 4; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
     stdin.write("abc");
     await tick();
     stdin.write(ENTER);
@@ -517,11 +535,7 @@ describe("ConfigWizard — Do Work section", () => {
     const writesBefore = vi.mocked(writeConfig).mock.calls.length;
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    // ...through the run cap to the lock staleness screen
-    for (let i = 0; i < 5; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_LOCK_STALE_SCREEN_TEXT);
     for (let i = 0; i < "120".length; i += 1) stdin.write("\x7f");
     stdin.write("0");
     await tick();
@@ -535,8 +549,7 @@ describe("ConfigWizard — Do Work section", () => {
   it("shows the executor options", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    stdin.write(ENTER);
-    await tick();
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
     expect(lastFrame()).toContain(DO_WORK_EXECUTOR_SCREEN_TEXT);
     expect(lastFrame()).toContain("Claude Code");
     expect(lastFrame()).toContain("Codex");
@@ -545,40 +558,52 @@ describe("ConfigWizard — Do Work section", () => {
   it("goes back from the executor screen to the base branch screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    stdin.write(ENTER);
-    await tick();
+    await advanceTo(stdin, lastFrame, DO_WORK_EXECUTOR_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
-    expect(lastFrame()).toContain(DO_WORK_BASE_BRANCH_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
+  });
+
+  it("reaches the protected branches screen prefilled with the defaults", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_PROTECTED_SCREEN_TEXT);
+    expect(lastFrame()).toContain("main, master");
+  });
+
+  it("rejects an empty protected branch list in place", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_PROTECTED_SCREEN_TEXT);
+    for (let i = 0; i < "main, master".length; i += 1) stdin.write("\x7f");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_PROTECTED_SCREEN_TEXT);
+    expect(lastFrame()).toContain("at least one branch name");
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
   });
 
   it("reaches the Claude model screen after the executor screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    stdin.write(ENTER);
-    await tick();
-    stdin.write(ENTER);
-    await tick();
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
     expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
   });
 
   it("reaches the Codex model screen after the Claude one", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    for (let i = 0; i < 3; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
     expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
   });
 
   it("goes back from the run cap screen to the Codex model screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    for (let i = 0; i < 4; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
     expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
@@ -587,10 +612,7 @@ describe("ConfigWizard — Do Work section", () => {
   it("goes back from the Codex model screen to the Claude one", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    for (let i = 0; i < 3; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
     expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
@@ -599,10 +621,7 @@ describe("ConfigWizard — Do Work section", () => {
   it("reaches the run cap screen prefilled with the default", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
-    for (let i = 0; i < 4; i += 1) {
-      stdin.write(ENTER);
-      await tick();
-    }
+    await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
     expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
   });
 });

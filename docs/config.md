@@ -158,6 +158,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 
 ```bash
 automata config set do-work-base-branch main
+automata config set do-work-protected-branches main,master
 automata config set do-work-executor codex
 automata config set do-work-model claude claude-opus-4-6
 automata config set do-work-model codex o3
@@ -184,4 +185,4 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
-The `Do Work` entry on the main menu sets `baseBranch`, `executor`, both models, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.
+The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.

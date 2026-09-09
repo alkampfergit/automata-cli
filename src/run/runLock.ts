@@ -220,7 +220,20 @@ function makeHandle(path: string, token: string): LockHandle {
   };
 }
 
-function write(path: string, command: string, token: string, flag: "wx" | "w" = "wx"): void {
+/**
+ * Publish a lock atomically, or report that the path is taken.
+ *
+ * `writeFileSync(..., { flag: "wx" })` creates the path atomically but writes
+ * its contents afterwards, so for a moment the lock exists and is *empty*. A
+ * contender reading it in that window gets no owner, `isStale(null)` says stale,
+ * and it reclaims a lock that was being taken — two ticks, from the acquisition
+ * primitive everything else rests on.
+ *
+ * So the content is written to a staging file first and `link`ed into place:
+ * `link` fails with `EEXIST` when the path is occupied, so it is both
+ * exactly-one-wins and never publishes a partially written lock.
+ */
+function publishLock(path: string, command: string, token: string): boolean {
   const owner: LockOwner = {
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -229,9 +242,27 @@ function write(path: string, command: string, token: string, flag: "wx" | "w" = 
     token,
     pidStartedAt: processStartedAt(process.pid) ?? undefined,
   };
-  // "wx" fails if the file exists, and that check-and-create is atomic on every
-  // platform we target — which is what makes this a lock rather than a hint.
-  writeFileSync(path, JSON.stringify(owner, null, 2) + "\n", { encoding: "utf8", flag });
+
+  const staging = `${path}.staging.${token}`;
+  try {
+    writeFileSync(staging, JSON.stringify(owner, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+  } catch {
+    return false;
+  }
+
+  try {
+    linkSync(staging, path);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return false;
+  } finally {
+    try {
+      unlinkSync(staging);
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 export function acquireRunLock(command: string, staleMinutes: number): AcquireResult {
@@ -239,11 +270,8 @@ export function acquireRunLock(command: string, staleMinutes: number): AcquireRe
   const token = randomUUID();
   mkdirSync(join(process.cwd(), LOCK_DIR), { recursive: true });
 
-  try {
-    write(path, command, token);
+  if (publishLock(path, command, token)) {
     return { ok: true, handle: makeHandle(path, token) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
   const owner = readOwner(path);
@@ -426,12 +454,11 @@ function reclaim(path: string, command: string, token: string, expected: LockOwn
 
     const claimed = `${path}.stale.${token}`;
     try {
-      // The path is free and only this contender may fill it, so "wx" should
-      // succeed; if it does not, something outside this protocol wrote it.
-      write(path, command, token, "wx");
-      return { ok: true, handle: makeHandle(path, token) };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // The path is free and only this contender may fill it, so publishing
+      // should succeed; if it does not, something outside this protocol wrote it.
+      if (publishLock(path, command, token)) {
+        return { ok: true, handle: makeHandle(path, token) };
+      }
       return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
     } finally {
       try {
