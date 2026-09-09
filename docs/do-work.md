@@ -58,7 +58,12 @@ Resolution for one run is: `--model` if given, else the default for the executor
 | `allowedUsers` | `automata config set allowed-users alice,bob` | The only accounts whose messages can trigger a turn or reach a prompt. |
 | `agentUser` | `automata config set agent-user automata-bot` | The login the agent posts as. Defines the answer boundary. |
 
-`do-work` also refuses (exit 1) when `gh` is authenticated as an account listed in `allowedUsers`. Everything the agent posts is attributed to whoever `gh` is authenticated as, so in that situation the marker comment itself would read as a new instruction and every tick would answer the previous tick's marker forever. Authenticate `gh` as the agent account in the harness environment. A login that merely differs from `agentUser` is a warning rather than a refusal, and a login that cannot be determined (a GitHub App installation token has no user) is accepted.
+`do-work` also refuses (exit 1) whenever `gh` is authenticated as an account that is **not** `agentUser`. Everything the agent posts is attributed to whoever `gh` is authenticated as, and both mismatches are fatal for the same underlying reason — the answer boundary stops working:
+
+- **The login is in `allowedUsers`** — the agent's own marker reads as a new instruction, so every tick answers the previous tick's marker forever.
+- **The login is neither the agent nor authorized** — the marker and the model's reply are filtered out of the conversation entirely, so the boundary never advances and the same human message starts a run on every tick.
+
+A login that cannot be determined is accepted with a warning, because a GitHub App installation token legitimately has no user. Authenticate `gh` as the agent account in the harness environment.
 
 Everything under `doWork` is optional and has a working default — see [docs/config.md](config.md#dowork).
 
@@ -70,7 +75,7 @@ One tick, in order:
 
 1. **Validate** the configuration, resolve both turn prompts, and check that `gh` is not authenticated as an account that may instruct the agent. Any problem exits 1 before anything happens.
 2. **Take the run lock** (`.automata/automata.lock`). If another automata instance holds it, print a message and exit 0 without touching GitHub.
-3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with one GraphQL query.
+3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query — every page, because the map is treated as authoritative and a truncated one would make `do-work` start a competing implementation on an issue that already has a pull request.
 4. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
 5. **Process** each work item sequentially:
    1. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
@@ -78,7 +83,7 @@ One tick, in order:
    3. post a `working…` marker comment;
    4. invoke the executor;
    5. reconcile the marker — delete it if the agent posted an answer, otherwise update it in place to say what happened;
-   6. after a discuss turn only, make sure any new pull request closes the issue.
+   6. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
 6. **Summarise** and exit.
 
 ---
@@ -120,6 +125,8 @@ The command is built by the same argv builders the real invocation uses, so it c
 | `pr-work` | The issue **has** a linked open pull request | Work on that pull request's head branch, which is already checked out. Address the new messages and unresolved review threads, commit and push, and reply on the pull request. Never merge it, never push to the base branch. |
 
 The pull-request link is GitHub's own closing reference, so opening a pull request that closes the issue is what moves an issue from discussion into implementation. No intent classification and no extra model call is involved.
+
+Because that link is the state machine, `do-work` repairs it after a discussion turn: if the branch now has a pull request without a closing reference to the issue, one is added. Repair applies **only** to a branch the turn moved onto. If the model merely replied, the tick is still on the base branch — where the "current branch's pull request" would be the base branch's own (a release pull request into `main`, say), and appending a closing reference to that would make an unrelated merge close the issue.
 
 ---
 
@@ -165,8 +172,9 @@ Before the first model run on an issue, `do-work` assigns the issue to `agentUse
 A tick is one or more full model sessions, and cron fires on a fixed interval, so overlap is normal. `do-work` holds `.automata/automata.lock` for the whole tick.
 
 - Another **live** instance holds it → print a message and exit 0. Nothing is assigned, posted or invoked.
-- The lock is **stale** — its process is gone, or it is older than `doWork.lockStaleMinutes` (default 120), or unparseable → it is reclaimed.
-- The lock is released on success, failure and interruption.
+- The lock is **stale** → it is reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness wins over age**: a long-running tick keeps its lock however old it is, because stealing it would put two model sessions in one checkout.
+- Each acquisition records a unique token, and a holder releases only the lock it created — so a holder whose lock was reclaimed cannot evict its replacement on the way out.
+- The lock is released on success, failure and interruption. On `SIGINT`/`SIGTERM` the executor is terminated and awaited **before** the lock is released, so a signalled tick cannot leave a model editing and pushing while the next tick picks up the freed lock.
 
 The file is named for automata rather than for `do-work` so other long-running commands can adopt it later. It is git-ignored.
 

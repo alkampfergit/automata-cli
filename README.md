@@ -129,14 +129,7 @@ See [docs/execute-prompt.md](docs/execute-prompt.md) for full details.
 
 ## `automata do-work`
 
-Run one tick of the autonomous loop: find the open issues whose newest message from an authorized account the agent has not answered — on the issue or on its pull request — and answer them. Designed to run from cron in a disposable VM or container.
-
-```bash
-automata do-work              # one tick
-automata do-work --dry-run    # show the work plan, change nothing
-```
-
-See [docs/do-work.md](docs/do-work.md) for the command reference, and the [wiki](docs/wiki/Home.md) for the process: the trust model, the issue lifecycle, setup and operation.
+One tick of the autonomous loop: answer the open issues whose newest message from an authorized account the agent has not answered. Reference: [docs/do-work.md](docs/do-work.md). Process, trust model and setup: [the wiki](docs/wiki/Home.md).
 
 ---
 

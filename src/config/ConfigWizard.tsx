@@ -208,7 +208,7 @@ export function ConfigWizard() {
       } else if (key.backspace || key.delete) {
         setDoWorkMaxRuns((v) => v.slice(0, -1));
       } else if (key.escape) {
-        setScreen("do-work-executor");
+        setScreen("do-work-codex-model");
       } else if (key.ctrl && input === "c") {
         exit();
       } else if (input && !key.ctrl && !key.meta) {

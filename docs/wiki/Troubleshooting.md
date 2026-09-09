@@ -102,16 +102,20 @@ gh api user --jq .login             # must equal agentUser
 If you meant to run as yourself for a one-off task, use `automata implement-next`
 or `automata execute-prompt` instead — they have no boundary to protect.
 
-## "`gh` is authenticated as X but agentUser is Y" (warning)
+## "`gh` is authenticated as X but agentUser is Y"
 
-The tick proceeds, but the agent is posting as an account that is not the one it
-measures its boundary against, so it will not recognise its own answers and will
-repeat itself. Either authenticate as `agentUser`, or set `agentUser` to the
-account you are actually posting as.
+Also a refusal, for the same underlying reason: the agent would post as an
+account that is neither itself nor an authorized user, so the conversation filter
+drops those comments entirely. The boundary would never advance and the same
+message would start a run on every tick.
 
-This is only a warning because a GitHub App installation token has no user login
-at all, and that is a legitimate setup — in that case you will see "could not
-determine which account `gh` is authenticated as" instead.
+Either authenticate as `agentUser`, or set `agentUser` to the account you are
+actually posting as.
+
+The only accepted mismatch is an *unverifiable* one — a GitHub App installation
+token has no user login, and that is a legitimate setup. There you will see
+"could not determine which account `gh` is authenticated as" and the tick
+proceeds.
 
 ## `do-work` exits 1 immediately
 

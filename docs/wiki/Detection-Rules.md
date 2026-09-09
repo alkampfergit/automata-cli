@@ -38,6 +38,8 @@ A review thread needs an answer when:
 
 The second half is what matters. If the agent replied last, the thread is answered — even though it is still unresolved — because resolving is the reviewer's action, not the agent's. Treating "unresolved" alone as actionable would make every thread retrigger a turn on every tick, forever.
 
+"Newest" is decided **after** Rule 1 has dropped the unauthorized comments, not before. Otherwise a bot commenting in the thread after a maintainer's request would make the bot the newest author and silently suppress that request. The filtered comments are also what reach the prompt, so bot text never appears there.
+
 A resolved thread never counts, even if it has a new authorized comment.
 
 ## Rule 4 — The pull-request-existence rule

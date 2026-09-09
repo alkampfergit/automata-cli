@@ -55,16 +55,36 @@ function isAssignedToAgent(assignees: string[], agentUser: string): boolean {
 
 /**
  * Threads that still need an answer: unresolved, and with an authorized human as
- * the newest commenter.
+ * the newest *participant* comment.
+ *
+ * The authorization filter runs first, before "who spoke last" is decided. That
+ * ordering matters: if a maintainer leaves actionable feedback and a bot comments
+ * afterwards in the same thread, the newest raw comment is the bot's — and
+ * classifying on that would silently suppress the maintainer's request. Other
+ * accounts are dropped before detection, not consulted by it.
+ *
+ * The returned threads carry the filtered comments, so unauthorized text cannot
+ * reach the prompt either.
  *
  * The agent having spoken last means the thread is answered even while it is
  * still unresolved — resolving is the reviewer's action, so treating unresolved
  * as actionable would retrigger the same thread on every tick forever.
  */
 function findActionableThreads(threads: ReviewThread[], p: Participants): ReviewThread[] {
-  return threads.filter(
-    (thread) => !thread.isResolved && lastAuthorClass(thread.comments, p) === "authorized",
-  );
+  const actionable: ReviewThread[] = [];
+  for (const thread of threads) {
+    if (thread.isResolved) continue;
+    const comments = thread.comments.filter((comment) => classifyForThread(comment.author, p) !== "other");
+    if (lastAuthorClass(comments, p) !== "authorized") continue;
+    actionable.push({ ...thread, comments });
+  }
+  return actionable;
+}
+
+function classifyForThread(author: string, p: Participants): "agent" | "authorized" | "other" {
+  const login = author.toLowerCase();
+  if (login === p.agentUser.toLowerCase()) return "agent";
+  return p.allowedUsers.some((user) => user.toLowerCase() === login) ? "authorized" : "other";
 }
 
 function newestPr(prs: PullRequestRef[]): PullRequestRef {

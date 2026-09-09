@@ -17,6 +17,18 @@ function json(value: unknown): { stdout: string; stderr: string; status: number 
 
 const REMOTE = ok("git@github.com:acme/widget.git\n");
 
+function prNode(number: number, updatedAt: string, closes = 42) {
+  return {
+    number,
+    url: `https://gh/pr/${String(number)}`,
+    title: "t",
+    headRefName: `feature/${String(number)}`,
+    isDraft: false,
+    updatedAt,
+    closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: closes }] },
+  };
+}
+
 function calls(): { cmd: string; args: string[] }[] {
   return mockSpawnSync.mock.calls.map((call) => ({ cmd: call[0] as string, args: call[1] as string[] }));
 }
@@ -159,6 +171,7 @@ describe("getOpenPrLinkMap", () => {
         data: {
           repository: {
             pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [
                 {
                   number: 57,
@@ -167,7 +180,7 @@ describe("getOpenPrLinkMap", () => {
                   headRefName: "feature/042",
                   isDraft: false,
                   updatedAt: "2026-01-05T00:00:00Z",
-                  closingIssuesReferences: { nodes: [{ number: 42 }] },
+                  closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: 42 }] },
                 },
                 {
                   number: 58,
@@ -176,7 +189,7 @@ describe("getOpenPrLinkMap", () => {
                   headRefName: "feature/099",
                   isDraft: true,
                   updatedAt: "2026-01-06T00:00:00Z",
-                  closingIssuesReferences: { nodes: [] },
+                  closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
                 },
               ],
             },
@@ -201,26 +214,81 @@ describe("getOpenPrLinkMap", () => {
   });
 
   it("keeps every pull request when two close the same issue", async () => {
-    const node = (number: number, updatedAt: string) => ({
-      number,
-      url: `https://gh/pr/${String(number)}`,
-      title: "t",
-      headRefName: `feature/${String(number)}`,
-      isDraft: false,
-      updatedAt,
-      closingIssuesReferences: { nodes: [{ number: 42 }] },
-    });
     mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
       json({
         data: {
           repository: {
-            pullRequests: { nodes: [node(57, "2026-01-05T00:00:00Z"), node(58, "2026-01-09T00:00:00Z")] },
+            pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [prNode(57, "2026-01-05T00:00:00Z"), prNode(58, "2026-01-09T00:00:00Z")],
+            },
           },
         },
       }),
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
     expect(getOpenPrLinkMap().get(42)?.map((pr) => pr.number)).toEqual([57, 58]);
+  });
+
+  it("follows every page, because callers treat the map as authoritative", async () => {
+    // A truncated map makes do-work start a competing implementation on an issue
+    // that already has a pull request.
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              pullRequests: {
+                pageInfo: { hasNextPage: true, endCursor: "CURSOR1" },
+                nodes: [prNode(57, "2026-01-05T00:00:00Z", 42)],
+              },
+            },
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              pullRequests: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [prNode(58, "2026-01-06T00:00:00Z", 43)],
+              },
+            },
+          },
+        }),
+      );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const map = getOpenPrLinkMap();
+    expect([...map.keys()].sort((a, b) => a - b)).toEqual([42, 43]);
+    // The cursor from the first page must be sent with the second request.
+    expect(calls().some((c) => c.args.includes("cursor=CURSOR1"))).toBe(true);
+  });
+
+  it("warns rather than silently dropping links when a PR closes more than 50 issues", async () => {
+    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      json({
+        data: {
+          repository: {
+            pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  ...prNode(57, "2026-01-05T00:00:00Z"),
+                  closingIssuesReferences: { pageInfo: { hasNextPage: true }, nodes: [{ number: 42 }] },
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    getOpenPrLinkMap();
+    expect(warn.mock.calls.flat().join("")).toMatch(/closes more than 50 issues/);
+    warn.mockRestore();
   });
 });
 

@@ -34,8 +34,14 @@ import {
 } from "../github/workDetection.js";
 import { composePrompt } from "../github/workPrompt.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
+import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, type LockHandle } from "../run/runLock.js";
-import { invokeClaudeCode, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
+import {
+  invokeClaudeCode,
+  buildClaudeArgs,
+  resolveCommand,
+  terminateActiveClaudeProcesses,
+} from "../claude/claudeService.js";
 import { invokeCodexCode, buildCodexArgs } from "../codex/codexService.js";
 import { shellQuote } from "../cli/spawnUtils.js";
 
@@ -201,10 +207,17 @@ function checkAuthenticatedIdentity(agentUser: string, allowedUsers: string[]): 
     );
   }
 
-  progress(
-    `Warning: \`gh\` is authenticated as "${login}" but agentUser is "${agentUser}". ` +
-      "The agent will not recognise its own messages and may repeat itself. " +
-      "Authenticate as the agent account, or correct `agentUser`.\n",
+  // Any known mismatch is fatal, not just an authorized one. The marker would be
+  // posted by an account that is neither the agent nor authorized, so the
+  // conversation filter drops it entirely: the boundary never advances and the
+  // same human message starts a model run on every tick. Only the unverifiable
+  // case below is allowed to proceed.
+  fail(
+    `\`gh\` is authenticated as "${login}" but agentUser is "${agentUser}". ` +
+      "Comments posted under that identity are neither the agent's nor an authorized user's, so they are " +
+      "filtered out of the conversation: the answer boundary would never advance and the same message would " +
+      "start a run on every tick. " +
+      `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`,
   );
 }
 
@@ -388,10 +401,24 @@ async function invokeExecutor(prompt: string, settings: Settings, silent: boolea
   await invokeClaudeCode(prompt, { yolo: true, verbose: !silent, model: settings.model });
 }
 
-/** After a discuss turn the model may have opened a pull request; the link is
- * the state machine, so make sure it exists. */
-function repairIssueLink(item: WorkItem): void {
+/**
+ * After a discuss turn the model may have opened a pull request; the link is the
+ * state machine, so make sure it exists.
+ *
+ * Only ever for a branch the turn moved onto. A discussion turn starts on the
+ * base branch, and if the model merely replied we are still there — where
+ * `getCurrentBranchPr()` would return the base branch's *own* pull request (a
+ * release PR into `main`, say) and appending `Closes #<issue>` to it would make
+ * an unrelated merge close this issue.
+ */
+function repairIssueLink(item: WorkItem, baseBranch: string): void {
   try {
+    const branch = getCurrentBranch();
+    if (branch === baseBranch) {
+      progress(`  issue #${String(item.issue.number)} is still in discussion (no branch was created).\n`);
+      return;
+    }
+
     const pr = getCurrentBranchPr();
     if (!pr) {
       progress(`  issue #${String(item.issue.number)} is still in discussion (no pull request).\n`);
@@ -464,7 +491,7 @@ async function processItem(item: WorkItem, settings: Settings, silent: boolean):
   progress(`  ${reconciled.detail}\n`);
 
   if (item.turn === "issue-discuss") {
-    repairIssueLink(item);
+    repairIssueLink(item, settings.baseBranch);
   }
 
   return { ...base, outcome: reconciled.outcome, detail: reconciled.detail };
@@ -510,9 +537,18 @@ export const doWorkCommand = new Command("do-work")
     }
 
     const handle: LockHandle = lock.handle;
+    // Stop the executor before releasing the lock. Exiting the parent while a
+    // streaming child keeps running would leave a model editing and pushing
+    // while the next cron tick picks up the freed lock.
+    let shuttingDown = false;
     const onSignal = (): void => {
-      handle.release();
-      process.exit(130);
+      if (shuttingDown) return;
+      shuttingDown = true;
+      progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
+      void terminateActiveClaudeProcesses().then(() => {
+        handle.release();
+        process.exit(130);
+      });
     };
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);

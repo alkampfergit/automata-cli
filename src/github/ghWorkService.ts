@@ -86,6 +86,7 @@ interface RawLinkMapResponse {
   data: {
     repository: {
       pullRequests: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: {
           number: number;
           url: string;
@@ -93,7 +94,10 @@ interface RawLinkMapResponse {
           headRefName: string;
           isDraft: boolean;
           updatedAt: string;
-          closingIssuesReferences: { nodes: { number: number }[] };
+          closingIssuesReferences: {
+            pageInfo: { hasNextPage: boolean };
+            nodes: { number: number }[];
+          };
         }[];
       };
     };
@@ -248,16 +252,23 @@ export function getIssueSurface(issueNumber: number): IssueSurface {
 }
 
 const LINK_MAP_QUERY = `
-query($owner:String!,$repo:String!){
+query($owner:String!,$repo:String!,$cursor:String){
   repository(owner:$owner,name:$repo){
-    pullRequests(states:OPEN, first:100, orderBy:{field:UPDATED_AT, direction:DESC}){
+    pullRequests(states:OPEN, first:100, after:$cursor, orderBy:{field:UPDATED_AT, direction:DESC}){
+      pageInfo{ hasNextPage endCursor }
       nodes{
         number url title headRefName isDraft updatedAt
-        closingIssuesReferences(first:10){ nodes{ number } }
+        closingIssuesReferences(first:50){
+          pageInfo{ hasNextPage }
+          nodes{ number }
+        }
       }
     }
   }
 }`.trim();
+
+/** Guard against an unbounded loop if the API ever reports hasNextPage forever. */
+const MAX_LINK_MAP_PAGES = 50;
 
 /**
  * Map every open pull request to the issues it closes, inverted so callers can
@@ -268,31 +279,56 @@ query($owner:String!,$repo:String!){
  */
 export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
   const { owner, repo } = getRepoSlug();
-  const response = ghJson<RawLinkMapResponse>(
-    ["api", "graphql", "-f", `query=${LINK_MAP_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`],
-    "query open pull requests",
-  );
-
   const map = new Map<number, PullRequestRef[]>();
-  for (const node of response.data.repository.pullRequests.nodes) {
-    const ref: PullRequestRef = {
-      number: node.number,
-      url: node.url,
-      title: node.title,
-      headRefName: node.headRefName,
-      state: "OPEN",
-      isDraft: node.isDraft,
-      updatedAt: node.updatedAt,
-    };
-    for (const issue of node.closingIssuesReferences.nodes) {
-      const existing = map.get(issue.number);
-      if (existing) {
-        existing.push(ref);
-      } else {
-        map.set(issue.number, [ref]);
+
+  // Every page is fetched: callers treat this map as authoritative, so a
+  // truncated result would make `do-work` open a competing implementation on an
+  // issue that already has a pull request.
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_LINK_MAP_PAGES; page++) {
+    const args = ["api", "graphql", "-f", `query=${LINK_MAP_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`];
+    if (cursor !== null) args.push("-f", `cursor=${cursor}`);
+
+    const response = ghJson<RawLinkMapResponse>(args, "query open pull requests");
+    const connection = response.data.repository.pullRequests;
+
+    for (const node of connection.nodes) {
+      const ref: PullRequestRef = {
+        number: node.number,
+        url: node.url,
+        title: node.title,
+        headRefName: node.headRefName,
+        state: "OPEN",
+        isDraft: node.isDraft,
+        updatedAt: node.updatedAt,
+      };
+      if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
+        // Pathological, but say so rather than silently dropping links.
+        process.stderr.write(
+          `Warning: pull request #${String(node.number)} closes more than 50 issues; ` +
+            "some links were not read.\n",
+        );
+      }
+      for (const issue of node.closingIssuesReferences.nodes) {
+        const existing = map.get(issue.number);
+        if (existing) {
+          existing.push(ref);
+        } else {
+          map.set(issue.number, [ref]);
+        }
       }
     }
+
+    if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
+      return map;
+    }
+    cursor = connection.pageInfo.endCursor;
   }
+
+  process.stderr.write(
+    `Warning: stopped paginating open pull requests after ${String(MAX_LINK_MAP_PAGES)} pages; ` +
+      "the issue-to-pull-request map may be incomplete.\n",
+  );
   return map;
 }
 

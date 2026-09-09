@@ -15,8 +15,9 @@ Choose the interval from **how long you are willing to wait for a reply**, not f
 `do-work` holds `.automata/automata.lock` for the whole tick. A tick is one or more complete model sessions, so cron firing while one is still running is the normal case, not an exception — and two instances in one checkout would fight over the branch and push conflicting commits.
 
 - **Another live instance holds it** → the second instance prints who holds it and exits **0** without touching GitHub. Not a failure; nothing is assigned, posted or invoked.
-- **The lock is stale** → reclaimed. Stale means: its process is gone (checked when the lock was written on this host), or it is older than `doWork.lockStaleMinutes` (default 120), or the file is unparseable.
-- **The tick ends** — success, failure, or `SIGINT`/`SIGTERM` → the lock is released.
+- **The lock is stale** → reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness takes precedence over age** — a tick that legitimately runs for three hours keeps its lock, because stealing it would put two model sessions in one checkout.
+- **The tick ends** — success, failure, or `SIGINT`/`SIGTERM` → the lock is released. On a signal the executor is stopped and awaited first, so an interrupted tick cannot orphan a model that keeps pushing.
+- Each acquisition carries a unique token and releases only its own lock, so a superseded holder cannot evict its replacement.
 
 The lock is taken *before* any state-changing GitHub call, so a contending instance cannot assign an issue or post a marker on its way out.
 

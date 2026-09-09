@@ -52,9 +52,27 @@ describe("acquireRunLock", () => {
     expect(acquireRunLock("do-work", 120).ok).toBe(true);
   });
 
-  it("reclaims a lock older than the staleness window even if its host is unknown", () => {
+  it("reclaims a lock older than the staleness window when its host is unknown", () => {
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     writeLock({ pid: process.pid, startedAt: twoHoursAgo, host: "some-other-box", command: "do-work" });
+    expect(acquireRunLock("do-work", 60).ok).toBe(true);
+  });
+
+  it("does NOT steal a lock from a live process on this host, however old it is", () => {
+    // A legitimate tick can outlive the staleness window — the run cap is
+    // unlimited by default — and stealing its lock would put two model sessions
+    // in one checkout, which is exactly what the lock exists to prevent.
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    writeLock({ pid: process.pid, startedAt: twoHoursAgo, host: hostname(), command: "do-work" });
+    const result = acquireRunLock("do-work", 60);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.heldBy.pid).toBe(process.pid);
+  });
+
+  it("reclaims a dead same-host lock regardless of age", () => {
+    const justNow = new Date().toISOString();
+    writeLock({ pid: 4194304, startedAt: justNow, host: hostname(), command: "do-work" });
     expect(acquireRunLock("do-work", 60).ok).toBe(true);
   });
 
@@ -83,6 +101,55 @@ describe("acquireRunLock", () => {
     result.handle.release();
     expect(existsSync(lockFile())).toBe(false);
     expect(() => result.handle.release()).not.toThrow();
+  });
+
+  it("records a unique ownership token per acquisition", () => {
+    const first = acquireRunLock("do-work", 120);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const tokenA = (JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string }).token;
+    first.handle.release();
+
+    const second = acquireRunLock("do-work", 120);
+    expect(second.ok).toBe(true);
+    const tokenB = (JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string }).token;
+    expect(tokenA).toBeTruthy();
+    expect(tokenB).not.toBe(tokenA);
+  });
+
+  it("does not delete a replacement holder's lock when a superseded holder releases", () => {
+    // Acquire, then simulate our lock having been reclaimed as stale and
+    // replaced by another tick. Our release must not evict that tick.
+    const mine = acquireRunLock("do-work", 120);
+    expect(mine.ok).toBe(true);
+    if (!mine.ok) return;
+
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      host: hostname(),
+      command: "do-work",
+      token: "a-different-holder",
+    });
+
+    mine.handle.release();
+
+    expect(existsSync(lockFile())).toBe(true);
+    expect((JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string }).token).toBe(
+      "a-different-holder",
+    );
+  });
+
+  it("leaves a lock it cannot prove it owns", () => {
+    // A lock file with no token cannot be attributed to this handle, so release
+    // leaves it alone rather than risk evicting another holder. It is still
+    // reclaimable through the liveness and staleness checks.
+    const mine = acquireRunLock("do-work", 120);
+    expect(mine.ok).toBe(true);
+    if (!mine.ok) return;
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    mine.handle.release();
+    expect(existsSync(lockFile())).toBe(true);
   });
 
   it("allows a fresh acquisition after release", () => {

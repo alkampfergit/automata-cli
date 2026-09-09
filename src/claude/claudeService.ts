@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -50,6 +50,47 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
   return args;
 }
 
+/**
+ * Children spawned by the streaming path, so a caller handling a signal can stop
+ * them instead of exiting and leaving a model running.
+ */
+const activeChildren = new Set<ChildProcess>();
+
+/**
+ * Terminate every streaming Claude child and resolve once they have exited.
+ *
+ * `do-work` calls this before releasing its run lock on SIGINT/SIGTERM: exiting
+ * the parent without stopping the child would leave a model editing and pushing
+ * while the next tick acquires the freed lock.
+ */
+export function terminateActiveClaudeProcesses(timeoutMs = 10_000): Promise<void> {
+  const children = [...activeChildren];
+  if (children.length === 0) return Promise.resolve();
+
+  const exits = children.map(
+    (child) =>
+      new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+        child.kill("SIGTERM");
+      }),
+  );
+
+  return Promise.race([
+    Promise.all(exits).then(() => undefined),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        for (const child of children) child.kill("SIGKILL");
+        resolve();
+      }, timeoutMs);
+      timer.unref();
+    }),
+  ]);
+}
+
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
     return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model);
@@ -71,6 +112,7 @@ function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | 
     const args = buildClaudeArgs(prompt, { yolo, model, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
+    activeChildren.add(child);
     const rl = createInterface({ input: child.stdout });
     let turnCount = 0;
 
@@ -89,6 +131,7 @@ function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | 
     });
 
     child.on("close", (code) => {
+      activeChildren.delete(child);
       handleExitCode(code, "Claude Code");
       resolve();
     });

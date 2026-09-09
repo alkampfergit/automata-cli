@@ -471,6 +471,18 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
   });
 
+  it("goes back from the run cap screen to the Codex model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    for (let i = 0; i < 4; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+  });
+
   it("goes back from the Codex model screen to the Claude one", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);

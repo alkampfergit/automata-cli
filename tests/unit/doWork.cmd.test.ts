@@ -49,6 +49,12 @@ vi.mock("../../src/config/githubService.js", () => ({
   addClosesRefToPr: (...a: unknown[]) => mockAddClosesRefToPr(...a),
 }));
 
+const mockGetCurrentBranch = vi.fn();
+
+vi.mock("../../src/git/gitService.js", () => ({
+  getCurrentBranch: () => mockGetCurrentBranch(),
+}));
+
 vi.mock("../../src/git/workspaceService.js", () => ({
   prepareBaseBranch: (...a: unknown[]) => mockPrepareBaseBranch(...a),
   preparePrBranch: (...a: unknown[]) => mockPreparePrBranch(...a),
@@ -179,6 +185,8 @@ beforeEach(() => {
   mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
   mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042" });
   mockGetCurrentBranchPr.mockReturnValue(null);
+  // A discussion turn that created a branch is the normal case for link repair.
+  mockGetCurrentBranch.mockReturnValue("feature/042-flag");
   mockInvokeClaude.mockResolvedValue(undefined);
 });
 
@@ -259,12 +267,16 @@ describe("do-work preconditions", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("warns but proceeds when the login differs from the agent without being authorized", async () => {
+  it("refuses a known login mismatch even when the login is not authorized", async () => {
+    // The marker would be posted by an account that is neither the agent nor
+    // authorized, so the conversation filter drops it: the boundary never
+    // advances and the same message starts a run on every tick.
     gh.getAuthenticatedLogin.mockReturnValue("some-other-bot");
-    gh.listCandidateIssues.mockReturnValue([]);
     await runDoWork();
-    expect(exitCode).toBeUndefined();
+    expect(exitCode).toBe(1);
     expect(stderr).toMatch(/authenticated as "some-other-bot" but agentUser is "automata-bot"/);
+    expect(stderr).toMatch(/boundary would never advance/);
+    expect(gh.listCandidateIssues).not.toHaveBeenCalled();
   });
 
   it("proceeds silently when the login is the agent, matched case-insensitively", async () => {
@@ -618,6 +630,18 @@ describe("do-work link repair", () => {
     await runDoWork();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
     expect(stderr).toMatch(/still in discussion/);
+  });
+
+  it("never touches the base branch's own pull request when the model only replied", async () => {
+    // Still on the base branch after the turn, where getCurrentBranchPr() would
+    // return develop's own PR — a release PR into main, say. Appending
+    // `Closes #42` to that would make an unrelated merge close this issue.
+    mockGetCurrentBranch.mockReturnValue("develop");
+    mockGetCurrentBranchPr.mockReturnValue({ number: 99, url: "https://gh/pr/99", body: "release" });
+    await runDoWork();
+    expect(mockGetCurrentBranchPr).not.toHaveBeenCalled();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+    expect(stderr).toMatch(/no branch was created/);
   });
 
   it("warns rather than failing when the link cannot be repaired", async () => {

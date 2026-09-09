@@ -264,6 +264,96 @@ describe("decideWork — actionable threads", () => {
     expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
   });
 
+  it("still acts on a maintainer's feedback when a bot comments after it", () => {
+    // The authorization filter runs before "who spoke last": a bot commenting
+    // later must not suppress the maintainer's request.
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({
+          threads: [
+            thread({
+              comments: [
+                message("alice", "2026-01-06T00:00:00Z", "thread-comment"),
+                message("copilot", "2026-01-07T00:00:00Z", "thread-comment"),
+              ],
+            }),
+          ],
+        }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.actionableThreads).toHaveLength(1);
+  });
+
+  it("strips unauthorized comments from the threads it returns", () => {
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({
+          threads: [
+            thread({
+              comments: [
+                message("copilot", "2026-01-05T00:00:00Z", "thread-comment"),
+                message("alice", "2026-01-06T00:00:00Z", "thread-comment"),
+              ],
+            }),
+          ],
+        }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    const [actionable] = decision.item.actionableThreads;
+    expect(actionable.comments.map((c) => c.author)).toEqual(["alice"]);
+    expect(JSON.stringify(decision.item.actionableThreads)).not.toContain("copilot");
+  });
+
+  it("still ignores a thread whose only participant comment is the agent's", () => {
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({
+          threads: [
+            thread({
+              comments: [
+                message("alice", "2026-01-05T00:00:00Z", "thread-comment"),
+                message("automata-bot", "2026-01-06T00:00:00Z", "thread-comment"),
+                message("copilot", "2026-01-07T00:00:00Z", "thread-comment"),
+              ],
+            }),
+          ],
+        }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+
   it("ignores a resolved thread even with a new authorized comment", () => {
     const decision = decideWork(
       state({

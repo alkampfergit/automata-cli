@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
 
@@ -23,6 +24,8 @@ export interface LockOwner {
   startedAt: string;
   host: string;
   command: string;
+  /** Unique per acquisition, so a holder only ever releases its own lock. */
+  token: string;
 }
 
 export interface LockHandle {
@@ -55,6 +58,7 @@ function readOwner(path: string): LockOwner | null {
       startedAt: parsed.startedAt,
       host: parsed.host ?? "unknown",
       command: parsed.command ?? "unknown",
+      token: parsed.token ?? "",
     };
   } catch {
     return null;
@@ -65,20 +69,38 @@ function isStale(owner: LockOwner | null, staleMinutes: number): boolean {
   // An unparseable lock is stale: something wrote it badly or died mid-write,
   // and refusing forever would be worse than reclaiming it.
   if (owner === null) return true;
-  // A lock from another host cannot be checked for liveness, so only age can
-  // retire it.
-  if (owner.host === hostname() && !isAlive(owner.pid)) return true;
+
+  // On this host liveness is authoritative, and it takes precedence over age: a
+  // legitimate tick can outlive the staleness window (the run cap is unlimited
+  // by default), and stealing the lock from a running tick would put two model
+  // sessions in one checkout — the exact thing the lock exists to prevent.
+  if (owner.host === hostname()) {
+    return !isAlive(owner.pid);
+  }
+
+  // Another host's process cannot be probed, so age is the only signal left.
   const startedAt = Date.parse(owner.startedAt);
   if (Number.isNaN(startedAt)) return true;
   return Date.now() - startedAt > staleMinutes * 60 * 1000;
 }
 
-function makeHandle(path: string): LockHandle {
+/**
+ * Release only the lock this handle created.
+ *
+ * A blind unlink would let a holder whose lock was reclaimed as stale delete the
+ * *replacement* holder's lock on its way out, admitting a third tick.
+ */
+function makeHandle(path: string, token: string): LockHandle {
   let released = false;
   return {
     release(): void {
       if (released) return;
       released = true;
+      const current = readOwner(path);
+      if (current !== null && current.token !== token) {
+        // Someone else owns the lock now; leaving it alone is the whole point.
+        return;
+      }
       try {
         unlinkSync(path);
       } catch {
@@ -88,12 +110,13 @@ function makeHandle(path: string): LockHandle {
   };
 }
 
-function write(path: string, command: string): void {
+function write(path: string, command: string, token: string): void {
   const owner: LockOwner = {
     pid: process.pid,
     startedAt: new Date().toISOString(),
     host: hostname(),
     command,
+    token,
   };
   // "wx" fails if the file exists, and that check-and-create is atomic on every
   // platform we target — which is what makes this a lock rather than a hint.
@@ -102,11 +125,12 @@ function write(path: string, command: string): void {
 
 export function acquireRunLock(command: string, staleMinutes: number): AcquireResult {
   const path = lockPath();
+  const token = randomUUID();
   mkdirSync(join(process.cwd(), LOCK_DIR), { recursive: true });
 
   try {
-    write(path, command);
-    return { ok: true, handle: makeHandle(path) };
+    write(path, command, token);
+    return { ok: true, handle: makeHandle(path, token) };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
@@ -123,14 +147,21 @@ export function acquireRunLock(command: string, staleMinutes: number): AcquireRe
   }
 
   try {
-    write(path, command);
-    return { ok: true, handle: makeHandle(path) };
+    write(path, command, token);
+    return { ok: true, handle: makeHandle(path, token) };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     const winner = readOwner(path);
     return {
       ok: false,
-      heldBy: winner ?? { pid: 0, startedAt: new Date().toISOString(), host: "unknown", command: "unknown" },
+      heldBy:
+        winner ?? {
+          pid: 0,
+          startedAt: new Date().toISOString(),
+          host: "unknown",
+          command: "unknown",
+          token: "",
+        },
     };
   }
 }
