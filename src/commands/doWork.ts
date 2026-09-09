@@ -376,27 +376,30 @@ function validateDoWorkConfig(section: unknown): void {
   validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
   validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
 
-  const protectedBranches = section["protectedBranches"];
-  if (protectedBranches !== undefined && protectedBranches !== null) {
-    if (!Array.isArray(protectedBranches) || protectedBranches.some((b) => typeof b !== "string" || b.trim().length === 0)) {
-      fail("doWork.protectedBranches must be an array of non-empty strings.");
-    }
-  }
+  validateProtectedBranches(section["protectedBranches"]);
+  validateSettingContainer(section["models"], "models", ["claude", "codex"]);
+  validateSettingContainer(section["prompts"], "prompts", ["issueDiscuss", "prWork"]);
+}
 
-  for (const container of ["models", "prompts"] as const) {
-    const value = section[container];
-    if (value === undefined || value === null) continue;
-    if (!isPlainObject(value)) {
-      fail(`doWork.${container} must be an object, got ${JSON.stringify(value)}.`);
-    }
-    const keys = container === "models" ? ["claude", "codex"] : ["issueDiscuss", "prWork"];
-    for (const key of keys) {
-      validateOptionalString(value, key, `doWork.${container}.${key}`);
-    }
-    for (const key of Object.keys(value)) {
-      if (!keys.includes(key)) {
-        fail(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
-      }
+function validateProtectedBranches(value: unknown): void {
+  if (value === undefined || value === null) return;
+  const isNonEmptyString = (b: unknown): boolean => typeof b === "string" && b.trim().length > 0;
+  if (!Array.isArray(value) || !value.every(isNonEmptyString)) {
+    fail("doWork.protectedBranches must be an array of non-empty strings.");
+  }
+}
+
+function validateSettingContainer(value: unknown, container: string, keys: string[]): void {
+  if (value === undefined || value === null) return;
+  if (!isPlainObject(value)) {
+    fail(`doWork.${container} must be an object, got ${JSON.stringify(value)}.`);
+  }
+  for (const key of keys) {
+    validateOptionalString(value, key, `doWork.${container}.${key}`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!keys.includes(key)) {
+      fail(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
     }
   }
 }
@@ -871,17 +874,9 @@ async function processItem(
     frame: settings.prompts[item.turn],
   });
 
-  // Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt
-  // is passed as one. A long-lived issue with many authorized comments can reach
-  // that, and the raw failure is an opaque E2BIG from spawn. Fail legibly
-  // instead; piping the prompt through stdin is the real fix and is tracked
-  // separately.
-  const MAX_PROMPT_BYTES = 96 * 1024;
-  const promptBytes = Buffer.byteLength(prompt, "utf8");
-  if (promptBytes > MAX_PROMPT_BYTES) {
-    const detail =
-      `the composed prompt is ${String(Math.round(promptBytes / 1024))} KiB, over the ${String(MAX_PROMPT_BYTES / 1024)} KiB ` +
-      "limit for a single command-line argument. The conversation is too long to hand to the executor this way.";
+  const oversized = describeOversizedPrompt(prompt);
+  if (oversized !== null) {
+    const detail = oversized;
     progress(`  failed: ${detail}\n`);
     inFlightMarker = null;
     try {
@@ -908,6 +903,31 @@ async function processItem(
   const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError);
   progress(`  ${reconciled.detail}\n`);
 
+  const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
+
+  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor };
+}
+
+// Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt is
+// passed as one. A long-lived issue with many authorized comments can reach
+// that, and the raw failure is an opaque E2BIG from spawn. Fail legibly instead;
+// piping the prompt through stdin is the real fix and is tracked separately.
+function describeOversizedPrompt(prompt: string): string | null {
+  const MAX_PROMPT_BYTES = 96 * 1024;
+  const promptBytes = Buffer.byteLength(prompt, "utf8");
+  if (promptBytes <= MAX_PROMPT_BYTES) return null;
+  return (
+    `the composed prompt is ${String(Math.round(promptBytes / 1024))} KiB, over the ${String(MAX_PROMPT_BYTES / 1024)} KiB ` +
+    "limit for a single command-line argument. The conversation is too long to hand to the executor this way."
+  );
+}
+
+function adjustOutcome(
+  reconciled: Reconciled,
+  item: WorkItem,
+  settings: Settings,
+  buriedByNote: number,
+): Reconciled {
   let outcome = reconciled;
   if (buriedByNote > 0 && outcome.outcome === "answered") {
     outcome = {
@@ -916,25 +936,26 @@ async function processItem(
       reason: "flagged",
     };
   }
-  if (item.turn === "issue-discuss") {
-    const linked = repairIssueLink(item, settings.baseBranch);
-    // A discuss turn that implemented and opened a pull request has plainly not
-    // stalled, even if the model never commented on the issue. Reporting it as
-    // "produced no answer" would raise a false alarm; the pull request is the
-    // answer, and its `Closes #N` is the durable record.
-    // Only a genuine silence is overridden. A flagged mid-run message or an
-    // unverified read are real degradations and must keep their exit 2.
-    if (linked && outcome.reason === "no-answer") {
-      outcome = {
-        outcome: "answered",
-        detail: "opened a pull request (no issue comment)",
-        reason: "answered",
-      };
-      progress("  a pull request was opened, so the turn is counted as answered.\n");
-    }
+
+  if (item.turn !== "issue-discuss") return outcome;
+
+  const linked = repairIssueLink(item, settings.baseBranch);
+  // A discuss turn that implemented and opened a pull request has plainly not
+  // stalled, even if the model never commented on the issue. Reporting it as
+  // "produced no answer" would raise a false alarm; the pull request is the
+  // answer, and its `Closes #N` is the durable record.
+  // Only a genuine silence is overridden. A flagged mid-run message or an
+  // unverified read are real degradations and must keep their exit 2.
+  if (linked && outcome.reason === "no-answer") {
+    progress("  a pull request was opened, so the turn is counted as answered.\n");
+    return {
+      outcome: "answered",
+      detail: "opened a pull request (no issue comment)",
+      reason: "answered",
+    };
   }
 
-  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor };
+  return outcome;
 }
 
 function summarize(reports: ItemReport[]): void {
@@ -978,34 +999,7 @@ export const doWorkCommand = new Command("do-work")
 
     const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
     if (!lock.ok) {
-      // Not a failure: cron firing while a tick is still running is normal.
-      const held = lock.heldBy;
-      const sentence =
-        `Another automata instance is already running here (pid ${String(held.pid)} on ` +
-        `${held.host}, started ${held.startedAt}, command ${held.command}). Doing nothing.\n`;
-      // A lock that looks alive but has outlived the staleness window may be a
-      // pid-reuse orphan, in which case every future tick would also do nothing.
-      // Exiting 0 there hides a dead loop behind a healthy status.
-      const suspectSentence = lock.suspect
-        ? `Warning: that lock has been held longer than ${String(settings.lockStaleMinutes)} minutes. ` +
-          "If no tick is really running, its process id was probably reused; remove " +
-          `${RUN_LOCK_RELATIVE_PATH} once you have confirmed that.\n`
-        : "";
-      const exitCode = lock.suspect ? 2 : 0;
-      if (options.json === true) {
-        // stdout must stay parseable for a caller that asked for JSON.
-        progress(sentence + suspectSentence);
-        out(
-          JSON.stringify(
-            { lockHeld: true, suspect: lock.suspect, heldBy: held, plan: [], items: [], exitCode },
-            null,
-            2,
-          ) + "\n",
-        );
-      } else {
-        out(sentence);
-        if (suspectSentence) progress(suspectSentence);
-      }
+      const exitCode = reportLockHeld(lock, settings, options);
       if (exitCode !== 0) process.exit(exitCode);
       return;
     }
@@ -1019,20 +1013,7 @@ export const doWorkCommand = new Command("do-work")
       if (shuttingDown) return;
       shuttingDown = true;
       progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
-      const pending = inFlightMarker;
-      if (pending !== null) {
-        // Leave an explanation rather than a bare "working…" that silently holds
-        // the boundary for good.
-        try {
-          updateMarker(
-            pending.marker,
-            "automata do-work: this run was interrupted before it finished, so no answer was produced. " +
-              `The branch \`${pending.item.branch}\` may have been changed. Reply here to have another attempt made.`,
-          );
-        } catch (err) {
-          progress(`Warning: could not update the in-flight marker: ${(err as Error).message}\n`);
-        }
-      }
+      explainInterruptedMarker();
       void terminateTrackedChildren().then((allExited) => {
         if (allExited) {
           handle.release();
@@ -1065,6 +1046,58 @@ export const doWorkCommand = new Command("do-work")
 
     if (exitCode !== 0) process.exit(exitCode);
   });
+
+// Not a failure: cron firing while a tick is still running is normal. Returns
+// the exit code the caller should use.
+function reportLockHeld(
+  lock: Extract<ReturnType<typeof acquireRunLock>, { ok: false }>,
+  settings: Settings,
+  options: DoWorkOptions,
+): number {
+  const held = lock.heldBy;
+  const sentence =
+    `Another automata instance is already running here (pid ${String(held.pid)} on ` +
+    `${held.host}, started ${held.startedAt}, command ${held.command}). Doing nothing.\n`;
+  // A lock that looks alive but has outlived the staleness window may be a
+  // pid-reuse orphan, in which case every future tick would also do nothing.
+  // Exiting 0 there hides a dead loop behind a healthy status.
+  const suspectSentence = lock.suspect
+    ? `Warning: that lock has been held longer than ${String(settings.lockStaleMinutes)} minutes. ` +
+      "If no tick is really running, its process id was probably reused; remove " +
+      `${RUN_LOCK_RELATIVE_PATH} once you have confirmed that.\n`
+    : "";
+  const exitCode = lock.suspect ? 2 : 0;
+
+  if (options.json === true) {
+    // stdout must stay parseable for a caller that asked for JSON.
+    progress(sentence + suspectSentence);
+    out(
+      JSON.stringify({ lockHeld: true, suspect: lock.suspect, heldBy: held, plan: [], items: [], exitCode }, null, 2) +
+        "\n",
+    );
+  } else {
+    out(sentence);
+    if (suspectSentence) progress(suspectSentence);
+  }
+
+  return exitCode;
+}
+
+// Leave an explanation rather than a bare "working…" that silently holds the
+// boundary for good.
+function explainInterruptedMarker(): void {
+  const pending = inFlightMarker;
+  if (pending === null) return;
+  try {
+    updateMarker(
+      pending.marker,
+      "automata do-work: this run was interrupted before it finished, so no answer was produced. " +
+        `The branch \`${pending.item.branch}\` may have been changed. Reply here to have another attempt made.`,
+    );
+  } catch (err) {
+    progress(`Warning: could not update the in-flight marker: ${(err as Error).message}\n`);
+  }
+}
 
 async function runTick(settings: Settings, options: DoWorkOptions): Promise<number> {
   const issues = discoverIssues(settings);

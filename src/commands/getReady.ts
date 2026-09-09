@@ -151,15 +151,7 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(0);
     }
 
-    let executor: "claude" | "codex" | undefined;
-    if (options.claude !== false) {
-      const requestedExecutor = options.with.toLowerCase();
-      if (requestedExecutor !== "claude" && requestedExecutor !== "codex") {
-        process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${options.with}'.\n`);
-        process.exit(1);
-      }
-      executor = requestedExecutor;
-    }
+    const executor = options.claude === false ? undefined : resolveExecutor(options.with);
 
     let commentUrl: string | undefined;
     try {
@@ -183,30 +175,49 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     // ── Post-claim: link PR to issue ───────────────────────────────────────
-    try {
-      const pr = getCurrentBranchPr();
-      if (pr) {
-        if (commentUrl) {
-          try {
-            editComment(commentUrl, `Working on this in PR #${pr.number} — ${pr.url}`);
-          } catch (err) {
-            process.stderr.write(`Warning: could not update issue comment: ${(err as Error).message}\n`);
-          }
-        }
-        try {
-          addClosesRefToPr(pr.number, issue.number);
-        } catch (err) {
-          process.stderr.write(`Warning: could not add Closes #${issue.number} to PR: ${(err as Error).message}\n`);
-        }
-        if (options.askCopilotReview) {
-          try {
-            addCopilotReviewer(pr.number);
-          } catch (err) {
-            process.stderr.write(`Warning: could not request Copilot review: ${(err as Error).message}\n`);
-          }
-        }
-      }
-    } catch (err) {
-      process.stderr.write(`Warning: could not detect current branch PR: ${(err as Error).message}\n`);
-    }
+    linkPrToIssue(issue.number, commentUrl, options.askCopilotReview === true);
   });
+
+function resolveExecutor(requested: string): "claude" | "codex" {
+  const executor = requested.toLowerCase();
+  if (executor !== "claude" && executor !== "codex") {
+    process.stderr.write(`Error: --with must be 'claude' or 'codex', got '${requested}'.\n`);
+    process.exit(1);
+  }
+  return executor;
+}
+
+// Every step here is best-effort: the work itself is already done, so a failure
+// to annotate the pull request is reported and then ignored.
+function warnOnFailure(what: string, action: () => void): void {
+  try {
+    action();
+  } catch (err) {
+    process.stderr.write(`Warning: could not ${what}: ${(err as Error).message}\n`);
+  }
+}
+
+function linkPrToIssue(issueNumber: number, commentUrl: string | undefined, askCopilotReview: boolean): void {
+  let pr: ReturnType<typeof getCurrentBranchPr>;
+  try {
+    pr = getCurrentBranchPr();
+  } catch (err) {
+    process.stderr.write(`Warning: could not detect current branch PR: ${(err as Error).message}\n`);
+    return;
+  }
+  if (!pr) return;
+
+  if (commentUrl) {
+    warnOnFailure("update issue comment", () => {
+      editComment(commentUrl, `Working on this in PR #${pr.number} — ${pr.url}`);
+    });
+  }
+  warnOnFailure(`add Closes #${String(issueNumber)} to PR`, () => {
+    addClosesRefToPr(pr.number, issueNumber);
+  });
+  if (askCopilotReview) {
+    warnOnFailure("request Copilot review", () => {
+      addCopilotReviewer(pr.number);
+    });
+  }
+}

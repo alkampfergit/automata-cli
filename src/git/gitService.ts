@@ -251,16 +251,16 @@ function parseOwnerRepo(): string | null {
   const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
   if (status !== 0) return null;
   const url = stdout.trim();
-  const https = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  const https = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
   if (https) return https[1];
-  const ssh = url.match(/github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  const ssh = /github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
   if (ssh) return ssh[1];
   return null;
 }
 
 function extractLastMarkdownUrl(markdown: string): string | null {
   const matches = [...markdown.matchAll(/\]\((https?:\/\/[^)]+)\)/g)];
-  return matches.length > 0 ? (matches[matches.length - 1][1] ?? null) : null;
+  return matches.at(-1)?.[1] ?? null;
 }
 
 function fetchCheckRunOutputs(ownerRepo: string, sha: string): Map<string, { title: string; detailsUrl: string }> {
@@ -354,18 +354,18 @@ function resolveSonarPath(componentKey: string | undefined, components: Map<stri
   return path || undefined;
 }
 
-function mapSonarIssuesPage(
-  data: SonarIssuesSearchResponse,
-  targetIssues: SonarIssue[],
+function collectSonarComponents(
+  data: { components?: { key?: string; path?: string }[] },
   components: Map<string, string>,
-  rules: Map<string, string>,
 ): void {
   for (const component of data.components ?? []) {
     if (component.key && component.path) {
       components.set(component.key, component.path);
     }
   }
+}
 
+function collectSonarRules(data: SonarIssuesSearchResponse, rules: Map<string, string>): void {
   for (const rule of data.rules ?? []) {
     if (!rule.key) continue;
     const explanation = normalizeText(rule.htmlDesc) ?? normalizeText(rule.htmlNote) ?? normalizeText(rule.name);
@@ -373,6 +373,16 @@ function mapSonarIssuesPage(
       rules.set(rule.key, explanation);
     }
   }
+}
+
+function mapSonarIssuesPage(
+  data: SonarIssuesSearchResponse,
+  targetIssues: SonarIssue[],
+  components: Map<string, string>,
+  rules: Map<string, string>,
+): void {
+  collectSonarComponents(data, components);
+  collectSonarRules(data, rules);
 
   for (const issue of data.issues ?? []) {
     if (!issue.key || !issue.message) continue;
@@ -397,12 +407,7 @@ function mapSonarHotspotsPage(
   targetHotspots: RawSonarHotspot[],
   components: Map<string, string>,
 ): void {
-  for (const component of data.components ?? []) {
-    if (component.key && component.path) {
-      components.set(component.key, component.path);
-    }
-  }
-
+  collectSonarComponents(data, components);
   targetHotspots.push(...(data.hotspots ?? []));
 }
 
@@ -686,6 +691,43 @@ async function fetchSonarFailureSummary(
   };
 }
 
+interface SonarCheckSummary {
+  sonarcloudUrl: string;
+  sonarNewIssues: number | null | undefined;
+  sonarNewIssuesNote: string | undefined;
+  sonarFailures?: SonarFailureSummary;
+}
+
+async function describeSonarCheck(sonarCheck: PrCheck, prNumber: number): Promise<SonarCheckSummary> {
+  const sonarcloudUrl = resolveSonarPullRequestUrl(sonarCheck.detailsUrl, prNumber);
+  const projectKey = extractSonarProjectKey(sonarcloudUrl);
+
+  if (!projectKey) {
+    return {
+      sonarcloudUrl,
+      sonarNewIssues: null,
+      sonarNewIssuesNote: "Could not determine the SonarCloud project key from the check URL.",
+    };
+  }
+
+  if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
+    const sonarSummary = await fetchSonarFailureSummary(projectKey, prNumber, sonarcloudUrl);
+    return {
+      sonarcloudUrl,
+      sonarNewIssues: sonarSummary.issueTotal,
+      sonarNewIssuesNote: sonarSummary.issueNote,
+      sonarFailures: sonarSummary.summary,
+    };
+  }
+
+  const sonarNewIssuesResult = await fetchSonarNewIssues(projectKey, prNumber, sonarcloudUrl);
+  return {
+    sonarcloudUrl,
+    sonarNewIssues: sonarNewIssuesResult.total,
+    sonarNewIssuesNote: sonarNewIssuesResult.note,
+  };
+}
+
 async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   const { stdout, stderr, status } = run("gh", [
     "pr",
@@ -725,29 +767,7 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
 
   // SonarCloud detection
   const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
-  let sonarcloudUrl: string | undefined;
-  let sonarNewIssues: number | null | undefined;
-  let sonarNewIssuesNote: string | undefined;
-  let sonarFailures: SonarFailureSummary | undefined;
-  if (sonarCheck) {
-    sonarcloudUrl = resolveSonarPullRequestUrl(sonarCheck.detailsUrl, raw.number);
-    const projectKey = extractSonarProjectKey(sonarcloudUrl);
-    if (projectKey) {
-      if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
-        const sonarSummary = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
-        sonarFailures = sonarSummary.summary;
-        sonarNewIssues = sonarSummary.issueTotal;
-        sonarNewIssuesNote = sonarSummary.issueNote;
-      } else {
-        const sonarNewIssuesResult = await fetchSonarNewIssues(projectKey, raw.number, sonarcloudUrl);
-        sonarNewIssues = sonarNewIssuesResult.total;
-        sonarNewIssuesNote = sonarNewIssuesResult.note;
-      }
-    } else {
-      sonarNewIssues = null;
-      sonarNewIssuesNote = "Could not determine the SonarCloud project key from the check URL.";
-    }
-  }
+  const sonar = sonarCheck === undefined ? undefined : await describeSonarCheck(sonarCheck, raw.number);
 
   return {
     number: raw.number,
@@ -755,8 +775,14 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     state: raw.state,
     url: raw.url,
     checks,
-    ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues, sonarNewIssuesNote }),
-    ...(sonarFailures === undefined ? {} : { sonarFailures }),
+    ...(sonar === undefined
+      ? {}
+      : {
+          sonarcloudUrl: sonar.sonarcloudUrl,
+          sonarNewIssues: sonar.sonarNewIssues,
+          sonarNewIssuesNote: sonar.sonarNewIssuesNote,
+        }),
+    ...(sonar?.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
   };
 }
 
