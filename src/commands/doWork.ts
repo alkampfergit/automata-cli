@@ -7,7 +7,6 @@ import {
   type AutomataConfig,
   type Executor,
   type TurnKind,
-  type AutomataDoWorkConfig,
 } from "../config/configStore.js";
 import { addClosesRefToPr, getCurrentBranchPr, type GitHubIssue } from "../config/githubService.js";
 import {
@@ -145,8 +144,8 @@ function resolveSettings(options: DoWorkOptions): Settings {
     fail("No agent user configured. Run `automata config set agent-user <login>`.");
   }
 
+  validateDoWorkConfig((config as { doWork?: unknown }).doWork);
   const doWork = config.doWork ?? {};
-  validateDoWorkConfig(doWork);
 
   let executor: Executor = doWork.executor ?? DEFAULT_DO_WORK.executor;
   if (options.with !== undefined) {
@@ -314,37 +313,66 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
  * negative run cap used to read as unlimited — both silent, on an unattended
  * loop, which is the worst place for a silent misreading.
  */
-function validateDoWorkConfig(doWork: AutomataDoWorkConfig): void {
-  if (doWork.executor !== undefined && doWork.executor !== "claude" && doWork.executor !== "codex") {
-    fail(`doWork.executor must be 'claude' or 'codex', got '${String(doWork.executor)}'.`);
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A field that must be a non-empty string if present at all. */
+function validateOptionalString(container: Record<string, unknown>, key: string, path: string): void {
+  const value = container[key];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    fail(`${path} must be a non-empty string.`);
+  }
+}
+
+function validateOptionalInt(
+  container: Record<string, unknown>,
+  key: string,
+  path: string,
+  min: number,
+  hint: string,
+): void {
+  const value = container[key];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
+    fail(`${path} must be ${hint}, got ${JSON.stringify(value)}.`);
+  }
+}
+
+function validateDoWorkConfig(section: unknown): void {
+  // Read as untrusted JSON, not as the declared type: the file is hand-edited,
+  // so `{"prompts": "custom.md"}` would otherwise be silently accepted (falling
+  // back to the built-in prompts) and a numeric `baseBranch` would throw from
+  // `.trim()` instead of producing the actionable error this promises.
+  if (section === undefined || section === null) return;
+  if (!isPlainObject(section)) {
+    fail(`doWork must be an object, got ${JSON.stringify(section)}.`);
   }
 
-  if (doWork.baseBranch?.trim().length === 0) {
-    fail("doWork.baseBranch must not be empty.");
+  const executor = section["executor"];
+  if (executor !== undefined && executor !== "claude" && executor !== "codex") {
+    fail(`doWork.executor must be 'claude' or 'codex', got ${JSON.stringify(executor)}.`);
   }
 
-  if (doWork.maxRunsPerTick !== undefined) {
-    if (!Number.isSafeInteger(doWork.maxRunsPerTick) || doWork.maxRunsPerTick < 0) {
-      fail(
-        `doWork.maxRunsPerTick must be a non-negative integer (0 = unlimited), got ${String(doWork.maxRunsPerTick)}.`,
-      );
+  validateOptionalString(section, "baseBranch", "doWork.baseBranch");
+  validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
+  validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
+
+  for (const container of ["models", "prompts"] as const) {
+    const value = section[container];
+    if (value === undefined || value === null) continue;
+    if (!isPlainObject(value)) {
+      fail(`doWork.${container} must be an object, got ${JSON.stringify(value)}.`);
     }
-  }
-
-  if (doWork.lockStaleMinutes !== undefined) {
-    if (!Number.isSafeInteger(doWork.lockStaleMinutes) || doWork.lockStaleMinutes <= 0) {
-      fail(`doWork.lockStaleMinutes must be a positive integer, got ${String(doWork.lockStaleMinutes)}.`);
+    const keys = container === "models" ? ["claude", "codex"] : ["issueDiscuss", "prWork"];
+    for (const key of keys) {
+      validateOptionalString(value, key, `doWork.${container}.${key}`);
     }
-  }
-
-  for (const [key, value] of [
-    ["doWork.models.claude", doWork.models?.claude],
-    ["doWork.models.codex", doWork.models?.codex],
-    ["doWork.prompts.issueDiscuss", doWork.prompts?.issueDiscuss],
-    ["doWork.prompts.prWork", doWork.prompts?.prWork],
-  ] as const) {
-    if (value !== undefined && (typeof value !== "string" || value.trim().length === 0)) {
-      fail(`${key} must be a non-empty string.`);
+    for (const key of Object.keys(value)) {
+      if (!keys.includes(key)) {
+        fail(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
+      }
     }
   }
 }
@@ -625,6 +653,27 @@ async function processItem(
     }
   }
 
+  // A build turn can be triggered by new *issue* messages, and its marker goes on
+  // the pull request. The two surfaces keep independent boundaries, so answering
+  // on the pull request would never advance the issue's — and that issue comment
+  // would start another build turn on every tick, forever. Leave a permanent
+  // pointer on the issue so its boundary moves too.
+  if (item.turn === "pr-work" && item.pr && item.issueAnalysis.hasNewMessage) {
+    try {
+      postMarker(
+        "issue",
+        item.issue.number,
+        `automata do-work: picked this up on pull request #${String(item.pr.number)} — ${item.pr.url}`,
+      );
+      progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr.number)}.\n`);
+    } catch (err) {
+      // Without it the issue comment re-triggers a build turn every tick, so this
+      // is not cosmetic: skip rather than loop.
+      progress(`  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`);
+      return { ...base, outcome: "skipped", detail: `issue pickup note failed: ${(err as Error).message}` };
+    }
+  }
+
   let marker: MarkerRef;
   const markerSurface = item.turn === "pr-work" && item.pr ? item.pr.number : item.issue.number;
   try {
@@ -693,10 +742,17 @@ export const doWorkCommand = new Command("do-work")
     const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
     if (!lock.ok) {
       // Not a failure: cron firing while a tick is still running is normal.
-      out(
-        `Another automata instance is already running here (pid ${String(lock.heldBy.pid)} on ` +
-          `${lock.heldBy.host}, started ${lock.heldBy.startedAt}, command ${lock.heldBy.command}). Doing nothing.\n`,
-      );
+      const held = lock.heldBy;
+      const sentence =
+        `Another automata instance is already running here (pid ${String(held.pid)} on ` +
+        `${held.host}, started ${held.startedAt}, command ${held.command}). Doing nothing.\n`;
+      if (options.json === true) {
+        // stdout must stay parseable for a caller that asked for JSON.
+        progress(sentence);
+        out(JSON.stringify({ lockHeld: true, heldBy: held, plan: [], items: [], exitCode: 0 }, null, 2) + "\n");
+      } else {
+        out(sentence);
+      }
       return;
     }
 
@@ -774,7 +830,23 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
       deferred.push(item);
       continue;
     }
-    const report = await processItem(item, settings, options.silent === true);
+    // An error from one item — a failed refresh read, say — is that item's
+    // outcome, not the tick's. Letting it escape would exit 1, which is
+    // documented as "nothing was attempted", while discarding the summary for
+    // items that had already run.
+    let report: ItemReport;
+    try {
+      report = await processItem(item, settings, options.silent === true);
+    } catch (err) {
+      progress(`  failed: ${(err as Error).message}\n`);
+      report = {
+        issue: item.issue.number,
+        title: item.issue.title,
+        turn: item.turn,
+        outcome: "failed",
+        detail: (err as Error).message,
+      };
+    }
     if (report.outcome !== "skipped") runsUsed++;
     reports.push(report);
   }

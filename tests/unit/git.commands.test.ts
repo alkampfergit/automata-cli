@@ -1954,7 +1954,14 @@ describe("gitService branch primitives", () => {
       (m) => m.createTrackingBranch("feature/042"),
       ["checkout", "-b", "feature/042", "origin/feature/042"],
     ],
-    ["fetchBranch", (m) => m.fetchBranch("feature/042"), ["fetch", "origin", "feature/042"]],
+    [
+      // Into the tracking ref, not just FETCH_HEAD: a branch created after this
+      // checkout was cloned would otherwise leave origin/<branch> absent and
+      // createTrackingBranch would fail. Forced, for force-pushed PR branches.
+      "fetchBranch",
+      (m) => m.fetchBranch("feature/042"),
+      ["fetch", "origin", "+refs/heads/feature/042:refs/remotes/origin/feature/042"],
+    ],
   ];
 
   it.each(cases)("%s issues the expected git argv", async (_name, call, expected) => {

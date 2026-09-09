@@ -79,7 +79,15 @@ automata config set do-work-model codex o3                 # optional, per execu
 automata config set do-work-max-runs 3               # a safety valve while you build trust
 ```
 
-This writes `.automata/config.json`. Commit it — it is repository policy, not a secret. (`.automata/automata.lock` is git-ignored; it is transient.)
+This writes `.automata/config.json`. Commit it — it is repository policy, not a secret.
+
+Then add the run lock to your ignore rules:
+
+```bash
+echo ".automata/automata.lock" >> .gitignore
+```
+
+It is transient per-tick state. automata already excludes that path from its own cleanliness check, so a tick will not skip its own work over it, but nothing ignores it on your behalf — without this, `git status` shows a stray untracked file whenever a tick is running.
 
 The `allowedUsers` list is a trust boundary: everyone on it can make the agent write code and push branches. Keep it short.
 

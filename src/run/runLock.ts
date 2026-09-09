@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync, linkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -99,7 +99,23 @@ function isStale(owner: LockOwner | null, staleMinutes: number): boolean {
  * Release only the lock this handle created.
  *
  * A blind unlink would let a holder whose lock was reclaimed as stale delete the
- * *replacement* holder's lock on its way out, admitting a third tick.
+ * *replacement* holder's lock on its way out, admitting a third tick. Checking
+ * the token first is not enough on its own either: between the read and the
+ * unlink, a claimant could rename our lock away and write its own, and we would
+ * then delete theirs.
+ *
+ * So the file is taken away by rename before being inspected. If it turns out
+ * not to be ours, it is put back with `link`, which refuses to clobber a lock
+ * created in the meantime — the outcome being that we never delete or overwrite
+ * another holder's lock.
+ *
+ * Residual: between the rename and the restore there is a sub-millisecond window
+ * in which the lock file is absent, so a fresh contender could acquire. That can
+ * only arise when our own lock had already been judged stale and replaced, which
+ * on this host is impossible while this process is alive (staleness requires a
+ * dead pid) and cross-host requires the tick to have outlived
+ * `lockStaleMinutes`. Closing it fully needs `flock`, which Node does not expose
+ * without a native dependency.
  */
 function makeHandle(path: string, token: string): LockHandle {
   let released = false;
@@ -107,15 +123,42 @@ function makeHandle(path: string, token: string): LockHandle {
     release(): void {
       if (released) return;
       released = true;
+
       const current = readOwner(path);
       if (current !== null && current.token !== token) {
-        // Someone else owns the lock now; leaving it alone is the whole point.
+        // Not ours any more: leave it entirely alone.
         return;
       }
+
+      const takenAway = `${path}.releasing.${token}`;
       try {
-        unlinkSync(path);
+        renameSync(path, takenAway);
       } catch {
         // Already gone: nothing to release.
+        return;
+      }
+
+      const owner = readOwner(takenAway);
+      if (owner === null || owner.token === token) {
+        try {
+          unlinkSync(takenAway);
+        } catch {
+          // Already gone.
+        }
+        return;
+      }
+
+      // We took someone else's lock away; put it back without clobbering a lock
+      // written since, then drop our copy either way.
+      try {
+        linkSync(takenAway, path);
+      } catch {
+        // A newer lock already occupies the path; theirs stands.
+      }
+      try {
+        unlinkSync(takenAway);
+      } catch {
+        // Already gone.
       }
     },
   };

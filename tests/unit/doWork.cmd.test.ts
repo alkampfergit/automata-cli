@@ -323,8 +323,14 @@ describe("do-work preconditions", () => {
     ["a negative run cap", { maxRunsPerTick: -1 }, /maxRunsPerTick must be a non-negative integer/],
     ["a fractional run cap", { maxRunsPerTick: 1.5 }, /maxRunsPerTick must be a non-negative integer/],
     ["a zero lock window", { lockStaleMinutes: 0 }, /lockStaleMinutes must be a positive integer/],
-    ["an empty base branch", { baseBranch: "  " }, /baseBranch must not be empty/],
+    ["an empty base branch", { baseBranch: "  " }, /baseBranch must be a non-empty string/],
+    ["a non-string base branch", { baseBranch: 7 }, /baseBranch must be a non-empty string/],
     ["an empty model", { models: { claude: "" } }, /models.claude must be a non-empty string/],
+    // Hand-edited JSON need not match the declared shape at all.
+    ["a non-object doWork section", "nope", /doWork must be an object/],
+    ["a string where prompts should be an object", { prompts: "custom.md" }, /doWork.prompts must be an object/],
+    ["an unrecognised prompt key", { prompts: { discuss: "x.md" } }, /doWork.prompts.discuss is not a recognised setting/],
+    ["a non-object models section", { models: [] }, /doWork.models must be an object/],
   ])("refuses %s in the doWork section", async (_what, doWork, expected) => {
     // The types say these are well formed; the hand-edited file makes no such
     // promise, and an unattended loop is the worst place to misread it silently.
@@ -400,6 +406,34 @@ describe("do-work locking", () => {
   it("releases the lock when the tick completes", async () => {
     await runDoWork();
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it("keeps stdout parseable when the lock is held and --json was asked for", async () => {
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      heldBy: { pid: 4242, startedAt: "2026-01-10T00:00:00Z", host: "runner-1", command: "do-work", token: "t" },
+    });
+    await runDoWork(["--json"]);
+    const payload = JSON.parse(stdout) as { lockHeld: boolean; exitCode: number };
+    expect(payload.lockHeld).toBe(true);
+    expect(payload.exitCode).toBe(0);
+    expect(stderr).toMatch(/Another automata instance is already running/);
+  });
+
+  it("reports a refresh failure as a failed item rather than aborting the tick", async () => {
+    // Exit 1 is documented as "nothing was attempted", so a mid-tick read error
+    // must not take that path and discard the summary for work already done.
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    let reads = 0;
+    gh.getIssueSurface.mockImplementation((n: number) => {
+      reads++;
+      if (n === 42 && reads > 2) throw new Error("gh rate limited");
+      return needsWork(n);
+    });
+    await runDoWork();
+    expect(exitCode).toBe(2);
+    expect(stdout).toMatch(/#42 issue-discuss failed — gh rate limited/);
+    expect(stdout).toMatch(/#43 issue-discuss/);
   });
 
   it("releases the lock when the tick throws", async () => {
@@ -644,6 +678,49 @@ describe("do-work build turn", () => {
     expect(prompt).toMatch(/Do not merge the pull request/);
     expect(prompt).toContain("Turn: pr-work");
     expect(prompt).toContain("Branch: feature/042");
+  });
+
+  it("notes the pickup on the issue when issue messages triggered the build turn", async () => {
+    // The surfaces keep independent boundaries. Answering only on the pull
+    // request would leave the issue comment new forever, starting another build
+    // turn on every tick.
+    gh.getIssueSurface.mockReturnValue(needsWork(42, ["automata-bot"]));
+    await runDoWork();
+    const issueNotes = gh.postMarker.mock.calls.filter((call) => call[0] === "issue");
+    expect(issueNotes).toHaveLength(1);
+    expect(issueNotes[0][2]).toMatch(/picked this up on pull request #57/);
+    // The transient working marker still goes on the pull request.
+    expect(gh.postMarker.mock.calls.some((call) => call[0] === "pr")).toBe(true);
+  });
+
+  it("does not note a pickup when only the pull request had new messages", async () => {
+    await runDoWork();
+    expect(gh.postMarker.mock.calls.filter((call) => call[0] === "issue")).toHaveLength(0);
+  });
+
+  it("keeps the permanent issue note, deleting only the pull request marker", async () => {
+    gh.getIssueSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 0 ? settled(42) : needsWork(42, ["automata-bot"]),
+    );
+    gh.getPrSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 1
+        ? prSurface({ messages: [message("automata-bot", "2026-01-10T00:05:00Z", "pr-comment")] })
+        : prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
+    await runDoWork();
+    expect(gh.deleteMarker).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips rather than looping when the issue pickup note cannot be posted", async () => {
+    gh.getIssueSurface.mockReturnValue(needsWork(42, ["automata-bot"]));
+    gh.postMarker.mockImplementation((surface: string) => {
+      if (surface === "issue") throw new Error("HTTP 403");
+      return MARKER;
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(exitCode).toBe(2);
+    expect(stdout).toMatch(/issue pickup note failed/);
   });
 
   it("does not attempt link repair on a build turn", async () => {

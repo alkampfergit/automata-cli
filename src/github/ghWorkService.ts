@@ -118,6 +118,7 @@ interface RawThreadsResponse {
             path: string;
             line: number | null;
             comments: {
+              pageInfo: { hasPreviousPage: boolean };
               nodes: { author?: RawAuthor; body: string; createdAt: string }[];
             };
           }[];
@@ -357,6 +358,7 @@ query($owner:String!,$repo:String!,$prNumber:Int!,$cursor:String){
         nodes{
           isResolved isOutdated path line
           comments(last:100){
+            pageInfo{ hasPreviousPage }
             nodes{ author{login} body createdAt }
           }
         }
@@ -407,6 +409,16 @@ function getReviewThreads(prNumber: number): ReviewThread[] {
     const connection = response.data.repository.pullRequest.reviewThreads;
 
     for (const node of connection.nodes) {
+      if (node.comments.pageInfo?.hasPreviousPage) {
+        // Only the newest 100 comments come back. More than that in unauthorized
+        // follow-ups could push an authorized maintainer's request out of the
+        // window; after filtering the thread would look empty and the request
+        // would be silently suppressed.
+        throw new Error(
+          `Review thread on ${node.path} in pull request #${String(prNumber)} has more than 100 comments, ` +
+            "so the earliest ones were not read. Refusing rather than risk suppressing a maintainer's request.",
+        );
+      }
       threads.push({
         path: node.path,
         line: node.line ?? null,

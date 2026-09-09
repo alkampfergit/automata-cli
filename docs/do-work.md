@@ -183,7 +183,9 @@ A tick is one or more full model sessions, and cron fires on a fixed interval, s
 - Each acquisition records a unique token, and a holder releases only the lock it created — so a holder whose lock was reclaimed cannot evict its replacement on the way out.
 - The lock is released on success, failure and interruption. On `SIGINT`/`SIGTERM` the executor is sent `SIGTERM`, escalated to `SIGKILL` if it does not exit, and **awaited** before the lock is released — escalating is not the same as having escalated successfully, since `SIGKILL` is asynchronous. If exit still cannot be confirmed the lock is deliberately **left in place**: handing it to the next tick while a model may still be running is the failure this exists to prevent.
 
-The file is named for automata rather than for `do-work` so other long-running commands can adopt it later. It is git-ignored.
+The file is named for automata rather than for `do-work` so other long-running commands can adopt it later.
+
+**Add `.automata/automata.lock` to your repository's ignore rules.** automata excludes the path from its own working-tree cleanliness check, so a tick will not skip its own items over it — but nothing makes `git status` ignore it for you, and an operator (or another tool) will otherwise see a stray untracked file. This repository ignores it in its own `.gitignore`; that does nothing for a repository where automata is installed.
 
 ---
 

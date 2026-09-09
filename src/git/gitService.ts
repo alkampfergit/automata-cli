@@ -816,8 +816,18 @@ export function createTrackingBranch(branch: string): GitCommandResult {
   return gitCommand(["checkout", "-b", branch, `origin/${branch}`]);
 }
 
+/**
+ * Fetch a branch *into its remote-tracking ref*.
+ *
+ * `git fetch origin <branch>` writes only `FETCH_HEAD`, so for a branch created
+ * after this checkout was cloned it would succeed while leaving
+ * `refs/remotes/origin/<branch>` absent — and `createTrackingBranch` would then
+ * fail. That is the common case for `do-work`: the branch was made on another
+ * machine. The refspec is forced so a force-pushed pull request branch updates
+ * rather than being rejected as a non-fast-forward.
+ */
 export function fetchBranch(branch: string): GitCommandResult {
-  return gitCommand(["fetch", "origin", branch]);
+  return gitCommand(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
 }
 
 /**

@@ -108,7 +108,16 @@ gh api graphql -f query='query {
 
 **Finding**: `invokeClaudeCode()` supports a verbose streaming mode (`--verbose --output-format stream-json`) and a plain `-p` mode; `invokeCodexCode()` uses `codex exec`. The existing `execute-prompt` subcommands already pass `yolo: true` unconditionally, because a prompt-driven run cannot answer a permission prompt.
 
-**Decision**: reuse both services unchanged, always with `yolo: true`, streaming by default and plain output under `--silent`. Document the isolation requirement (FR-043) rather than adding an option that would make unattended use fail silently.
+**Decision (revised during review — the original decision is recorded below it)**: `do-work` uses dedicated `runClaude` / `runCodex` entry points rather than the existing `invokeClaudeCode` / `invokeCodexCode`. Two reasons emerged only once the tick existed:
+
+1. The existing functions route failures through `handleExitCode`, which calls `process.exit`. That suits a one-shot CLI command but is fatal to a tick: the process would die mid-loop, leaving the marker unreconciled, the queue unprocessed, and the `finally` that releases the lock skipped. The new entry points throw instead.
+2. A signalled tick must be able to stop the executor. Both new entry points spawn asynchronously and register the child, so `SIGINT`/`SIGTERM` can terminate and await it before the lock is released.
+
+Consequently `--silent` no longer selects a different invocation: the argv is identical either way — always streamed, so the child stays cancellable — and the flag only suppresses rendering. `invokeClaudeCode` and `invokeCodexCode` are untouched for their existing callers.
+
+*Original decision, superseded*: reuse both services unchanged, always with `yolo: true`, streaming by default and plain output under `--silent`.
+
+The isolation requirement (FR-043) stands either way: both entry points hard-code `yolo`, because an unattended run cannot answer a permission prompt.
 
 **Note**: `MODEL_IDS` in `src/claude/claudeService.ts` still maps `opus`/`sonnet` to `claude-opus-4-6` / `claude-sonnet-4-6`. `do-work` passes `--model` straight through and does not depend on that table; refreshing it is out of scope here.
 

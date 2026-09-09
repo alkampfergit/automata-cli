@@ -22,8 +22,13 @@ function writeDoWork(patch: Partial<AutomataDoWorkConfig>): void {
 }
 
 function parseNonNegativeInt(value: string, label: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed < 0 || String(parsed) !== value.trim()) {
+  const trimmed = value.trim();
+  const parsed = Number.parseInt(trimmed, 10);
+  // `Number.isSafeInteger` matters: a large value can round-trip through
+  // `String(parsed)` and match its input while still exceeding the safe range,
+  // so `config set` would report success and persist something `do-work` then
+  // rejects.
+  if (Number.isNaN(parsed) || parsed < 0 || String(parsed) !== trimmed || !Number.isSafeInteger(parsed)) {
     process.stderr.write(`Error: ${label} must be a non-negative integer (got "${value}").\n`);
     process.exit(1);
   }

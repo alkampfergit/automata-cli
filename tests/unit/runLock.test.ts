@@ -140,6 +140,30 @@ describe("acquireRunLock", () => {
     );
   });
 
+  it("never deletes a lock written by a later holder", () => {
+    // Checking the token then unlinking is a TOCTOU: a claimant could rename our
+    // lock away and write its own between the two steps. Release takes the file
+    // away by rename before inspecting it, and restores it if it is not ours.
+    const mine = acquireRunLock("do-work", 120);
+    expect(mine.ok).toBe(true);
+    if (!mine.ok) return;
+
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      host: hostname(),
+      command: "do-work",
+      token: "a-later-holder",
+    });
+
+    mine.handle.release();
+
+    expect(existsSync(lockFile())).toBe(true);
+    expect((JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string }).token).toBe("a-later-holder");
+    // No temporary files left behind either.
+    expect(readdirSync(join(TEST_CWD, ".automata")).filter((f) => f !== "automata.lock")).toEqual([]);
+  });
+
   it("leaves a lock it cannot prove it owns", () => {
     // A lock file with no token cannot be attributed to this handle, so release
     // leaves it alone rather than risk evicting another holder. It is still
