@@ -151,7 +151,7 @@ interface MenuView {
   hint: string;
 }
 
-function TextEntryScreen({ title, label, value, hint }: TextView) {
+function TextEntryScreen({ title, label, value, hint }: Readonly<TextView>) {
   return (
     <Box flexDirection="column" marginY={1}>
       <Text bold>{title}</Text>
@@ -169,7 +169,7 @@ function TextEntryScreen({ title, label, value, hint }: TextView) {
   );
 }
 
-function MenuEntryScreen({ title, options, index, hint }: MenuView) {
+function MenuEntryScreen({ title, options, index, hint }: Readonly<MenuView>) {
   return (
     <Box flexDirection="column" marginY={1}>
       <Text bold>{title}</Text>
