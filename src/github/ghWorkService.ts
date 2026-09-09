@@ -35,6 +35,7 @@ export interface IssueSurface {
   issue: GitHubIssue;
   state: "OPEN" | "CLOSED";
   assignees: string[];
+  labels: string[];
   messages: RawMessage[];
 }
 
@@ -64,6 +65,7 @@ interface RawIssueView {
   author?: RawAuthor;
   createdAt: string;
   assignees?: RawAuthor[];
+  labels?: { name?: string }[];
   comments?: { author?: RawAuthor; body: string; createdAt: string }[];
 }
 
@@ -109,6 +111,7 @@ interface RawThreadsResponse {
     repository: {
       pullRequest: {
         reviewThreads: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
           nodes: {
             isResolved: boolean;
             isOutdated: boolean;
@@ -223,7 +226,7 @@ export function getIssueSurface(issueNumber: number): IssueSurface {
       "view",
       String(issueNumber),
       "--json",
-      "number,title,body,url,state,author,createdAt,assignees,comments",
+      "number,title,body,url,state,author,createdAt,assignees,labels,comments",
     ],
     `read issue #${String(issueNumber)}`,
   );
@@ -247,6 +250,7 @@ export function getIssueSurface(issueNumber: number): IssueSurface {
     issue: { number: raw.number, title: raw.title, body: raw.body, url: raw.url },
     state: raw.state === "CLOSED" ? "CLOSED" : "OPEN",
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
+    labels: (raw.labels ?? []).map((label) => label.name ?? "").filter((name) => name.length > 0),
     messages,
   };
 }
@@ -285,9 +289,13 @@ function indexPullRequest(map: Map<number, PullRequestRef[]>, node: RawLinkMapNo
   };
 
   if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
-    // Pathological, but say so rather than silently dropping links.
-    process.stderr.write(
-      `Warning: pull request #${String(node.number)} closes more than 50 issues; some links were not read.\n`,
+    // Callers treat absence from this map as proof that an issue has no pull
+    // request, so a partial map is not a degraded answer — it is a wrong one
+    // that starts a competing implementation. Refuse instead.
+    throw new Error(
+      `Pull request #${String(node.number)} closes more than 50 issues, so the issue-to-pull-request ` +
+        "map cannot be read completely. Refusing the tick rather than risk starting work on an issue " +
+        "that already has a pull request.",
     );
   }
 
@@ -333,18 +341,19 @@ export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
     cursor = connection.pageInfo.endCursor;
   }
 
-  process.stderr.write(
-    `Warning: stopped paginating open pull requests after ${String(MAX_LINK_MAP_PAGES)} pages; ` +
-      "the issue-to-pull-request map may be incomplete.\n",
+  throw new Error(
+    `Stopped paginating open pull requests after ${String(MAX_LINK_MAP_PAGES)} pages, so the ` +
+      "issue-to-pull-request map cannot be trusted. Refusing the tick rather than risk starting work " +
+      "on an issue that already has a pull request.",
   );
-  return map;
 }
 
 const REVIEW_THREADS_QUERY = `
-query($owner:String!,$repo:String!,$prNumber:Int!){
+query($owner:String!,$repo:String!,$prNumber:Int!,$cursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$prNumber){
-      reviewThreads(first:100){
+      reviewThreads(first:100, after:$cursor){
+        pageInfo{ hasNextPage endCursor }
         nodes{
           isResolved isOutdated path line
           comments(last:100){
@@ -356,10 +365,73 @@ query($owner:String!,$repo:String!,$prNumber:Int!){
   }
 }`.trim();
 
+/** Same guard as the link map: bounded, and a refusal rather than a partial read. */
+const MAX_THREAD_PAGES = 50;
+
 function normalizePrState(state: string | undefined): PullRequestRef["state"] {
   if (state === "MERGED") return "MERGED";
   if (state === "CLOSED") return "CLOSED";
   return "OPEN";
+}
+
+/**
+ * Every unresolved review thread on a pull request, following pagination.
+ *
+ * A single page would make authorized feedback past thread 100 invisible to both
+ * detection and the prompt, so the agent would silently never answer it.
+ */
+function getReviewThreads(prNumber: number): ReviewThread[] {
+  const { owner, repo } = getRepoSlug();
+  const threads: ReviewThread[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${REVIEW_THREADS_QUERY}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `repo=${repo}`,
+      "-F",
+      `prNumber=${String(prNumber)}`,
+    ];
+    if (cursor !== null) args.push("-f", `cursor=${cursor}`);
+
+    const response = ghJson<RawThreadsResponse>(
+      args,
+      `query review threads for pull request #${String(prNumber)}`,
+    );
+    const connection = response.data.repository.pullRequest.reviewThreads;
+
+    for (const node of connection.nodes) {
+      threads.push({
+        path: node.path,
+        line: node.line ?? null,
+        isResolved: node.isResolved,
+        comments: node.comments.nodes
+          .map((comment) => ({
+            kind: "thread-comment" as const,
+            author: login(comment.author),
+            body: comment.body,
+            createdAt: comment.createdAt,
+          }))
+          .sort(byCreatedAt),
+      });
+    }
+
+    if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
+      return threads;
+    }
+    cursor = connection.pageInfo.endCursor;
+  }
+
+  throw new Error(
+    `Stopped paginating review threads for pull request #${String(prNumber)} after ` +
+      `${String(MAX_THREAD_PAGES)} pages; refusing rather than answering only part of the feedback.`,
+  );
 }
 
 export function getPrSurface(prNumber: number): PrSurface {
@@ -393,38 +465,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       })),
   ].sort(byCreatedAt);
 
-  const { owner, repo } = getRepoSlug();
-  const threadsResponse = ghJson<RawThreadsResponse>(
-    [
-      "api",
-      "graphql",
-      "-f",
-      `query=${REVIEW_THREADS_QUERY}`,
-      "-f",
-      `owner=${owner}`,
-      "-f",
-      `repo=${repo}`,
-      "-F",
-      `prNumber=${String(prNumber)}`,
-    ],
-    `query review threads for pull request #${String(prNumber)}`,
-  );
-
-  const threads: ReviewThread[] = threadsResponse.data.repository.pullRequest.reviewThreads.nodes.map(
-    (node) => ({
-      path: node.path,
-      line: node.line ?? null,
-      isResolved: node.isResolved,
-      comments: node.comments.nodes
-        .map((comment) => ({
-          kind: "thread-comment" as const,
-          author: login(comment.author),
-          body: comment.body,
-          createdAt: comment.createdAt,
-        }))
-        .sort(byCreatedAt),
-    }),
-  );
+  const threads = getReviewThreads(prNumber);
 
   const state = normalizePrState(raw.state);
 

@@ -7,6 +7,7 @@ import {
   type AutomataConfig,
   type Executor,
   type TurnKind,
+  type AutomataDoWorkConfig,
 } from "../config/configStore.js";
 import { addClosesRefToPr, getCurrentBranchPr, type GitHubIssue } from "../config/githubService.js";
 import {
@@ -24,6 +25,7 @@ import {
   type PullRequestRef,
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
+import type { IssueSurface } from "../github/ghWorkService.js";
 import {
   agentAnsweredAfter,
   decideWork,
@@ -36,13 +38,9 @@ import { composePrompt } from "../github/workPrompt.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, type LockHandle } from "../run/runLock.js";
-import {
-  invokeClaudeCode,
-  buildClaudeArgs,
-  resolveCommand,
-  terminateActiveClaudeProcesses,
-} from "../claude/claudeService.js";
-import { invokeCodexCode, buildCodexArgs } from "../codex/codexService.js";
+import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
+import { runCodex, buildCodexArgs } from "../codex/codexService.js";
+import { terminateTrackedChildren } from "../cli/childRegistry.js";
 import { shellQuote } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
@@ -94,10 +92,20 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/**
+ * Parse the whole token, not a prefix of it.
+ *
+ * `Number.parseInt` accepts "42junk" and "3.5", which for `--issue` means
+ * silently targeting a different issue than the operator typed.
+ */
 function parsePositiveInt(value: string, label: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
     fail(`${label} must be a positive integer (got "${value}").`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    fail(`${label} must be a positive integer within the safe range (got "${value}").`);
   }
   return parsed;
 }
@@ -138,6 +146,7 @@ function resolveSettings(options: DoWorkOptions): Settings {
   }
 
   const doWork = config.doWork ?? {};
+  validateDoWorkConfig(doWork);
 
   let executor: Executor = doWork.executor ?? DEFAULT_DO_WORK.executor;
   if (options.with !== undefined) {
@@ -148,7 +157,11 @@ function resolveSettings(options: DoWorkOptions): Settings {
     executor = requested;
   }
 
-  checkAuthenticatedIdentity(agentUser, allowedUsers);
+  // A dry run posts nothing, so the identity that would post is irrelevant; the
+  // guard must not block the primary diagnostic.
+  if (options.dryRun !== true) {
+    checkAuthenticatedIdentity(agentUser, allowedUsers);
+  }
 
   return {
     baseBranch: doWork.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
@@ -233,7 +246,7 @@ interface PlannedRun {
  * What would be executed for a work item, built with the same argv builders the
  * real invocation uses so `--dry-run` cannot drift from what actually happens.
  */
-function planRun(item: WorkItem, settings: Settings, silent: boolean): PlannedRun {
+function planRun(item: WorkItem, settings: Settings): PlannedRun {
   const prompt = composePrompt({
     item,
     repo: getRepoSlug(),
@@ -244,10 +257,12 @@ function planRun(item: WorkItem, settings: Settings, silent: boolean): PlannedRu
 
   // The resolved path, not the bare name: this is literally what gets spawned.
   const bin = resolveCommand(settings.executor === "codex" ? "codex" : "claude");
+  // `verbose: true` unconditionally, because `runClaude` always streams so the
+  // child stays cancellable; `--silent` suppresses printing, not the flags.
   const args =
     settings.executor === "codex"
       ? buildCodexArgs(prompt, { yolo: true, model: settings.model })
-      : buildClaudeArgs(prompt, { yolo: true, verbose: !silent, model: settings.model });
+      : buildClaudeArgs(prompt, { yolo: true, verbose: true, model: settings.model });
 
   return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
 }
@@ -290,6 +305,49 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
   return lines.join("\n") + "\n";
 }
 
+/**
+ * Check the hand-edited parts of `.automata/config.json`.
+ *
+ * The types say these fields are well formed; the file on disk makes no such
+ * promise. An unrecognised executor used to fall through to Claude, and a
+ * negative run cap used to read as unlimited — both silent, on an unattended
+ * loop, which is the worst place for a silent misreading.
+ */
+function validateDoWorkConfig(doWork: AutomataDoWorkConfig): void {
+  if (doWork.executor !== undefined && doWork.executor !== "claude" && doWork.executor !== "codex") {
+    fail(`doWork.executor must be 'claude' or 'codex', got '${String(doWork.executor)}'.`);
+  }
+
+  if (doWork.baseBranch !== undefined && doWork.baseBranch.trim().length === 0) {
+    fail("doWork.baseBranch must not be empty.");
+  }
+
+  if (doWork.maxRunsPerTick !== undefined) {
+    if (!Number.isSafeInteger(doWork.maxRunsPerTick) || doWork.maxRunsPerTick < 0) {
+      fail(
+        `doWork.maxRunsPerTick must be a non-negative integer (0 = unlimited), got ${String(doWork.maxRunsPerTick)}.`,
+      );
+    }
+  }
+
+  if (doWork.lockStaleMinutes !== undefined) {
+    if (!Number.isSafeInteger(doWork.lockStaleMinutes) || doWork.lockStaleMinutes <= 0) {
+      fail(`doWork.lockStaleMinutes must be a positive integer, got ${String(doWork.lockStaleMinutes)}.`);
+    }
+  }
+
+  for (const [key, value] of [
+    ["doWork.models.claude", doWork.models?.claude],
+    ["doWork.models.codex", doWork.models?.codex],
+    ["doWork.prompts.issueDiscuss", doWork.prompts?.issueDiscuss],
+    ["doWork.prompts.prWork", doWork.prompts?.prWork],
+  ] as const) {
+    if (value !== undefined && (typeof value !== "string" || value.trim().length === 0)) {
+      fail(`${key} must be a non-empty string.`);
+    }
+  }
+}
+
 function discoverIssues(settings: Settings): GitHubIssue[] {
   const candidates = listCandidateIssues(settings.technique, settings.discoveryValue, settings.limit);
 
@@ -305,11 +363,29 @@ function discoverIssues(settings: Settings): GitHubIssue[] {
   const match = candidates.find((issue) => issue.number === settings.onlyIssue);
   if (match) return [match];
 
-  progress(
-    `Note: issue #${String(settings.onlyIssue)} does not match the configured discovery filter ` +
-      `(${settings.technique} = ${settings.discoveryValue}); processing it anyway because --issue was given.\n`,
-  );
-  return [getIssueSurface(settings.onlyIssue).issue];
+  // Absence from the candidate page is not proof of anything: a matching issue
+  // beyond --limit would be reported as non-matching. Ask about this issue.
+  const surface = getIssueSurface(settings.onlyIssue);
+  if (!issueMatchesFilter(surface, settings)) {
+    progress(
+      `Note: issue #${String(settings.onlyIssue)} does not match the configured discovery filter ` +
+        `(${settings.technique} = ${settings.discoveryValue}); processing it anyway because --issue was given.\n`,
+    );
+  }
+  return [surface.issue];
+}
+
+/** Does this specific issue satisfy the configured discovery filter? */
+function issueMatchesFilter(surface: IssueSurface, settings: Settings): boolean {
+  const value = settings.discoveryValue.toLowerCase();
+  switch (settings.technique) {
+    case "label":
+      return surface.labels.some((label) => label.toLowerCase() === value);
+    case "assignee":
+      return surface.assignees.some((assignee) => assignee.toLowerCase() === value);
+    case "title-contains":
+      return surface.issue.title.toLowerCase().includes(value);
+  }
 }
 
 function buildIssueState(issue: GitHubIssue, linkMap: Map<number, PullRequestRef[]>): IssueState {
@@ -335,6 +411,24 @@ function describePlan(decisions: Decision[]): string {
   return lines.length === 0 ? "  (no issues matched the discovery filter)\n" : lines.join("\n") + "\n";
 }
 
+/**
+ * Re-decide one item against the current state of GitHub.
+ *
+ * Returns a skip when the issue has since been closed or answered, which is the
+ * right outcome: the plan said there was work, and there no longer is.
+ */
+function refreshItem(
+  item: WorkItem,
+  settings: Settings,
+  linkMap: Map<number, PullRequestRef[]>,
+): Decision {
+  return decideWork(
+    buildIssueState(item.issue, linkMap),
+    settings.participants,
+    settings.baseBranch,
+  );
+}
+
 /** Re-read the surface the turn answered, flattened for the answer predicate. */
 function readAnsweringSurface(item: WorkItem): RawMessage[] {
   if (item.turn === "issue-discuss" || item.pr === null) {
@@ -354,21 +448,45 @@ function readAnsweringSurface(item: WorkItem): RawMessage[] {
  * which keeps its creation time, and therefore the boundary, so a failing run is
  * not retried automatically on every later tick.
  */
+/** Which surface the turn answers, for marker text that points somewhere real. */
+function markerSurfaceLabel(item: WorkItem): string {
+  return item.turn === "pr-work" && item.pr
+    ? `pull request #${String(item.pr.number)}`
+    : `issue #${String(item.issue.number)}`;
+}
+
 function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
   agentUser: string,
   runError: Error | null,
 ): { outcome: Outcome; detail: string } {
-  let answered: boolean;
+  let answered: boolean | "unknown";
   try {
     answered = agentAnsweredAfter(readAnsweringSurface(item), agentUser, marker);
   } catch (err) {
     progress(
       `  warning: could not re-read issue #${String(item.issue.number)} to check for an answer: ${(err as Error).message}\n`,
     );
-    // Unknown means do not delete: a stale marker is harmless, a lost boundary is not.
-    answered = false;
+    // Unknown is not the same as "no answer": an answer may exist and the read
+    // may simply have failed. Never delete the marker here — a stale marker is
+    // harmless, a lost boundary is not — but do not assert anything either.
+    answered = "unknown";
+  }
+
+  if (answered === "unknown") {
+    const surface = markerSurfaceLabel(item);
+    try {
+      updateMarker(
+        marker,
+        `automata do-work: the agent run finished, but automata could not read ${surface} afterwards ` +
+          "to confirm whether an answer was posted. Check this thread and the branch before assuming either. " +
+          "Reply here to have another attempt made.",
+      );
+    } catch (updateErr) {
+      progress(`  warning: could not update the marker comment: ${(updateErr as Error).message}\n`);
+    }
+    return { outcome: "answered-no-reply", detail: "could not verify whether an answer was posted" };
   }
 
   if (answered) {
@@ -382,12 +500,17 @@ function reconcileMarker(
       : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}` };
   }
 
+  // Deliberately does not claim nothing changed: a run can commit and push and
+  // still fail to comment, and a failed run can leave partial work behind.
+  const surface = markerSurfaceLabel(item);
   const explanation =
     runError === null
-      ? "automata do-work: the agent run finished without posting an answer here. " +
-        "Nothing was changed on your behalf. Reply on this issue to have another attempt made."
+      ? `automata do-work: the agent run finished without posting an answer on ${surface}. ` +
+        `It may still have changed the branch \`${item.branch}\` — check it before assuming otherwise. ` +
+        `Reply on ${surface} to have another attempt made.`
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
-        "Reply on this issue to have another attempt made.";
+        `It may have left partial changes on the branch \`${item.branch}\`. ` +
+        `Reply on ${surface} to have another attempt made.`;
   try {
     updateMarker(marker, explanation);
   } catch (err) {
@@ -403,11 +526,14 @@ function reconcileMarker(
 }
 
 async function invokeExecutor(prompt: string, settings: Settings, silent: boolean): Promise<void> {
+  // Both runners spawn asynchronously, register the child for cancellation, and
+  // throw instead of exiting, so a failed run reconciles its marker and the tick
+  // continues with the next item.
   if (settings.executor === "codex") {
-    invokeCodexCode(prompt, { yolo: true, model: settings.model });
+    await runCodex(prompt, { model: settings.model });
     return;
   }
-  await invokeClaudeCode(prompt, { yolo: true, verbose: !silent, model: settings.model });
+  await runClaude(prompt, { model: settings.model, printSteps: !silent });
 }
 
 /**
@@ -444,13 +570,32 @@ function repairIssueLink(item: WorkItem, baseBranch: string): void {
   }
 }
 
-async function processItem(item: WorkItem, settings: Settings, silent: boolean): Promise<ItemReport> {
+async function processItem(
+  planned: WorkItem,
+  settings: Settings,
+  linkMap: Map<number, PullRequestRef[]>,
+  silent: boolean,
+): Promise<ItemReport> {
   const base: Pick<ItemReport, "issue" | "title" | "turn"> = {
-    issue: item.issue.number,
-    title: item.issue.title,
-    turn: item.turn,
+    issue: planned.issue.number,
+    title: planned.issue.title,
+    turn: planned.turn,
   };
-  progress(`\n#${String(item.issue.number)} ${item.turn}: ${item.reason}\n`);
+  progress(`\n#${String(planned.issue.number)} ${planned.turn}: ${planned.reason}\n`);
+
+  // The tick's plan was built before any model ran, and an earlier item can take
+  // a long time. Re-read this issue now, so a message that arrived in the
+  // meantime is answered rather than being buried behind the marker we are about
+  // to post — which would make it older than the boundary and never new again.
+  const refreshed = refreshItem(planned, settings, linkMap);
+  if (refreshed.kind === "skip") {
+    progress(`  skipped: ${refreshed.detail}\n`);
+    return { ...base, outcome: "skipped", detail: `no longer actionable: ${refreshed.detail}` };
+  }
+  const item = refreshed.item;
+  if (item.turn !== planned.turn) {
+    progress(`  turn changed to ${item.turn} since the plan was built; using the current state.\n`);
+  }
 
   const prepared =
     item.turn === "issue-discuss" ? prepareBaseBranch(item.branch) : preparePrBranch(item.branch);
@@ -554,7 +699,7 @@ export const doWorkCommand = new Command("do-work")
       if (shuttingDown) return;
       shuttingDown = true;
       progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
-      void terminateActiveClaudeProcesses().then(() => {
+      void terminateTrackedChildren().then(() => {
         handle.release();
         process.exit(130);
       });
@@ -601,7 +746,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
 
   const reports: ItemReport[] = [];
   for (const item of runnable) {
-    reports.push(await processItem(item, settings, options.silent === true));
+    reports.push(await processItem(item, settings, linkMap, options.silent === true));
   }
   for (const item of deferred) {
     progress(`\n#${String(item.issue.number)} deferred: --max-runs / maxRunsPerTick reached.\n`);
@@ -637,7 +782,7 @@ function reportDryRun(
   options: DoWorkOptions,
 ): void {
   const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-  const planned = describable.map((item) => planRun(item, settings, options.silent === true));
+  const planned = describable.map((item) => planRun(item, settings));
 
   if (options.json) {
     out(

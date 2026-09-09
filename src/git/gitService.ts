@@ -774,8 +774,14 @@ export function isUpstreamGone(branch: string): boolean {
   return status !== 0;
 }
 
-export function hasUncommittedChanges(): boolean {
-  const { stdout } = run("git", ["status", "--porcelain"]);
+export function hasUncommittedChanges(excludePaths: string[] = []): boolean {
+  const args = ["status", "--porcelain"];
+  if (excludePaths.length > 0) {
+    // Pathspec magic, so a file automata created itself cannot make the tree
+    // look dirty to automata.
+    args.push("--", ".", ...excludePaths.map((path) => `:(exclude)${path}`));
+  }
+  const { stdout } = run("git", args);
   return stdout.trim().length > 0;
 }
 

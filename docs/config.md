@@ -172,7 +172,7 @@ automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 
 The `doWork.prompts.*` values follow the same rules as every other prompt field — inline text, or a plain `.md` filename resolved inside `.automata/` (see [Prompt file references](#prompt-file-references)) — with one important difference:
 
-> **An unresolvable `doWork` prompt fails the tick.** The other prompt fields fall back to their built-in default; `doWork` does not. On an unattended loop, silently running different instructions than the ones configured is worse than a refused tick.
+> **An unresolvable prompt reference is always an error.** `readConfig()` resolves every configured `.md` reference through the same throwing helper, so a missing file or one outside `.automata/` fails for any prompt field — there is no silent fallback anywhere. What `do-work` adds is a *clean* failure: it catches the error and exits 1 with an actionable message rather than surfacing a stack trace, because on an unattended loop the operator only sees the log.
 
 These prompts are where a **skill** gets named — automata itself has no concept of a skill. The built-in defaults name none, so `do-work` works with nothing installed. See [wiki/Prompts.md](wiki/Prompts.md) for the contract and a worked example.
 

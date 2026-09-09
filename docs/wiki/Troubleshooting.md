@@ -99,6 +99,9 @@ gh auth login                       # as the agent account
 gh api user --jq .login             # must equal agentUser
 ```
 
+`--dry-run` is exempt: it posts nothing, so you can always inspect the plan from
+your own workstation without switching accounts.
+
 If you meant to run as yourself for a one-off task, use `automata implement-next`
 or `automata execute-prompt` instead — they have no boundary to protect.
 

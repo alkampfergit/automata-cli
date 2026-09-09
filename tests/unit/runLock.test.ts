@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock } from "../../src/run/runLock.js";
@@ -150,6 +150,36 @@ describe("acquireRunLock", () => {
     writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
     mine.handle.release();
     expect(existsSync(lockFile())).toBe(true);
+  });
+
+  it("reclaims atomically, so a second contender cannot evict the first", () => {
+    // The old unlink-then-create sequence let two contenders both see the lock
+    // as stale, and the second one'"'"'s unlink deleted the first one'"'"'s new lock —
+    // admitting two ticks into one checkout.
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+
+    const first = acquireRunLock("do-work", 120);
+    expect(first.ok).toBe(true);
+
+    // A second contender now arrives and sees a live, fresh lock.
+    const second = acquireRunLock("do-work", 120);
+    expect(second.ok).toBe(false);
+
+    // The winner still owns the file it wrote.
+    const owner = JSON.parse(readFileSync(lockFile(), "utf8")) as { pid: number };
+    expect(owner.pid).toBe(process.pid);
+  });
+
+  it("leaves no candidate files behind after a reclaim", () => {
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    expect(acquireRunLock("do-work", 120).ok).toBe(true);
+    const strays = readdirSync(join(TEST_CWD, ".automata")).filter((f) => f !== "automata.lock");
+    expect(strays).toEqual([]);
+  });
+
+  it("exports the lock path so the cleanliness check can exclude it", async () => {
+    const { RUN_LOCK_RELATIVE_PATH } = await import("../../src/run/runLock.js");
+    expect(RUN_LOCK_RELATIVE_PATH).toBe(".automata/automata.lock");
   });
 
   it("allows a fresh acquisition after release", () => {

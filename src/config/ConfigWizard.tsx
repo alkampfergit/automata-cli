@@ -355,7 +355,10 @@ export function ConfigWizard() {
     "do-work-max-runs": {
       setValue: setDoWorkMaxRuns,
       onSubmit: () => {
-        const parsedMaxRuns = Number.parseInt(doWorkMaxRuns, 10);
+        // Parse the whole value: `parseInt` would turn "2abc" and "2.5" into 2,
+        // unlike `config set do-work-max-runs`.
+        const trimmedMaxRuns = doWorkMaxRuns.trim();
+        const parsedMaxRuns = /^\d+$/.test(trimmedMaxRuns) ? Number(trimmedMaxRuns) : Number.NaN;
         const current = readRawConfig();
         writeConfig({
           ...current,
@@ -367,7 +370,8 @@ export function ConfigWizard() {
               claude: doWorkClaudeModel.trim() || undefined,
               codex: doWorkCodexModel.trim() || undefined,
             },
-            maxRunsPerTick: Number.isNaN(parsedMaxRuns) || parsedMaxRuns < 0 ? undefined : parsedMaxRuns,
+            maxRunsPerTick:
+              Number.isSafeInteger(parsedMaxRuns) && parsedMaxRuns >= 0 ? parsedMaxRuns : undefined,
           },
         });
         exit();

@@ -9,7 +9,7 @@ const mockPullFastForwardOnly = vi.fn();
 // The git invocations live in gitService, which owns the process runner; this
 // module only sequences them, so that is what the tests pin down.
 vi.mock("../../src/git/gitService.js", () => ({
-  hasUncommittedChanges: () => mockHasUncommittedChanges(),
+  hasUncommittedChanges: (...a: unknown[]) => mockHasUncommittedChanges(...a),
   checkoutBranch: (...a: unknown[]) => mockCheckoutBranch(...a),
   createTrackingBranch: (...a: unknown[]) => mockCreateTrackingBranch(...a),
   fetchBranch: (...a: unknown[]) => mockFetchBranch(...a),
@@ -49,6 +49,15 @@ describe("prepareBaseBranch", () => {
     // The critical part: nothing was mutated, so no human work can be lost.
     expect(mockCheckoutBranch).not.toHaveBeenCalled();
     expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
+  });
+
+  it("excludes automata's own lock file from the cleanliness check", async () => {
+    // The lock is created before this check runs, so in any repository that has
+    // not gitignored it, it would otherwise read as an untracked change and
+    // every item would be skipped as dirty-tree.
+    const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
+    prepareBaseBranch("develop");
+    expect(mockHasUncommittedChanges).toHaveBeenCalledWith([".automata/automata.lock"]);
   });
 
   it("checks out the base branch and fast-forwards it", async () => {

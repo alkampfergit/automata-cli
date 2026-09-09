@@ -18,9 +18,13 @@ request, UNLESS a message marked NEW explicitly asks you to implement the work.
 
 If it does: create a branch off the base branch named below following GitFlow
 (`feature/NNN-short-name`), write the spec-kit artifacts under `specs/NNN-*/`,
-implement the change, run `npm test && npm run lint`, update `README.md` and the
-relevant `docs/<group>.md` page per the documentation convention, and open a pull
-request whose body contains `Closes #<issue number>`.
+implement the change, run `npm test && npm run lint`, and open a pull request
+whose body contains `Closes #<issue number>`.
+
+Document the change in the relevant `docs/<group>.md` page. Touch `README.md`
+only if installation, the quick start, the command-group table or the dev setup
+actually changed — per the documentation convention in `AGENTS.md`, subcommand
+detail belongs in `docs/`, not the README.
 
 Otherwise reply on the issue only. Keep the reply short and concrete, and always
 post a reply.

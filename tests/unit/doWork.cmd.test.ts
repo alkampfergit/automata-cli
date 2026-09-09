@@ -70,13 +70,13 @@ vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
     ...actual,
     // Only the spawn is stubbed; buildClaudeArgs and resolveCommand stay real so
     // the dry-run tests exercise the same argv builder the real run uses.
-    invokeClaudeCode: (...a: unknown[]) => mockInvokeClaude(...a),
+    runClaude: (...a: unknown[]) => mockInvokeClaude(...a),
   };
 });
 
 vi.mock("../../src/codex/codexService.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/codex/codexService.js")>();
-  return { ...actual, invokeCodexCode: (...a: unknown[]) => mockInvokeCodex(...a) };
+  return { ...actual, runCodex: (...a: unknown[]) => mockInvokeCodex(...a) };
 });
 
 /* ── fixtures ───────────────────────────────────────────────────────────── */
@@ -105,8 +105,31 @@ function needsWork(number: number, assignees: string[] = []): IssueSurface {
     issue: issue(number),
     state: "OPEN",
     assignees,
+    labels: ["automated"],
     messages: [message("alice", "2026-01-01T00:00:00Z", "issue-body")],
   };
+}
+
+/** The same issue after the agent has posted its answer. */
+function answered(number: number): IssueSurface {
+  return {
+    ...needsWork(number),
+    messages: [
+      message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+      message("automata-bot", "2026-01-10T00:05:00Z"),
+    ],
+  };
+}
+
+/**
+ * Model the agent answering: the surface reads as answered once the marker has
+ * been posted. Expressed as a condition rather than a call-count sequence, so it
+ * survives the extra pre-run refresh read.
+ */
+function answersAfterMarker(): void {
+  gh.getIssueSurface.mockImplementation((n: number) =>
+    gh.postMarker.mock.calls.length > 0 ? answered(n) : needsWork(n),
+  );
 }
 
 /** An issue surface where the agent has already answered. */
@@ -115,6 +138,7 @@ function settled(number: number): IssueSurface {
     issue: issue(number),
     state: "OPEN",
     assignees: ["automata-bot"],
+    labels: ["automated"],
     messages: [
       message("alice", "2026-01-01T00:00:00Z", "issue-body"),
       message("automata-bot", "2026-01-02T00:00:00Z"),
@@ -187,6 +211,7 @@ beforeEach(() => {
   mockGetCurrentBranchPr.mockReturnValue(null);
   // A discussion turn that created a branch is the normal case for link repair.
   mockGetCurrentBranch.mockReturnValue("feature/042-flag");
+  gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
   mockInvokeClaude.mockResolvedValue(undefined);
 });
 
@@ -291,6 +316,43 @@ describe("do-work preconditions", () => {
     await runDoWork();
     expect(exitCode).toBeUndefined();
     expect(stderr).toMatch(/could not determine which account/);
+  });
+
+  it.each([
+    ["an unrecognised executor", { executor: "gemini" }, /doWork.executor must be 'claude' or 'codex'/],
+    ["a negative run cap", { maxRunsPerTick: -1 }, /maxRunsPerTick must be a non-negative integer/],
+    ["a fractional run cap", { maxRunsPerTick: 1.5 }, /maxRunsPerTick must be a non-negative integer/],
+    ["a zero lock window", { lockStaleMinutes: 0 }, /lockStaleMinutes must be a positive integer/],
+    ["an empty base branch", { baseBranch: "  " }, /baseBranch must not be empty/],
+    ["an empty model", { models: { claude: "" } }, /models.claude must be a non-empty string/],
+  ])("refuses %s in the doWork section", async (_what, doWork, expected) => {
+    // The types say these are well formed; the hand-edited file makes no such
+    // promise, and an unattended loop is the worst place to misread it silently.
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork });
+    await runDoWork();
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(expected);
+    expect(mockAcquireRunLock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["--issue", ["--issue", "42junk"]],
+    ["--limit", ["--limit", "3.5"]],
+    ["--max-runs", ["--max-runs", "2abc"]],
+  ])("rejects a malformed %s value rather than parsing a prefix", async (_what, args) => {
+    await runDoWork(args);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/must be a positive integer/);
+  });
+
+  it("allows --dry-run from a workstation, since it posts nothing", async () => {
+    // The guard exists to protect what gets posted; a dry run posts nothing, and
+    // blocking it would break the primary diagnostic.
+    gh.getAuthenticatedLogin.mockReturnValue("alice");
+    await runDoWork(["--dry-run"]);
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toMatch(/issues need an answer/);
+    expect(gh.postMarker).not.toHaveBeenCalled();
   });
 
   it("does no GitHub work when any precondition fails", async () => {
@@ -408,7 +470,7 @@ describe("do-work discuss turn", () => {
     expect(prompt).toContain("Turn: issue-discuss");
     expect(prompt).toContain("Issue #42");
     expect(prompt).toContain("Repository: acme/widget");
-    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ yolo: true, verbose: true });
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ printSteps: true });
   });
 
   it("skips assignment when the agent is already assigned", async () => {
@@ -456,12 +518,7 @@ describe("do-work marker reconciliation", () => {
   });
 
   it("deletes the marker when the agent posted an answer", async () => {
-    gh.getIssueSurface
-      .mockReturnValueOnce(needsWork(42))
-      .mockReturnValueOnce({
-        ...needsWork(42),
-        messages: [message("alice", "2026-01-01T00:00:00Z", "issue-body"), message("automata-bot", "2026-01-10T00:05:00Z")],
-      });
+    answersAfterMarker();
     await runDoWork();
     expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
     expect(gh.updateMarker).not.toHaveBeenCalled();
@@ -476,7 +533,10 @@ describe("do-work marker reconciliation", () => {
     expect(gh.updateMarker).toHaveBeenCalledTimes(1);
     const body = gh.updateMarker.mock.calls[0][1] as string;
     expect(body).toMatch(/finished without posting an answer/);
-    expect(body).toMatch(/Reply on this issue/);
+    expect(body).toMatch(/Reply on issue #42/);
+    // Must not claim nothing changed: the run can push and still fail to comment.
+    expect(body).not.toMatch(/Nothing was changed/);
+    expect(body).toMatch(/may still have changed the branch/);
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/answered-no-reply/);
   });
@@ -492,12 +552,7 @@ describe("do-work marker reconciliation", () => {
   });
 
   it("deletes the marker for a non-zero run that still posted an answer", async () => {
-    gh.getIssueSurface
-      .mockReturnValueOnce(needsWork(42))
-      .mockReturnValueOnce({
-        ...needsWork(42),
-        messages: [message("automata-bot", "2026-01-10T00:05:00Z")],
-      });
+    answersAfterMarker();
     mockInvokeClaude.mockRejectedValue(new Error("claude exited with code 1"));
     await runDoWork();
     expect(gh.deleteMarker).toHaveBeenCalled();
@@ -505,22 +560,22 @@ describe("do-work marker reconciliation", () => {
     expect(exitCode).toBeUndefined();
   });
 
-  it("keeps the marker when the surface cannot be re-read", async () => {
-    gh.getIssueSurface.mockReturnValueOnce(needsWork(42)).mockImplementationOnce(() => {
-      throw new Error("gh rate limited");
+  it("keeps the marker and says the answer is unverified when the re-read fails", async () => {
+    // Unknown is not the same as "no answer": asserting the latter would tell
+    // humans something the code has not established.
+    gh.getIssueSurface.mockImplementation((n: number) => {
+      if (gh.postMarker.mock.calls.length > 0) throw new Error("gh rate limited");
+      return needsWork(n);
     });
     await runDoWork();
     expect(gh.deleteMarker).not.toHaveBeenCalled();
     expect(stderr).toMatch(/could not re-read issue #42/);
+    expect(gh.updateMarker.mock.calls[0][1]).toMatch(/could not read issue #42 afterwards/);
+    expect(gh.updateMarker.mock.calls[0][1]).not.toMatch(/without posting an answer/);
   });
 
   it("warns but still reports the item as answered when the delete fails", async () => {
-    gh.getIssueSurface
-      .mockReturnValueOnce(needsWork(42))
-      .mockReturnValueOnce({
-        ...needsWork(42),
-        messages: [message("automata-bot", "2026-01-10T00:05:00Z")],
-      });
+    answersAfterMarker();
     gh.deleteMarker.mockImplementation(() => {
       throw new Error("HTTP 403");
     });
@@ -544,20 +599,20 @@ describe("do-work marker reconciliation", () => {
   it("counts a reply inside a review thread as an answer on a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
     gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
-    gh.getPrSurface
-      .mockReturnValueOnce(prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }))
-      .mockReturnValueOnce(
-        prSurface({
-          threads: [
-            {
-              path: "src/index.ts",
-              line: 1,
-              isResolved: false,
-              comments: [message("automata-bot", "2026-01-10T00:05:00Z", "thread-comment")],
-            },
-          ],
-        }),
-      );
+    gh.getPrSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 0
+        ? prSurface({
+            threads: [
+              {
+                path: "src/index.ts",
+                line: 1,
+                isResolved: false,
+                comments: [message("automata-bot", "2026-01-10T00:05:00Z", "thread-comment")],
+              },
+            ],
+          })
+        : prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
     await runDoWork();
     expect(gh.deleteMarker).toHaveBeenCalled();
     expect(exitCode).toBeUndefined();
@@ -673,6 +728,52 @@ describe("do-work queue handling", () => {
     expect(mockInvokeClaude).toHaveBeenCalledTimes(3);
   });
 
+  it("re-reads each item just before running it, so a message arriving mid-tick is answered", async () => {
+    // The plan is built before any model runs, and an earlier item can take
+    // hours. A comment arriving in that window used to be omitted from the
+    // prompt and then buried behind the marker, so it was never new again.
+    const late = message("alice", "2026-01-09T00:00:00Z");
+    let firstItemDone = false;
+    mockInvokeClaude.mockImplementation(() => {
+      firstItemDone = true;
+      return Promise.resolve();
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => {
+      const surface = needsWork(n);
+      // Alice comments on #44 while #42 is being worked.
+      if (n === 44 && firstItemDone) {
+        return { ...surface, messages: [...surface.messages, late] };
+      }
+      return surface;
+    });
+
+    await runDoWork();
+
+    const promptFor44 = mockInvokeClaude.mock.calls
+      .map((call) => call[0] as string)
+      .find((prompt) => prompt.includes("Issue #44"));
+    expect(promptFor44).toBeDefined();
+    expect(promptFor44).toContain(late.body);
+  });
+
+  it("skips an item that stopped being actionable while an earlier one ran", async () => {
+    let firstItemDone = false;
+    mockInvokeClaude.mockImplementation(() => {
+      firstItemDone = true;
+      return Promise.resolve();
+    });
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 44 && firstItemDone ? { ...needsWork(n), state: "CLOSED" as const } : needsWork(n),
+    );
+
+    await runDoWork();
+
+    expect(stdout).toMatch(/#44 issue-discuss skipped — no longer actionable/);
+    const prompts = mockInvokeClaude.mock.calls.map((call) => call[0] as string);
+    expect(prompts.some((prompt) => prompt.includes("Issue #44"))).toBe(false);
+    expect(exitCode).toBe(2);
+  });
+
   it("keeps going after a failed run and exits 2", async () => {
     mockInvokeClaude
       .mockResolvedValueOnce(undefined)
@@ -706,9 +807,19 @@ describe("do-work queue handling", () => {
   });
 
   it("reports when --issue does not match the discovery filter", async () => {
-    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    // Checked against the issue itself, not against the candidate page: an issue
+    // beyond --limit would otherwise be reported as non-matching.
+    gh.getIssueSurface.mockImplementation((n: number) => ({ ...needsWork(n), labels: ["bug"] }));
     await runDoWork(["--issue", "99"]);
     expect(stderr).toMatch(/does not match the configured discovery filter/);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a filter mismatch for an issue that matches but is beyond --limit", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43), issue(44)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--issue", "99"]);
+    expect(stderr).not.toMatch(/does not match the configured discovery filter/);
     expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
   });
 
@@ -764,10 +875,12 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("-p ");
   });
 
-  it("--dry-run reflects --silent by dropping the streaming flags", async () => {
+  it("--dry-run keeps the streaming flags under --silent, because the run does too", async () => {
+    // The child is always spawned asynchronously so a signal can stop it;
+    // --silent suppresses printing, it does not change the argv.
     await runDoWork(["--dry-run", "--silent"]);
     expect(stdout).toContain("--dangerously-skip-permissions");
-    expect(stdout).not.toContain("--output-format stream-json");
+    expect(stdout).toContain("--output-format stream-json");
   });
 
   it("--dry-run shows the codex command when codex is selected", async () => {
@@ -882,13 +995,15 @@ describe("do-work executor selection", () => {
 
   it("uses codex when asked on the command line", async () => {
     await runDoWork(["--with", "codex", "--model", "o3"]);
-    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { yolo: true, model: "o3" });
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: "o3" });
     expect(mockInvokeClaude).not.toHaveBeenCalled();
   });
 
   it("always bypasses permission prompts, since an unattended run cannot answer one", async () => {
-    await runDoWork();
-    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ yolo: true });
+    // `runClaude` hard-codes yolo; the dry-run command output is where that is
+    // asserted end to end.
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("--dangerously-skip-permissions");
   });
 
   it("defaults to Claude when nothing is configured", async () => {
@@ -904,7 +1019,7 @@ describe("do-work executor selection", () => {
     });
     await runDoWork();
     // The Claude default must not leak into a Codex run.
-    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { yolo: true, model: "o4-mini" });
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: "o4-mini" });
   });
 
   it("picks the Claude default when the executor is Claude", async () => {
@@ -922,7 +1037,7 @@ describe("do-work executor selection", () => {
       doWork: { executor: "claude", models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
     });
     await runDoWork(["--with", "codex"]);
-    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { yolo: true, model: "o4-mini" });
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: "o4-mini" });
   });
 
   it("lets --model override the configured default for the executor in use", async () => {
@@ -944,9 +1059,9 @@ describe("do-work executor selection", () => {
     expect(mockInvokeCodex).not.toHaveBeenCalled();
   });
 
-  it("forwards --silent as non-verbose to Claude", async () => {
+  it("forwards --silent as printSteps:false to Claude", async () => {
     await runDoWork(["--silent"]);
-    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ verbose: false });
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ printSteps: false });
   });
 
   it("uses the configured prompts instead of the defaults", async () => {

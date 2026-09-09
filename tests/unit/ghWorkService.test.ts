@@ -266,8 +266,9 @@ describe("getOpenPrLinkMap", () => {
     expect(calls().some((c) => c.args.includes("cursor=CURSOR1"))).toBe(true);
   });
 
-  it("warns rather than silently dropping links when a PR closes more than 50 issues", async () => {
-    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  it("fails closed when a PR closes more than 50 issues", async () => {
+    // Callers treat absence from the map as proof that an issue has no pull
+    // request, so a partial map is a wrong answer, not a degraded one.
     mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
       json({
         data: {
@@ -286,9 +287,71 @@ describe("getOpenPrLinkMap", () => {
       }),
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
-    getOpenPrLinkMap();
-    expect(warn.mock.calls.flat().join("")).toMatch(/closes more than 50 issues/);
-    warn.mockRestore();
+    expect(() => getOpenPrLinkMap()).toThrow(/closes more than 50 issues/);
+  });
+});
+
+describe("getReviewThreads pagination", () => {
+  const prView = {
+    number: 57,
+    title: "Flag",
+    url: "https://gh/pr/57",
+    headRefName: "feature/042",
+    state: "OPEN",
+    isDraft: false,
+    body: "Closes #42",
+    author: { login: "automata-bot" },
+    createdAt: "2026-01-04T00:00:00Z",
+    updatedAt: "2026-01-08T00:00:00Z",
+    comments: [],
+    reviews: [],
+  };
+
+  function threadPage(path: string, hasNextPage: boolean, endCursor: string | null) {
+    return json({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage, endCursor },
+              nodes: [
+                {
+                  isResolved: false,
+                  isOutdated: false,
+                  path,
+                  line: 1,
+                  comments: { nodes: [{ author: { login: "alice" }, body: "x", createdAt: "2026-01-06T00:00:00Z" }] },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+  }
+
+  it("follows every page, so feedback past thread 100 is not invisible", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(json(prView))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(threadPage("a.ts", true, "T1"))
+      .mockReturnValueOnce(threadPage("b.ts", false, null));
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    const surface = getPrSurface(57);
+    expect(surface.threads.map((t) => t.path)).toEqual(["a.ts", "b.ts"]);
+    expect(calls().some((c) => c.args.includes("cursor=T1"))).toBe(true);
+  });
+
+  it("requests pageInfo so truncation is detectable", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(json(prView))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(threadPage("a.ts", false, null));
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    getPrSurface(57);
+    const query = calls()[2].args.find((arg) => arg.startsWith("query=")) ?? "";
+    expect(query).toContain("pageInfo");
+    expect(query).toContain("after:$cursor");
   });
 });
 

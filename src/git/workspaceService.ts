@@ -5,6 +5,7 @@ import {
   fetchBranch,
   pullFastForwardOnly,
 } from "./gitService.js";
+import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
 
 /**
  * Put the working tree where a turn needs it.
@@ -34,7 +35,7 @@ function dirtyTree(): PrepareResult {
 
 /** Put the tree on the base branch, up to date with the remote. */
 export function prepareBaseBranch(baseBranch: string): PrepareResult {
-  if (hasUncommittedChanges()) return dirtyTree();
+  if (hasUncommittedChanges([RUN_LOCK_RELATIVE_PATH])) return dirtyTree();
 
   const checkout = checkoutBranch(baseBranch);
   if (!checkout.ok) {
@@ -54,7 +55,7 @@ export function prepareBaseBranch(baseBranch: string): PrepareResult {
  * creating the local tracking branch if this checkout has never seen it.
  */
 export function preparePrBranch(headRefName: string): PrepareResult {
-  if (hasUncommittedChanges()) return dirtyTree();
+  if (hasUncommittedChanges([RUN_LOCK_RELATIVE_PATH])) return dirtyTree();
 
   const fetched = fetchBranch(headRefName);
   if (!fetched.ok) {

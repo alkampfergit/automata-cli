@@ -28,7 +28,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--max-runs <n>` | Maximum model runs this tick. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
 | `--dry-run` | Print the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is assigned, posted, edited, deleted, checked out or invoked. |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
-| `--silent` | Suppress step-by-step Claude output; show only the final summary. Ignored by Codex. |
+| `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
 Command-line options take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults.
 
@@ -65,6 +65,8 @@ Resolution for one run is: `--model` if given, else the default for the executor
 
 A login that cannot be determined is accepted with a warning, because a GitHub App installation token legitimately has no user. Authenticate `gh` as the agent account in the harness environment.
 
+The guard applies to real ticks only. `--dry-run` posts nothing, so there is no identity to protect and the plan can always be inspected from a workstation.
+
 Everything under `doWork` is optional and has a working default — see [docs/config.md](config.md#dowork).
 
 ---
@@ -75,15 +77,16 @@ One tick, in order:
 
 1. **Validate** the configuration, resolve both turn prompts, and check that `gh` is not authenticated as an account that may instruct the agent. Any problem exits 1 before anything happens.
 2. **Take the run lock** (`.automata/automata.lock`). If another automata instance holds it, print a message and exit 0 without touching GitHub.
-3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query — every page, because the map is treated as authoritative and a truncated one would make `do-work` start a competing implementation on an issue that already has a pull request.
+3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query. Every page is read, and if the map cannot be read completely the tick **fails** rather than continuing: callers treat absence from it as proof that an issue has no pull request, so a partial map is a wrong answer, not a degraded one. Review threads are paginated for the same reason — feedback past thread 100 would otherwise be invisible to both detection and the prompt.
 4. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
 5. **Process** each work item sequentially:
-   1. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
-   2. assign the issue to the agent, if it is not already assigned;
-   3. post a `working…` marker comment;
-   4. invoke the executor;
-   5. reconcile the marker — delete it if the agent posted an answer, otherwise update it in place to say what happened;
-   6. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
+   1. re-read the issue and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message that arrived in the meantime has to be answered rather than buried behind the marker about to be posted, which would put it behind the boundary forever. An item that stopped being actionable is skipped here;
+   2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
+   3. assign the issue to the agent, if it is not already assigned;
+   4. post a `working…` marker comment;
+   5. invoke the executor;
+   6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
+   7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
 6. **Summarise** and exit.
 
 ---
@@ -155,9 +158,12 @@ After the run, `do-work` re-reads the surface:
 | The agent posted an answer | The marker |
 |---|---|
 | Yes | **Deleted.** The answer is newer and holds the boundary, so the marker is noise. |
-| No | **Updated in place** to say the run finished or failed without producing an answer, and to ask for a reply. |
+| No | **Updated in place** to say the run finished or failed without posting an answer on that surface, to warn that the branch may still have changed, and to ask for a reply. |
+| Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
 
 The marker is deleted only after the answer is confirmed to exist, never on the strength of the executor's exit code — a run can exit non-zero having posted a good reply, and exit zero having posted nothing. Updating keeps the comment's creation time, so a run that produced nothing still holds the boundary and is **not** retried automatically; the updated text is what asks a human to step in.
+
+The update deliberately does not claim that nothing changed: a run can commit and push and merely fail to comment, and a failed run can leave partial work behind. It points at the branch instead.
 
 ---
 

@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,17 @@ import { join } from "node:path";
 
 const LOCK_DIR = ".automata";
 const LOCK_FILE = "automata.lock";
+
+/**
+ * The lock's path relative to the repository root.
+ *
+ * Exported because the working-tree cleanliness check has to exclude it: the
+ * lock is created before that check runs, and in any repository that has not
+ * added it to `.gitignore` itself it would otherwise show up as an untracked
+ * change and every item would be skipped as `dirty-tree`. Adding it to *this*
+ * repository's `.gitignore` does nothing for installations elsewhere.
+ */
+export const RUN_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${LOCK_FILE}`;
 
 export interface LockOwner {
   pid: number;
@@ -110,7 +121,7 @@ function makeHandle(path: string, token: string): LockHandle {
   };
 }
 
-function write(path: string, command: string, token: string): void {
+function write(path: string, command: string, token: string, flag: "wx" | "w" = "wx"): void {
   const owner: LockOwner = {
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -120,7 +131,7 @@ function write(path: string, command: string, token: string): void {
   };
   // "wx" fails if the file exists, and that check-and-create is atomic on every
   // platform we target — which is what makes this a lock rather than a hint.
-  writeFileSync(path, JSON.stringify(owner, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path, JSON.stringify(owner, null, 2) + "\n", { encoding: "utf8", flag });
 }
 
 export function acquireRunLock(command: string, staleMinutes: number): AcquireResult {
@@ -140,28 +151,44 @@ export function acquireRunLock(command: string, staleMinutes: number): AcquireRe
     return { ok: false, heldBy: owner as LockOwner };
   }
 
+  return reclaim(path, command, token);
+}
+
+const UNKNOWN_OWNER: LockOwner = {
+  pid: 0,
+  startedAt: "unknown",
+  host: "unknown",
+  command: "unknown",
+  token: "",
+};
+
+/**
+ * Take over a stale lock atomically.
+ *
+ * Unlinking and then creating is not exclusive: two contenders can both read the
+ * lock as stale, and the second one's unlink deletes the *first* one's freshly
+ * written lock, so both proceed into one checkout. `rename` is atomic and
+ * replaces unconditionally, so instead both contenders write their own
+ * candidate and rename it into place, then read back — exactly one token
+ * survives, and only its owner has the lock.
+ */
+function reclaim(path: string, command: string, token: string): AcquireResult {
+  const candidate = `${path}.${token}`;
   try {
-    unlinkSync(path);
-  } catch {
-    // Someone else reclaimed it first; the retry below will tell us.
+    write(candidate, command, token, "w");
+    renameSync(candidate, path);
+  } catch (err) {
+    try {
+      unlinkSync(candidate);
+    } catch {
+      // Nothing to clean up.
+    }
+    throw err;
   }
 
-  try {
-    write(path, command, token);
+  const winner = readOwner(path);
+  if (winner !== null && winner.token === token) {
     return { ok: true, handle: makeHandle(path, token) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    const winner = readOwner(path);
-    return {
-      ok: false,
-      heldBy:
-        winner ?? {
-          pid: 0,
-          startedAt: new Date().toISOString(),
-          host: "unknown",
-          command: "unknown",
-          token: "",
-        },
-    };
   }
+  return { ok: false, heldBy: winner ?? UNKNOWN_OWNER };
 }

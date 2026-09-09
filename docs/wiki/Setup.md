@@ -8,7 +8,7 @@ From an empty container to a cron-driven loop. Roughly fifteen minutes, most of 
 
 It needs:
 
-- **Node.js LTS (20+)** and automata installed (`npm install -g automata-cli`).
+- **Node.js LTS (18+)**, the baseline stated in `AGENTS.md`, and automata installed (`npm install -g automata-cli`).
 - **`git`**, with the repository cloned and an `origin` remote pointing at GitHub.
 - **The [`gh` CLI](https://cli.github.com/)**, authenticated.
 - **An executor**: `claude` or `codex` on `PATH`.
@@ -43,7 +43,8 @@ gh api user --jq .login    # confirm — this value is your agentUser
 > ```
 >
 > This is also why you cannot usefully run a real tick from your own workstation
-> while logged in as yourself. Dry runs are fine — they post nothing.
+> while logged in as yourself. Dry runs are unaffected — they post nothing, so
+> the guard does not apply to them and `--dry-run` always works.
 
 **Write access matters for one thing:** assignment. `do-work` assigns each issue to the agent so the claim is visible in the issue list. Without write access the assignment fails, and the loop still works — it warns and carries on — but you lose that signal.
 
