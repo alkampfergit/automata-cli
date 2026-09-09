@@ -509,7 +509,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
     expect(lastFrame()).toContain("non-negative whole number");
     // Nothing persisted: an omitted cap would have meant unlimited.
-    expect(vi.mocked(writeConfig).mock.calls.length).toBe(writesBefore);
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
   });
 
   it("rejects a non-positive lock staleness in place", async () => {
@@ -529,7 +529,7 @@ describe("ConfigWizard — Do Work section", () => {
     await tick();
     expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
     expect(lastFrame()).toContain("greater than zero");
-    expect(vi.mocked(writeConfig).mock.calls.length).toBe(writesBefore);
+    expect(vi.mocked(writeConfig).mock.calls).toHaveLength(writesBefore);
   });
 
   it("shows the executor options", async () => {
