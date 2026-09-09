@@ -194,10 +194,11 @@ function resolveSettings(options: DoWorkOptions): Settings {
  * by the previous tick: an unbounded self-triggering loop, and the one
  * misconfiguration the marker design cannot defend against.
  *
- * A login that merely differs from `agentUser` is only a warning: the agent
- * would not recognise its own messages (so it would repeat itself), but nothing
- * escalates. An unknown login is not an error at all — a GitHub App
- * installation token has no user.
+ * Any *known* mismatch is fatal, not just an authorized one: a marker posted
+ * under an account that is neither the agent nor authorized is filtered out of
+ * the conversation entirely, so the boundary never advances and the same message
+ * starts a run on every tick. Only an *unverifiable* login proceeds, with a
+ * warning — a GitHub App installation token legitimately has no user.
  */
 function checkAuthenticatedIdentity(agentUser: string, allowedUsers: string[]): void {
   const login = getAuthenticatedLogin();
@@ -417,11 +418,12 @@ function describePlan(decisions: Decision[]): string {
  * Returns a skip when the issue has since been closed or answered, which is the
  * right outcome: the plan said there was work, and there no longer is.
  */
-function refreshItem(
-  item: WorkItem,
-  settings: Settings,
-  linkMap: Map<number, PullRequestRef[]>,
-): Decision {
+function refreshItem(item: WorkItem, settings: Settings): Decision {
+  // The link map is re-fetched, not reused: if a pull request was opened for
+  // this issue while an earlier item ran, the stale map would still say there is
+  // none and we would run a discussion turn on the base branch — starting a
+  // competing implementation against the branch that already exists.
+  const linkMap = getOpenPrLinkMap();
   return decideWork(
     buildIssueState(item.issue, linkMap),
     settings.participants,
@@ -573,29 +575,37 @@ function repairIssueLink(item: WorkItem, baseBranch: string): void {
 async function processItem(
   planned: WorkItem,
   settings: Settings,
-  linkMap: Map<number, PullRequestRef[]>,
   silent: boolean,
 ): Promise<ItemReport> {
-  const base: Pick<ItemReport, "issue" | "title" | "turn"> = {
-    issue: planned.issue.number,
-    title: planned.issue.title,
-    turn: planned.turn,
-  };
   progress(`\n#${String(planned.issue.number)} ${planned.turn}: ${planned.reason}\n`);
 
   // The tick's plan was built before any model ran, and an earlier item can take
   // a long time. Re-read this issue now, so a message that arrived in the
   // meantime is answered rather than being buried behind the marker we are about
   // to post — which would make it older than the boundary and never new again.
-  const refreshed = refreshItem(planned, settings, linkMap);
+  const refreshed = refreshItem(planned, settings);
   if (refreshed.kind === "skip") {
     progress(`  skipped: ${refreshed.detail}\n`);
-    return { ...base, outcome: "skipped", detail: `no longer actionable: ${refreshed.detail}` };
+    return {
+      issue: planned.issue.number,
+      title: planned.issue.title,
+      turn: planned.turn,
+      outcome: "skipped",
+      detail: `no longer actionable: ${refreshed.detail}`,
+    };
   }
   const item = refreshed.item;
   if (item.turn !== planned.turn) {
     progress(`  turn changed to ${item.turn} since the plan was built; using the current state.\n`);
   }
+
+  // Reported from the refreshed item: the summary must say which turn actually
+  // ran, not the one the stale plan predicted.
+  const base: Pick<ItemReport, "issue" | "title" | "turn"> = {
+    issue: item.issue.number,
+    title: item.issue.title,
+    turn: item.turn,
+  };
 
   const prepared =
     item.turn === "issue-discuss" ? prepareBaseBranch(item.branch) : preparePrBranch(item.branch);
@@ -699,8 +709,18 @@ export const doWorkCommand = new Command("do-work")
       if (shuttingDown) return;
       shuttingDown = true;
       progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
-      void terminateTrackedChildren().then(() => {
-        handle.release();
+      void terminateTrackedChildren().then((allExited) => {
+        if (allExited) {
+          handle.release();
+        } else {
+          // Releasing now would hand the lock to the next tick while a model may
+          // still be running. Leaving it held is the safer failure: it is
+          // reclaimable through the staleness window once this process is gone.
+          progress(
+            "Warning: could not confirm the executor exited; leaving the run lock in place. " +
+              "Check for a stray executor process before the next tick.\n",
+          );
+        }
         process.exit(130);
       });
     };
@@ -741,13 +761,24 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
     return 0;
   }
 
-  const runnable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-  const deferred = items.slice(runnable.length);
-
+  // The cap counts *model runs*, not planned items: an item that turns out not
+  // to be actionable, or that is skipped for a dirty tree or a failed marker,
+  // must not consume a slot — otherwise a tick configured for one run can
+  // perform none while actionable work waits.
   const reports: ItemReport[] = [];
-  for (const item of runnable) {
-    reports.push(await processItem(item, settings, linkMap, options.silent === true));
+  const deferred: WorkItem[] = [];
+  let runsUsed = 0;
+
+  for (const item of items) {
+    if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
+      deferred.push(item);
+      continue;
+    }
+    const report = await processItem(item, settings, options.silent === true);
+    if (report.outcome !== "skipped") runsUsed++;
+    reports.push(report);
   }
+
   for (const item of deferred) {
     progress(`\n#${String(item.issue.number)} deferred: --max-runs / maxRunsPerTick reached.\n`);
     reports.push({

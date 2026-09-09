@@ -25,7 +25,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--model <string>` | Model identifier passed to the executor, overriding the configured default for it. Default: `doWork.models.<executor>`, else the executor's own default. |
 | `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
 | `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
-| `--max-runs <n>` | Maximum model runs this tick. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
+| `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
 | `--dry-run` | Print the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is assigned, posted, edited, deleted, checked out or invoked. |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
@@ -80,7 +80,7 @@ One tick, in order:
 3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query. Every page is read, and if the map cannot be read completely the tick **fails** rather than continuing: callers treat absence from it as proof that an issue has no pull request, so a partial map is a wrong answer, not a degraded one. Review threads are paginated for the same reason — feedback past thread 100 would otherwise be invisible to both detection and the prompt.
 4. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
 5. **Process** each work item sequentially:
-   1. re-read the issue and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message that arrived in the meantime has to be answered rather than buried behind the marker about to be posted, which would put it behind the boundary forever. An item that stopped being actionable is skipped here;
+   1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
    3. assign the issue to the agent, if it is not already assigned;
    4. post a `working…` marker comment;
@@ -179,8 +179,9 @@ A tick is one or more full model sessions, and cron fires on a fixed interval, s
 
 - Another **live** instance holds it → print a message and exit 0. Nothing is assigned, posted or invoked.
 - The lock is **stale** → it is reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness wins over age**: a long-running tick keeps its lock however old it is, because stealing it would put two model sessions in one checkout.
+- Reclaiming a stale lock is exclusive: a contender must first win an atomic rename of the stale file out of the way, and only the winner may create the replacement. Renaming one's *own* candidate over the lock would not be enough — `rename` replaces unconditionally, so two contenders could each write and each read their own token back.
 - Each acquisition records a unique token, and a holder releases only the lock it created — so a holder whose lock was reclaimed cannot evict its replacement on the way out.
-- The lock is released on success, failure and interruption. On `SIGINT`/`SIGTERM` the executor is terminated and awaited **before** the lock is released, so a signalled tick cannot leave a model editing and pushing while the next tick picks up the freed lock.
+- The lock is released on success, failure and interruption. On `SIGINT`/`SIGTERM` the executor is sent `SIGTERM`, escalated to `SIGKILL` if it does not exit, and **awaited** before the lock is released — escalating is not the same as having escalated successfully, since `SIGKILL` is asynchronous. If exit still cannot be confirmed the lock is deliberately **left in place**: handing it to the next tick while a model may still be running is the failure this exists to prevent.
 
 The file is named for automata rather than for `do-work` so other long-running commands can adopt it later. It is git-ignored.
 

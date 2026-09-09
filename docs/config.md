@@ -149,7 +149,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
 | `models.codex` | *(none)* | Default model when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
-| `lockStaleMinutes` | `120` | How long a run lock may be held before it is treated as stale and reclaimed. |
+| `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
 | `prompts.prWork` | built-in | Instructions for a pull-request turn. |
 
@@ -183,4 +183,4 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
-The `Do Work` entry on the main menu sets `baseBranch`, `executor` and `maxRunsPerTick`.
+The `Do Work` entry on the main menu sets `baseBranch`, `executor`, both models, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.

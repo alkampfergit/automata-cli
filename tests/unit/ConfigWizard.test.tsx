@@ -34,6 +34,7 @@ const AGENT_USER_SCREEN_TEXT = "Login the agent posts as:";
 const DO_WORK_BASE_BRANCH_SCREEN_TEXT = "Branch discussion turns return to:";
 const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
+const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
@@ -426,7 +427,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor, both models and run cap, then saves the doWork section", async () => {
+  it("walks base branch, executor, both models, run cap and lock staleness, then saves", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
@@ -461,14 +462,74 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
+    // Lock staleness: clear "120" then type "45".
+    for (let i = 0; i < "120".length; i += 1) stdin.write("\x7f");
+    stdin.write("45");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
     expect(writeConfig).toHaveBeenCalledWith({
       doWork: {
         baseBranch: "main",
         executor: "codex",
         models: { claude: "claude-opus-4-6", codex: "o3" },
         maxRunsPerTick: 2,
+        lockStaleMinutes: 45,
       },
     });
+  });
+
+  it("reaches the lock staleness screen after the run cap", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    for (let i = 0; i < 5; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
+  });
+
+  it("keeps the operator on the run cap screen when the value is malformed", async () => {
+    // An omitted cap means unlimited, so accepting "2abc" would silently remove
+    // the operator'"'"'s spend limit on a typo.
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    // base branch -> executor -> claude model -> codex model -> run cap
+    for (let i = 0; i < 4; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    stdin.write("abc");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_MAX_RUNS_SCREEN_TEXT);
+    expect(lastFrame()).toContain("non-negative whole number");
+    // Nothing persisted: an omitted cap would have meant unlimited.
+    expect(vi.mocked(writeConfig).mock.calls.length).toBe(writesBefore);
+  });
+
+  it("rejects a non-positive lock staleness in place", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const writesBefore = vi.mocked(writeConfig).mock.calls.length;
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    // ...through the run cap to the lock staleness screen
+    for (let i = 0; i < 5; i += 1) {
+      stdin.write(ENTER);
+      await tick();
+    }
+    for (let i = 0; i < "120".length; i += 1) stdin.write("\x7f");
+    stdin.write("0");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
+    expect(lastFrame()).toContain("greater than zero");
+    expect(vi.mocked(writeConfig).mock.calls.length).toBe(writesBefore);
   });
 
   it("shows the executor options", async () => {

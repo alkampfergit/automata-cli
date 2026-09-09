@@ -76,6 +76,7 @@ type Screen =
   | "do-work-claude-model"
   | "do-work-codex-model"
   | "do-work-max-runs"
+  | "do-work-lock-stale"
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt";
 
@@ -142,6 +143,7 @@ interface TextView {
   label: string;
   value: string;
   hint: string;
+  error?: string;
 }
 
 interface MenuView {
@@ -151,7 +153,7 @@ interface MenuView {
   hint: string;
 }
 
-function TextEntryScreen({ title, label, value, hint }: Readonly<TextView>) {
+function TextEntryScreen({ title, label, value, hint, error }: Readonly<TextView>) {
   return (
     <Box flexDirection="column" marginY={1}>
       <Text bold>{title}</Text>
@@ -163,7 +165,7 @@ function TextEntryScreen({ title, label, value, hint }: Readonly<TextView>) {
           <Text>_</Text>
         </Text>
       </Text>
-      <Text> </Text>
+      {error ? <Text color="red">{error}</Text> : <Text> </Text>}
       <Text dimColor>{hint}</Text>
     </Box>
   );
@@ -189,6 +191,14 @@ function MenuEntryScreen({ title, options, index, hint }: Readonly<MenuView>) {
 }
 
 const BACK = "Esc to go back · Ctrl+C to cancel";
+
+/** Parse the whole token, or null. `parseInt` would accept "2abc" and "2.5". */
+function parseWholeInt(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
 
 /** Write a prompt file (when non-empty) and store its filename in the config. */
 function savePrompt(
@@ -239,6 +249,10 @@ export function ConfigWizard() {
   const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(Math.max(initialExecutorIndex, 0));
   const [doWorkClaudeModel, setDoWorkClaudeModel] = useState(existing.doWork?.models?.claude ?? "");
   const [doWorkCodexModel, setDoWorkCodexModel] = useState(existing.doWork?.models?.codex ?? "");
+  const [doWorkLockStale, setDoWorkLockStale] = useState(
+    String(existing.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes),
+  );
+  const [validationError, setValidationError] = useState("");
   const [doWorkMaxRuns, setDoWorkMaxRuns] = useState(
     String(existing.doWork?.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
   );
@@ -353,12 +367,36 @@ export function ConfigWizard() {
       onBack: () => setScreen("do-work-claude-model"),
     },
     "do-work-max-runs": {
-      setValue: setDoWorkMaxRuns,
+      setValue: (update) => {
+        setValidationError("");
+        setDoWorkMaxRuns(update);
+      },
       onSubmit: () => {
-        // Parse the whole value: `parseInt` would turn "2abc" and "2.5" into 2,
-        // unlike `config set do-work-max-runs`.
-        const trimmedMaxRuns = doWorkMaxRuns.trim();
-        const parsedMaxRuns = /^\d+$/.test(trimmedMaxRuns) ? Number(trimmedMaxRuns) : Number.NaN;
+        // Rejected in place rather than saved as `undefined`: an omitted cap
+        // means *unlimited*, so accepting "2abc" would silently remove the
+        // operator's spend limit on a typo.
+        const parsed = parseWholeInt(doWorkMaxRuns);
+        if (parsed === null || parsed < 0) {
+          setValidationError("Enter a non-negative whole number (0 = unlimited).");
+          return;
+        }
+        setValidationError("");
+        setScreen("do-work-lock-stale");
+      },
+      onBack: () => setScreen("do-work-codex-model"),
+    },
+    "do-work-lock-stale": {
+      setValue: (update) => {
+        setValidationError("");
+        setDoWorkLockStale(update);
+      },
+      onSubmit: () => {
+        const parsed = parseWholeInt(doWorkLockStale);
+        if (parsed === null || parsed <= 0) {
+          setValidationError("Enter a whole number of minutes greater than zero.");
+          return;
+        }
+        const maxRuns = parseWholeInt(doWorkMaxRuns);
         const current = readRawConfig();
         writeConfig({
           ...current,
@@ -370,13 +408,13 @@ export function ConfigWizard() {
               claude: doWorkClaudeModel.trim() || undefined,
               codex: doWorkCodexModel.trim() || undefined,
             },
-            maxRunsPerTick:
-              Number.isSafeInteger(parsedMaxRuns) && parsedMaxRuns >= 0 ? parsedMaxRuns : undefined,
+            maxRunsPerTick: maxRuns ?? undefined,
+            lockStaleMinutes: parsed,
           },
         });
         exit();
       },
-      onBack: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-max-runs"),
     },
     "do-work-discuss-prompt": {
       setValue: setDoWorkDiscussPrompt,
@@ -538,6 +576,12 @@ export function ConfigWizard() {
       title: "Do Work — Max Runs Per Tick",
       label: "Model runs allowed per tick (0 = unlimited):",
       value: doWorkMaxRuns,
+      hint: `Type a number · Enter to continue · ${BACK}`,
+    },
+    "do-work-lock-stale": {
+      title: "Do Work — Lock Staleness",
+      label: "Minutes before a run lock from another host is treated as stale:",
+      value: doWorkLockStale,
       hint: `Type a number · Enter to save · ${BACK}`,
     },
     "do-work-discuss-prompt": {
@@ -588,7 +632,7 @@ export function ConfigWizard() {
   };
 
   const textView = textViews[screen];
-  if (textView) return <TextEntryScreen {...textView} />;
+  if (textView) return <TextEntryScreen {...textView} error={validationError} />;
 
   const menuView = menuViews[screen];
   if (menuView) return <MenuEntryScreen {...menuView} />;

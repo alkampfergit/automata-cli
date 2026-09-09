@@ -18,31 +18,55 @@ export function untrackChild(child: ChildProcess): void {
   active.delete(child);
 }
 
-/** Terminate every tracked child and resolve once they have all exited. */
-export function terminateTrackedChildren(timeoutMs = 10_000): Promise<void> {
+function waitForExit(child: ChildProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", () => resolve());
+  });
+}
+
+function afterDelay(ms: number): Promise<"timeout"> {
+  return new Promise<"timeout">((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), ms);
+    timer.unref();
+  });
+}
+
+/**
+ * Terminate every tracked child, and report whether they are all confirmed gone.
+ *
+ * The caller releases the run lock on the strength of this answer, so resolving
+ * before the children have actually exited would hand the lock to the next tick
+ * while a model is still running — the exact thing the registry exists to
+ * prevent. `SIGKILL` is asynchronous, so escalating is not the same as having
+ * escalated successfully: after killing, this keeps waiting, and returns false
+ * if a child still cannot be confirmed dead.
+ */
+export async function terminateTrackedChildren(
+  timeoutMs = 10_000,
+  killGraceMs = 5_000,
+): Promise<boolean> {
   const children = [...active];
-  if (children.length === 0) return Promise.resolve();
+  if (children.length === 0) return true;
 
-  const exits = children.map(
-    (child) =>
-      new Promise<void>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve();
-          return;
-        }
-        child.once("exit", () => resolve());
-        child.kill("SIGTERM");
-      }),
-  );
+  const exits = children.map((child) => waitForExit(child));
+  for (const child of children) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  }
 
-  return Promise.race([
-    Promise.all(exits).then(() => undefined),
-    new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        for (const child of children) child.kill("SIGKILL");
-        resolve();
-      }, timeoutMs);
-      timer.unref();
-    }),
+  const settled = await Promise.race([Promise.all(exits).then(() => "exited" as const), afterDelay(timeoutMs)]);
+  if (settled === "exited") return true;
+
+  for (const child of children) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+
+  const escalated = await Promise.race([
+    Promise.all(exits).then(() => "exited" as const),
+    afterDelay(killGraceMs),
   ]);
+  return escalated === "exited";
 }

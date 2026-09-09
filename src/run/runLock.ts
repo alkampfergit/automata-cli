@@ -163,32 +163,53 @@ const UNKNOWN_OWNER: LockOwner = {
 };
 
 /**
- * Take over a stale lock atomically.
+ * Claim the right to replace a stale lock.
  *
- * Unlinking and then creating is not exclusive: two contenders can both read the
- * lock as stale, and the second one's unlink deletes the *first* one's freshly
- * written lock, so both proceed into one checkout. `rename` is atomic and
- * replaces unconditionally, so instead both contenders write their own
- * candidate and rename it into place, then read back — exactly one token
- * survives, and only its owner has the lock.
+ * This is the mutual-exclusion primitive, and it has to be a single atomic
+ * operation that only one contender can win. Renaming *our own candidate* over
+ * the lock does not qualify: `rename` replaces unconditionally, so two
+ * contenders can each rename and each read their own token back — A reads token
+ * A before B renames, and both conclude they hold the lock.
+ *
+ * Renaming the *existing stale file out of the way* does qualify. The source
+ * either exists or it does not: exactly one contender's rename succeeds, and
+ * every other gets `ENOENT` because the file is already gone. Winning that
+ * rename is what confers the right to create the new lock.
+ *
+ * Exported for tests, which need to drive two contenders against one stale lock
+ * deterministically — the race cannot be reproduced by sequential acquisition.
  */
-function reclaim(path: string, command: string, token: string): AcquireResult {
-  const candidate = `${path}.${token}`;
+export function claimStaleLock(path: string, token: string): boolean {
   try {
-    write(candidate, command, token, "w");
-    renameSync(candidate, path);
+    renameSync(path, `${path}.stale.${token}`);
+    return true;
   } catch (err) {
-    try {
-      unlinkSync(candidate);
-    } catch {
-      // Nothing to clean up.
-    }
+    // ENOENT: another contender claimed it first. Anything else is a real fault.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
+}
 
-  const winner = readOwner(path);
-  if (winner !== null && winner.token === token) {
-    return { ok: true, handle: makeHandle(path, token) };
+function reclaim(path: string, command: string, token: string): AcquireResult {
+  if (!claimStaleLock(path, token)) {
+    // Someone else is taking it over; whatever they write is authoritative.
+    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER };
   }
-  return { ok: false, heldBy: winner ?? UNKNOWN_OWNER };
+
+  const claimed = `${path}.stale.${token}`;
+  try {
+    // The path is free and only this contender may fill it, so "wx" should
+    // succeed; if it does not, a third party got there and owns the lock.
+    write(path, command, token, "wx");
+    return { ok: true, handle: makeHandle(path, token) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER };
+  } finally {
+    try {
+      unlinkSync(claimed);
+    } catch {
+      // Already gone.
+    }
+  }
 }

@@ -786,6 +786,68 @@ describe("do-work queue handling", () => {
     expect(stdout).toMatch(/#44 issue-discuss/);
   });
 
+  it("counts model runs against the cap, not planned items", async () => {
+    // A skipped item must not consume a slot: a tick configured for one run
+    // could otherwise perform none while actionable work waits.
+    mockPrepareBaseBranch
+      .mockReturnValueOnce({ ok: false, reason: "dirty-tree", detail: "uncommitted changes" })
+      .mockReturnValue({ ok: true, branch: "develop" });
+
+    await runDoWork(["--max-runs", "1"]);
+
+    // #42 was skipped without running a model, so #43 still got its run.
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    const prompt = mockInvokeClaude.mock.calls[0][0] as string;
+    expect(prompt).toContain("Issue #43");
+    expect(stdout).toMatch(/#44 issue-discuss deferred/);
+  });
+
+  it("re-resolves the issue-to-pull-request link on refresh, not just the conversation", async () => {
+    // A pull request opened for this issue while an earlier item ran must switch
+    // the turn to pr-work; the plan-time link map would still say there is none
+    // and we would start a competing implementation on the base branch.
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    let mapReads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      mapReads++;
+      // Empty for the plan and #42's refresh; #43 gains a linked PR afterwards.
+      return mapReads >= 3 ? new Map([[43, [PR]]]) : new Map();
+    });
+    gh.getPrSurface.mockReturnValue(
+      prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
+
+    await runDoWork();
+
+    // #43 was planned as a discussion turn and ran as a build turn.
+    expect(mockPreparePrBranch).toHaveBeenCalledWith("feature/042");
+    expect(stderr).toMatch(/turn changed to pr-work/);
+    expect(stdout).toMatch(/#43 pr-work/);
+  });
+
+  it("reports the refreshed turn, not the one the stale plan predicted", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    let mapReads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      mapReads++;
+      // Planned as pr-work; the pull request is merged by the time it runs, so
+      // the turn becomes a discussion — and the report must say so.
+      return mapReads === 1
+        ? new Map([[42, [PR]]])
+        : new Map([[42, [{ ...PR, state: "MERGED" as const }]]]);
+    });
+    gh.getPrSurface.mockReturnValue(
+      prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
+
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as { items: { turn: string }[] };
+    expect(payload.items[0].turn).toBe("issue-discuss");
+  });
+
   it("defers the remainder when --max-runs is reached", async () => {
     await runDoWork(["--max-runs", "2"]);
     expect(mockInvokeClaude).toHaveBeenCalledTimes(2);

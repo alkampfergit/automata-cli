@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { acquireRunLock } from "../../src/run/runLock.js";
+import { acquireRunLock, claimStaleLock } from "../../src/run/runLock.js";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(process.cwd(), "tmp-test-runlock");
@@ -150,6 +150,23 @@ describe("acquireRunLock", () => {
     writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
     mine.handle.release();
     expect(existsSync(lockFile())).toBe(true);
+  });
+
+  it("lets exactly one contender claim a stale lock", () => {
+    // The race cannot be reproduced by sequential acquisition, so the claim
+    // primitive is driven directly: two contenders, one stale lock. Renaming our
+    // own candidate over the lock would let both win, because `rename` replaces
+    // unconditionally; renaming the existing file *away* cannot.
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+
+    const first = claimStaleLock(lockFile(), "token-a");
+    const second = claimStaleLock(lockFile(), "token-b");
+
+    expect([first, second]).toEqual([true, false]);
+  });
+
+  it("reports no claim when there is no stale lock to take over", () => {
+    expect(claimStaleLock(lockFile(), "token-a")).toBe(false);
   });
 
   it("reclaims atomically, so a second contender cannot evict the first", () => {

@@ -17,7 +17,7 @@ Choose the interval from **how long you are willing to wait for a reply**, not f
 - **Another live instance holds it** → the second instance prints who holds it and exits **0** without touching GitHub. Not a failure; nothing is assigned, posted or invoked.
 - **The lock is stale** → reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness takes precedence over age** — a tick that legitimately runs for three hours keeps its lock, because stealing it would put two model sessions in one checkout.
 - **The tick ends** — success, failure, or `SIGINT`/`SIGTERM` → the lock is released. On a signal the executor is stopped and awaited first, so an interrupted tick cannot orphan a model that keeps pushing. Both executors are spawned asynchronously and tracked for exactly this reason; a registry covering only one of them would leave the other able to outlive its parent.
-- Reclaiming a stale lock is atomic (write a candidate, rename it into place, read back the winner), so two contenders cannot both conclude they hold it.
+- Reclaiming a stale lock is exclusive: a contender must win an atomic rename of the stale file out of the way before it may create the replacement, so two contenders cannot both conclude they hold it.
 - The lock file is excluded from the working-tree cleanliness check, so automata'"'"'s own lock can never make the tree look dirty in a repository that has not gitignored it.
 - Each acquisition carries a unique token and releases only its own lock, so a superseded holder cannot evict its replacement.
 
