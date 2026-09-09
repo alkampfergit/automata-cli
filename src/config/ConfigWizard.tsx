@@ -9,8 +9,12 @@ import {
   DEFAULT_SONAR_PROMPT,
   DEFAULT_FIX_COMMENTS_PROMPT,
   DEFAULT_CHECK_ISSUE_PROMPT,
+  DEFAULT_DO_WORK,
+  DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
+  DEFAULT_DO_WORK_PR_WORK_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
+  type Executor,
 } from "./configStore.js";
 
 function writePromptFile(filename: string, content: string): void {
@@ -30,9 +34,22 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
   { label: "By Title Contains", value: "title-contains" },
 ];
 
-const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts", "Issue Watch"] as const;
+const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
+  { label: "Claude Code", value: "claude" },
+  { label: "Codex", value: "codex" },
+];
 
-const PROMPTS_MENU_OPTIONS = ["Sonar", "Fix-Comments", "Check-Issue"] as const;
+// New entries are appended so existing menu positions — and the navigation tests
+// that depend on them — stay valid.
+const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts", "Issue Watch", "Do Work"] as const;
+
+const PROMPTS_MENU_OPTIONS = [
+  "Sonar",
+  "Fix-Comments",
+  "Check-Issue",
+  "Do Work — Discuss",
+  "Do Work — PR",
+] as const;
 
 function parseAllowedUsers(value: string): string[] {
   return value
@@ -52,7 +69,12 @@ type Screen =
   | "fix-comments-prompt"
   | "check-issue-prompt"
   | "allowed-users"
-  | "agent-user";
+  | "agent-user"
+  | "do-work-base-branch"
+  | "do-work-executor"
+  | "do-work-max-runs"
+  | "do-work-discuss-prompt"
+  | "do-work-pr-prompt";
 
 export function ConfigWizard() {
   const existing = readConfig();
@@ -74,6 +96,22 @@ export function ConfigWizard() {
   const [checkIssuePrompt, setCheckIssuePrompt] = useState(existing.prompts?.checkIssue ?? DEFAULT_CHECK_ISSUE_PROMPT);
   const [allowedUsers, setAllowedUsers] = useState((existing.allowedUsers ?? []).join(", "));
   const [agentUser, setAgentUser] = useState(existing.agentUser ?? "");
+  const [doWorkBaseBranch, setDoWorkBaseBranch] = useState(
+    existing.doWork?.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
+  );
+  const initialExecutorIndex = EXECUTOR_OPTIONS.findIndex((o) => o.value === existing.doWork?.executor);
+  const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(
+    initialExecutorIndex >= 0 ? initialExecutorIndex : 0,
+  );
+  const [doWorkMaxRuns, setDoWorkMaxRuns] = useState(
+    String(existing.doWork?.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
+  );
+  const [doWorkDiscussPrompt, setDoWorkDiscussPrompt] = useState(
+    existing.doWork?.prompts?.issueDiscuss ?? DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
+  );
+  const [doWorkPrPrompt, setDoWorkPrPrompt] = useState(
+    existing.doWork?.prompts?.prWork ?? DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  );
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -94,6 +132,8 @@ export function ConfigWizard() {
           setScreen("technique");
         } else if (chosen === "Issue Watch") {
           setScreen("allowed-users");
+        } else if (chosen === "Do Work") {
+          setScreen("do-work-base-branch");
         } else {
           setScreen("prompts-menu");
         }
@@ -176,6 +216,14 @@ export function ConfigWizard() {
         setPromptsMenuIndex((i) => (i < PROMPTS_MENU_OPTIONS.length - 1 ? i + 1 : 0));
       } else if (key.return) {
         const chosen = PROMPTS_MENU_OPTIONS[promptsMenuIndex];
+        if (chosen === "Do Work — Discuss") {
+          setScreen("do-work-discuss-prompt");
+          return;
+        }
+        if (chosen === "Do Work — PR") {
+          setScreen("do-work-pr-prompt");
+          return;
+        }
         if (chosen === "Sonar") {
           setScreen("sonar-prompt");
         } else if (chosen === "Fix-Comments") {
@@ -284,6 +332,103 @@ export function ConfigWizard() {
         exit();
       } else if (input && !key.ctrl && !key.meta) {
         setAgentUser((v) => v + input);
+      }
+    } else if (screen === "do-work-base-branch") {
+      if (key.return) {
+        setScreen("do-work-executor");
+      } else if (key.backspace || key.delete) {
+        setDoWorkBaseBranch((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("main");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkBaseBranch((v) => v + input);
+      }
+    } else if (screen === "do-work-executor") {
+      if (key.upArrow) {
+        setDoWorkExecutorIndex((i) => (i > 0 ? i - 1 : EXECUTOR_OPTIONS.length - 1));
+      } else if (key.downArrow) {
+        setDoWorkExecutorIndex((i) => (i < EXECUTOR_OPTIONS.length - 1 ? i + 1 : 0));
+      } else if (key.return) {
+        setScreen("do-work-max-runs");
+      } else if (key.escape) {
+        setScreen("do-work-base-branch");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      }
+    } else if (screen === "do-work-max-runs") {
+      if (key.return) {
+        const parsedMaxRuns = Number.parseInt(doWorkMaxRuns, 10);
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            baseBranch: doWorkBaseBranch.trim() || undefined,
+            executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
+            maxRunsPerTick: Number.isNaN(parsedMaxRuns) || parsedMaxRuns < 0 ? undefined : parsedMaxRuns,
+          },
+        });
+        exit();
+      } else if (key.backspace || key.delete) {
+        setDoWorkMaxRuns((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("do-work-executor");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkMaxRuns((v) => v + input);
+      }
+    } else if (screen === "do-work-discuss-prompt") {
+      if (key.return) {
+        let discussValue: string | undefined;
+        if (doWorkDiscussPrompt) {
+          writePromptFile("do-work-issue-discuss.md", doWorkDiscussPrompt);
+          discussValue = "do-work-issue-discuss.md";
+        }
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            prompts: { ...current.doWork?.prompts, issueDiscuss: discussValue },
+          },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setDoWorkDiscussPrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkDiscussPrompt((v) => v + input);
+      }
+    } else if (screen === "do-work-pr-prompt") {
+      if (key.return) {
+        let prValue: string | undefined;
+        if (doWorkPrPrompt) {
+          writePromptFile("do-work-pr-work.md", doWorkPrPrompt);
+          prValue = "do-work-pr-work.md";
+        }
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            prompts: { ...current.doWork?.prompts, prWork: prValue },
+          },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setDoWorkPrPrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkPrPrompt((v) => v + input);
       }
     }
   });
@@ -453,6 +598,97 @@ export function ConfigWizard() {
         </Text>
         <Text> </Text>
         <Text dimColor>Type logins · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-base-branch") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Do Work — Base Branch</Text>
+        <Text> </Text>
+        <Text>
+          Branch discussion turns return to:{" "}
+          <Text color="cyan">
+            {doWorkBaseBranch}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type branch · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-executor") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Do Work — Executor</Text>
+        <Text> </Text>
+        {EXECUTOR_OPTIONS.map((option, index) => (
+          <Box key={option.value}>
+            <Text color={index === doWorkExecutorIndex ? "cyan" : undefined}>
+              {index === doWorkExecutorIndex ? "❯ " : "  "}
+              {option.label}
+            </Text>
+          </Box>
+        ))}
+        <Text> </Text>
+        <Text dimColor>↑/↓ to move · Enter to continue · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-max-runs") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Do Work — Max Runs Per Tick</Text>
+        <Text> </Text>
+        <Text>
+          Model runs allowed per tick (0 = unlimited):{" "}
+          <Text color="cyan">
+            {doWorkMaxRuns}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type a number · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-discuss-prompt") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Prompts — Do Work — Discuss</Text>
+        <Text> </Text>
+        <Text>
+          Discussion turn instructions:{" "}
+          <Text color="cyan">
+            {doWorkDiscussPrompt}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
+      </Box>
+    );
+  }
+
+  if (screen === "do-work-pr-prompt") {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        <Text bold>Prompts — Do Work — PR</Text>
+        <Text> </Text>
+        <Text>
+          Pull request turn instructions:{" "}
+          <Text color="cyan">
+            {doWorkPrPrompt}
+            <Text>_</Text>
+          </Text>
+        </Text>
+        <Text> </Text>
+        <Text dimColor>Type prompt · Enter to save · Esc to go back · Ctrl+C to cancel</Text>
       </Box>
     );
   }

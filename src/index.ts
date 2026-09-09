@@ -5,6 +5,7 @@ import { gitCommand } from "./commands/git.js";
 import { implementNextCommand } from "./commands/getReady.js";
 import { executeCommand } from "./commands/execute.js";
 import { executePromptCommand } from "./commands/executePrompt.js";
+import { doWorkCommand } from "./commands/doWork.js";
 
 const program = new Command();
 
@@ -15,6 +16,7 @@ program.addCommand(gitCommand);
 program.addCommand(implementNextCommand);
 program.addCommand(executeCommand);
 program.addCommand(executePromptCommand);
+program.addCommand(doWorkCommand);
 program.showHelpAfterError();
 
 program.parse();
