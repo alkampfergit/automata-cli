@@ -270,6 +270,37 @@ query($owner:String!,$repo:String!,$cursor:String){
 /** Guard against an unbounded loop if the API ever reports hasNextPage forever. */
 const MAX_LINK_MAP_PAGES = 50;
 
+type RawLinkMapNode = RawLinkMapResponse["data"]["repository"]["pullRequests"]["nodes"][number];
+
+/** Record one pull request against every issue it closes. */
+function indexPullRequest(map: Map<number, PullRequestRef[]>, node: RawLinkMapNode): void {
+  const ref: PullRequestRef = {
+    number: node.number,
+    url: node.url,
+    title: node.title,
+    headRefName: node.headRefName,
+    state: "OPEN",
+    isDraft: node.isDraft,
+    updatedAt: node.updatedAt,
+  };
+
+  if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
+    // Pathological, but say so rather than silently dropping links.
+    process.stderr.write(
+      `Warning: pull request #${String(node.number)} closes more than 50 issues; some links were not read.\n`,
+    );
+  }
+
+  for (const issue of node.closingIssuesReferences.nodes) {
+    const existing = map.get(issue.number);
+    if (existing) {
+      existing.push(ref);
+    } else {
+      map.set(issue.number, [ref]);
+    }
+  }
+}
+
 /**
  * Map every open pull request to the issues it closes, inverted so callers can
  * ask "does this issue have a pull request?" for a whole set in one API call.
@@ -293,30 +324,7 @@ export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
     const connection = response.data.repository.pullRequests;
 
     for (const node of connection.nodes) {
-      const ref: PullRequestRef = {
-        number: node.number,
-        url: node.url,
-        title: node.title,
-        headRefName: node.headRefName,
-        state: "OPEN",
-        isDraft: node.isDraft,
-        updatedAt: node.updatedAt,
-      };
-      if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
-        // Pathological, but say so rather than silently dropping links.
-        process.stderr.write(
-          `Warning: pull request #${String(node.number)} closes more than 50 issues; ` +
-            "some links were not read.\n",
-        );
-      }
-      for (const issue of node.closingIssuesReferences.nodes) {
-        const existing = map.get(issue.number);
-        if (existing) {
-          existing.push(ref);
-        } else {
-          map.set(issue.number, [ref]);
-        }
-      }
+      indexPullRequest(map, node);
     }
 
     if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {

@@ -378,6 +378,46 @@ async function navigateToPromptsEntry(stdin: { write: (s: string) => void }, dow
   await tick();
 }
 
+describe("ConfigWizard — list screen back navigation", () => {
+  it("goes back to the main menu from the remote screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back to the main menu from the technique screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back to the main menu from the prompts menu", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsMenu(stdin);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
+  });
+
+  it("goes back from the executor screen to the base branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_BASE_BRANCH_SCREEN_TEXT);
+  });
+});
+
 describe("ConfigWizard — Do Work section", () => {
   it("reaches the base branch screen prefilled with the default", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);

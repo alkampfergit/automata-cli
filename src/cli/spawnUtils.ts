@@ -3,9 +3,13 @@
  * behave identically. Single quotes are literal in POSIX shells apart from the
  * quote character itself, which has to be closed, escaped and reopened.
  */
+const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+/** Close the quote, escape the apostrophe, reopen: `'` becomes `'\''`. */
+const ESCAPED_QUOTE = String.raw`'\''`;
+
 export function shellQuote(arg: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
-  return `'${arg.replaceAll("'", `'\\''`)}'`;
+  if (SHELL_SAFE.test(arg)) return arg;
+  return "'" + arg.replaceAll("'", ESCAPED_QUOTE) + "'";
 }
 
 export function truncate(str: string, max: number): string {

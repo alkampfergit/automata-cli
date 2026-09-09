@@ -255,17 +255,26 @@ function planRun(item: WorkItem, settings: Settings, silent: boolean): PlannedRu
 /** The per-item summary header printed above the command on a dry run. */
 function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun): string {
   const rule = "─".repeat(72);
+  const branchAction = item.turn === "pr-work" ? " and fast-forward" : " and pull";
+  const assignment = item.needsAssignment
+    ? `would assign to ${settings.participants.agentUser}`
+    : "already assigned";
+  const markerTarget =
+    item.turn === "pr-work" && item.pr
+      ? `pull request #${String(item.pr.number)}`
+      : `issue #${String(item.issue.number)}`;
+  const modelNote = settings.model === undefined ? " (no model override)" : ` · model ${settings.model}`;
   const lines = [
     rule,
     `Issue #${String(item.issue.number)} — ${item.issue.title}`,
     rule,
     `  Turn         ${item.turn}`,
     `  Why          ${item.reason}`,
-    `  Branch       ${item.branch} (would check out${item.turn === "pr-work" ? " and fast-forward" : " and pull"})`,
-    `  Assign       ${item.needsAssignment ? `would assign to ${settings.participants.agentUser}` : "already assigned"}`,
-    `  Marker       would post on ${item.turn === "pr-work" && item.pr ? `pull request #${String(item.pr.number)}` : `issue #${String(item.issue.number)}`}`,
-    `  Executor     ${settings.executor}${settings.model === undefined ? " (no model override)" : ` · model ${settings.model}`}`,
-    `  Permissions  bypassed (do-work always runs unattended)`,
+    `  Branch       ${item.branch} (would check out${branchAction})`,
+    `  Assign       ${assignment}`,
+    `  Marker       would post on ${markerTarget}`,
+    `  Executor     ${settings.executor}${modelNote}`,
+    "  Permissions  bypassed (do-work always runs unattended)",
     `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
     "",
     "  Command that would be launched:",
@@ -583,40 +592,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   }
 
   if (options.dryRun) {
-    const runnableInPlan = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-    const planned = runnableInPlan.map((item) => planRun(item, settings, options.silent === true));
-
-    if (options.json) {
-      out(
-        JSON.stringify(
-          {
-            dryRun: true,
-            plan: decisions.map(toPlanJson),
-            runs: planned.map((run, index) => ({
-              issue: runnableInPlan[index].issue.number,
-              turn: runnableInPlan[index].turn,
-              executor: settings.executor,
-              model: settings.model ?? null,
-              bin: run.bin,
-              args: run.args,
-              command: run.command,
-              prompt: run.prompt,
-            })),
-          },
-          null,
-          2,
-        ) + "\n",
-      );
-      return 0;
-    }
-
-    for (const [index, run] of planned.entries()) {
-      out("\n" + describePlannedRun(runnableInPlan[index], settings, run));
-    }
-    if (items.length > runnableInPlan.length) {
-      out(`\n(${String(items.length - runnableInPlan.length)} further item(s) deferred by the run cap.)\n`);
-    }
-    out("\nDry run: nothing was assigned, posted, checked out or executed.\n");
+    reportDryRun(items, decisions, settings, options);
     return 0;
   }
 
@@ -651,6 +627,50 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   }
 
   return exitCode;
+}
+
+/** Print (or emit) what a real tick would do, without doing any of it. */
+function reportDryRun(
+  items: WorkItem[],
+  decisions: Decision[],
+  settings: Settings,
+  options: DoWorkOptions,
+): void {
+  const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
+  const planned = describable.map((item) => planRun(item, settings, options.silent === true));
+
+  if (options.json) {
+    out(
+      JSON.stringify(
+        {
+          dryRun: true,
+          plan: decisions.map(toPlanJson),
+          runs: planned.map((run, index) => ({
+            issue: describable[index].issue.number,
+            turn: describable[index].turn,
+            executor: settings.executor,
+            model: settings.model ?? null,
+            bin: run.bin,
+            args: run.args,
+            command: run.command,
+            prompt: run.prompt,
+          })),
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    return;
+  }
+
+  for (const [index, run] of planned.entries()) {
+    out("\n" + describePlannedRun(describable[index], settings, run));
+  }
+  const deferred = items.length - describable.length;
+  if (deferred > 0) {
+    out(`\n(${String(deferred)} further item(s) deferred by the run cap.)\n`);
+  }
+  out("\nDry run: nothing was assigned, posted, checked out or executed.\n");
 }
 
 function toPlanJson(decision: Decision): Record<string, unknown> {

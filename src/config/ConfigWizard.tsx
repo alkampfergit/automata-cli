@@ -15,6 +15,7 @@ import {
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
+  type AutomataConfig,
 } from "./configStore.js";
 
 function writePromptFile(filename: string, content: string): void {
@@ -78,6 +79,86 @@ type Screen =
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt";
 
+/** The subset of ink's key object this wizard reacts to. */
+interface InkKey {
+  upArrow: boolean;
+  downArrow: boolean;
+  return: boolean;
+  escape: boolean;
+  backspace: boolean;
+  delete: boolean;
+  ctrl: boolean;
+  meta: boolean;
+}
+
+interface TextScreen {
+  setValue: (update: (value: string) => string) => void;
+  onSubmit: () => void;
+  onBack: () => void;
+}
+
+/** Shared behaviour of every text-entry screen. */
+function handleTextEntry(input: string, key: InkKey, screen: TextScreen, cancel: () => void): void {
+  if (key.return) {
+    screen.onSubmit();
+  } else if (key.backspace || key.delete) {
+    screen.setValue((value) => value.slice(0, -1));
+  } else if (key.escape) {
+    screen.onBack();
+  } else if (key.ctrl && input === "c") {
+    cancel();
+  } else if (input && !key.ctrl && !key.meta) {
+    screen.setValue((value) => value + input);
+  }
+}
+
+/** Shared behaviour of every arrow-navigated list screen. */
+function handleMenu(
+  input: string,
+  key: InkKey,
+  index: number,
+  length: number,
+  setIndex: (update: (index: number) => number) => void,
+  cancel: () => void,
+  onSelect: () => void,
+  onBack?: () => void,
+): void {
+  if (key.upArrow) {
+    setIndex((i) => (i > 0 ? i - 1 : length - 1));
+  } else if (key.downArrow) {
+    setIndex((i) => (i < length - 1 ? i + 1 : 0));
+  } else if (key.return) {
+    onSelect();
+  } else if (key.escape) {
+    if (onBack) onBack();
+    else cancel();
+  } else if (key.ctrl && input === "c") {
+    cancel();
+  }
+}
+
+/** Write a prompt file (when non-empty) and store its filename in the config. */
+function savePrompt(
+  filename: string,
+  content: string,
+  merge: (value: string | undefined, current: AutomataConfig) => AutomataConfig,
+): void {
+  let value: string | undefined;
+  if (content) {
+    writePromptFile(filename, content);
+    value = filename;
+  }
+  writeConfig(merge(value, readRawConfig()));
+}
+
+const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Screen> = {
+  Sonar: "sonar-prompt",
+  "Fix-Comments": "fix-comments-prompt",
+  "Check-Issue": "check-issue-prompt",
+  "Do Work — Discuss": "do-work-discuss-prompt",
+  "Do Work — PR": "do-work-pr-prompt",
+};
+
 export function ConfigWizard() {
   const existing = readConfig();
   const rawExisting = readRawConfig();
@@ -121,74 +202,106 @@ export function ConfigWizard() {
   const { exit } = useApp();
 
   /**
-   * The Do Work screens, lifted out of the main key handler: adding them inline
-   * pushed that function past its cognitive-complexity budget.
-   *
-   * Returns true when the key was consumed by one of these screens.
+   * Every text-entry screen behaves identically — type, Enter to advance, Esc to
+   * go back, Ctrl+C to cancel — so they are described as data rather than as a
+   * dozen copies of the same branch chain. Only the list screens, which need
+   * arrow handling, stay in the handler below.
    */
-  const handleDoWorkInput = (input: string, key: { upArrow: boolean; downArrow: boolean; return: boolean; escape: boolean; backspace: boolean; delete: boolean; ctrl: boolean; meta: boolean }): boolean => {
-    if (screen === "do-work-base-branch") {
-      if (key.return) {
-        setScreen("do-work-executor");
-      } else if (key.backspace || key.delete) {
-        setDoWorkBaseBranch((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
+  const textScreens: Partial<Record<Screen, TextScreen>> = {
+    value: {
+      setValue: setDiscoveryValue,
+      onSubmit: () => setScreen("system-prompt"),
+      onBack: () => setScreen("main"),
+    },
+    "system-prompt": {
+      setValue: setSystemPrompt,
+      onSubmit: () => {
+        let claudeSystemPromptValue: string | undefined;
+        if (systemPrompt) {
+          writePromptFile("claude-system-prompt.md", systemPrompt);
+          claudeSystemPromptValue = "claude-system-prompt.md";
+        }
+        writeConfig({
+          ...rawExisting,
+          remoteType: pendingRemote,
+          issueDiscoveryTechnique: pendingTechnique,
+          issueDiscoveryValue: discoveryValue || undefined,
+          claudeSystemPrompt: claudeSystemPromptValue,
+        });
         exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkBaseBranch((v) => v + input);
-      }
-      return true;
-    }
-
-    if (screen === "do-work-executor") {
-      if (key.upArrow) {
-        setDoWorkExecutorIndex((i) => (i > 0 ? i - 1 : EXECUTOR_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setDoWorkExecutorIndex((i) => (i < EXECUTOR_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
-        setScreen("do-work-claude-model");
-      } else if (key.escape) {
-        setScreen("do-work-base-branch");
-      } else if (key.ctrl && input === "c") {
+      },
+      onBack: () => setScreen("main"),
+    },
+    "sonar-prompt": {
+      setValue: setSonarPrompt,
+      onSubmit: () => {
+        savePrompt("sonar-prompt.md", sonarPrompt, (value, current) => ({
+          ...current,
+          prompts: { ...current.prompts, sonar: value },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "fix-comments-prompt": {
+      setValue: setFixCommentsPrompt,
+      onSubmit: () => {
+        savePrompt("fix-comments-prompt.md", fixCommentsPrompt, (value, current) => ({
+          ...current,
+          prompts: { ...current.prompts, fixComments: value },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "check-issue-prompt": {
+      setValue: setCheckIssuePrompt,
+      onSubmit: () => {
+        savePrompt("check-issue-prompt.md", checkIssuePrompt, (value, current) => ({
+          ...current,
+          prompts: { ...current.prompts, checkIssue: value },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "allowed-users": {
+      setValue: setAllowedUsers,
+      onSubmit: () => setScreen("agent-user"),
+      onBack: () => setScreen("main"),
+    },
+    "agent-user": {
+      setValue: setAgentUser,
+      onSubmit: () => {
+        const parsedUsers = parseAllowedUsers(allowedUsers);
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          allowedUsers: parsedUsers.length > 0 ? parsedUsers : undefined,
+          agentUser: agentUser.trim() || undefined,
+        });
         exit();
-      }
-      return true;
-    }
-
-    if (screen === "do-work-claude-model") {
-      if (key.return) {
-        setScreen("do-work-codex-model");
-      } else if (key.backspace || key.delete) {
-        setDoWorkClaudeModel((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("do-work-executor");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkClaudeModel((v) => v + input);
-      }
-      return true;
-    }
-
-    if (screen === "do-work-codex-model") {
-      if (key.return) {
-        setScreen("do-work-max-runs");
-      } else if (key.backspace || key.delete) {
-        setDoWorkCodexModel((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("do-work-claude-model");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkCodexModel((v) => v + input);
-      }
-      return true;
-    }
-
-    if (screen === "do-work-max-runs") {
-      if (key.return) {
+      },
+      onBack: () => setScreen("allowed-users"),
+    },
+    "do-work-base-branch": {
+      setValue: setDoWorkBaseBranch,
+      onSubmit: () => setScreen("do-work-executor"),
+      onBack: () => setScreen("main"),
+    },
+    "do-work-claude-model": {
+      setValue: setDoWorkClaudeModel,
+      onSubmit: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-executor"),
+    },
+    "do-work-codex-model": {
+      setValue: setDoWorkCodexModel,
+      onSubmit: () => setScreen("do-work-max-runs"),
+      onBack: () => setScreen("do-work-claude-model"),
+    },
+    "do-work-max-runs": {
+      setValue: setDoWorkMaxRuns,
+      onSubmit: () => {
         const parsedMaxRuns = Number.parseInt(doWorkMaxRuns, 10);
         const current = readRawConfig();
         writeConfig({
@@ -205,294 +318,92 @@ export function ConfigWizard() {
           },
         });
         exit();
-      } else if (key.backspace || key.delete) {
-        setDoWorkMaxRuns((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("do-work-codex-model");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkMaxRuns((v) => v + input);
-      }
-      return true;
-    }
-
-    if (screen === "do-work-discuss-prompt") {
-      if (key.return) {
-        let discussValue: string | undefined;
-        if (doWorkDiscussPrompt) {
-          writePromptFile("do-work-issue-discuss.md", doWorkDiscussPrompt);
-          discussValue = "do-work-issue-discuss.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
+      },
+      onBack: () => setScreen("do-work-codex-model"),
+    },
+    "do-work-discuss-prompt": {
+      setValue: setDoWorkDiscussPrompt,
+      onSubmit: () => {
+        savePrompt("do-work-issue-discuss.md", doWorkDiscussPrompt, (value, current) => ({
           ...current,
-          doWork: {
-            ...current.doWork,
-            prompts: { ...current.doWork?.prompts, issueDiscuss: discussValue },
-          },
-        });
+          doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, issueDiscuss: value } },
+        }));
         setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setDoWorkDiscussPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkDiscussPrompt((v) => v + input);
-      }
-      return true;
-    }
-
-    if (screen === "do-work-pr-prompt") {
-      if (key.return) {
-        let prValue: string | undefined;
-        if (doWorkPrPrompt) {
-          writePromptFile("do-work-pr-work.md", doWorkPrPrompt);
-          prValue = "do-work-pr-work.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "do-work-pr-prompt": {
+      setValue: setDoWorkPrPrompt,
+      onSubmit: () => {
+        savePrompt("do-work-pr-work.md", doWorkPrPrompt, (value, current) => ({
           ...current,
-          doWork: {
-            ...current.doWork,
-            prompts: { ...current.doWork?.prompts, prWork: prValue },
-          },
-        });
+          doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, prWork: value } },
+        }));
         setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setDoWorkPrPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkPrPrompt((v) => v + input);
-      }
-      return true;
-    }
-
-    return false;
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
   };
 
   useInput((input, key) => {
-    if (handleDoWorkInput(input, key)) return;
+    const textScreen = textScreens[screen];
+    if (textScreen) {
+      handleTextEntry(input, key, textScreen, exit);
+      return;
+    }
 
     if (screen === "main") {
-      if (key.upArrow) {
-        setMainMenuIndex((i) => (i > 0 ? i - 1 : MAIN_MENU_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setMainMenuIndex((i) => (i < MAIN_MENU_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
+      handleMenu(input, key, mainMenuIndex, MAIN_MENU_OPTIONS.length, setMainMenuIndex, exit, () => {
         const chosen = MAIN_MENU_OPTIONS[mainMenuIndex];
-        if (chosen === "Remote / Mode") {
-          setScreen("remote");
-        } else if (chosen === "Implement-Next") {
-          setScreen("technique");
-        } else if (chosen === "Issue Watch") {
-          setScreen("allowed-users");
-        } else if (chosen === "Do Work") {
-          setScreen("do-work-base-branch");
-        } else {
-          setScreen("prompts-menu");
-        }
-      } else if (key.escape || (key.ctrl && input === "c")) {
-        exit();
-      }
+        if (chosen === "Remote / Mode") setScreen("remote");
+        else if (chosen === "Implement-Next") setScreen("technique");
+        else if (chosen === "Issue Watch") setScreen("allowed-users");
+        else if (chosen === "Do Work") setScreen("do-work-base-branch");
+        else setScreen("prompts-menu");
+      });
     } else if (screen === "remote") {
-      if (key.upArrow) {
-        setSelectedRemoteIndex((i) => (i > 0 ? i - 1 : REMOTE_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setSelectedRemoteIndex((i) => (i < REMOTE_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
-        const chosen = REMOTE_OPTIONS[selectedRemoteIndex];
-        setPendingRemote(chosen.value);
-        if (chosen.value === "gh") {
+      handleMenu(
+        input,
+        key,
+        selectedRemoteIndex,
+        REMOTE_OPTIONS.length,
+        setSelectedRemoteIndex,
+        exit,
+        () => {
+          setPendingRemote(REMOTE_OPTIONS[selectedRemoteIndex].value);
           setScreen("technique");
-        } else {
-          writeConfig({ ...rawExisting, remoteType: chosen.value });
-          exit();
-        }
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      }
+        },
+        () => setScreen("main"),
+      );
     } else if (screen === "technique") {
-      if (key.upArrow) {
-        setSelectedTechIndex((i) => (i > 0 ? i - 1 : TECHNIQUE_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setSelectedTechIndex((i) => (i < TECHNIQUE_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
-        const chosen = TECHNIQUE_OPTIONS[selectedTechIndex];
-        setPendingTechnique(chosen.value);
-        setScreen("value");
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      }
-    } else if (screen === "value") {
-      if (key.return) {
-        setScreen("system-prompt");
-      } else if (key.backspace || key.delete) {
-        setDiscoveryValue((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDiscoveryValue((v) => v + input);
-      }
-    } else if (screen === "system-prompt") {
-      if (key.return) {
-        let claudeSystemPromptValue: string | undefined;
-        if (systemPrompt) {
-          writePromptFile("claude-system-prompt.md", systemPrompt);
-          claudeSystemPromptValue = "claude-system-prompt.md";
-        }
-        writeConfig({
-          ...rawExisting,
-          remoteType: pendingRemote,
-          issueDiscoveryTechnique: pendingTechnique,
-          issueDiscoveryValue: discoveryValue || undefined,
-          claudeSystemPrompt: claudeSystemPromptValue,
-        });
-        exit();
-      } else if (key.backspace || key.delete) {
-        setSystemPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setSystemPrompt((v) => v + input);
-      }
+      handleMenu(
+        input,
+        key,
+        selectedTechIndex,
+        TECHNIQUE_OPTIONS.length,
+        setSelectedTechIndex,
+        exit,
+        () => {
+          setPendingTechnique(TECHNIQUE_OPTIONS[selectedTechIndex].value);
+          setScreen("value");
+        },
+        () => setScreen("main"),
+      );
     } else if (screen === "prompts-menu") {
-      if (key.upArrow) {
-        setPromptsMenuIndex((i) => (i > 0 ? i - 1 : PROMPTS_MENU_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setPromptsMenuIndex((i) => (i < PROMPTS_MENU_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
-        const chosen = PROMPTS_MENU_OPTIONS[promptsMenuIndex];
-        if (chosen === "Do Work — Discuss") {
-          setScreen("do-work-discuss-prompt");
-          return;
-        }
-        if (chosen === "Do Work — PR") {
-          setScreen("do-work-pr-prompt");
-          return;
-        }
-        if (chosen === "Sonar") {
-          setScreen("sonar-prompt");
-        } else if (chosen === "Fix-Comments") {
-          setScreen("fix-comments-prompt");
-        } else {
-          setScreen("check-issue-prompt");
-        }
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      }
-    } else if (screen === "sonar-prompt") {
-      if (key.return) {
-        let sonarValue: string | undefined;
-        if (sonarPrompt) {
-          writePromptFile("sonar-prompt.md", sonarPrompt);
-          sonarValue = "sonar-prompt.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          prompts: { ...current.prompts, sonar: sonarValue },
-        });
-        setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setSonarPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setSonarPrompt((v) => v + input);
-      }
-    } else if (screen === "fix-comments-prompt") {
-      if (key.return) {
-        let fixCommentsValue: string | undefined;
-        if (fixCommentsPrompt) {
-          writePromptFile("fix-comments-prompt.md", fixCommentsPrompt);
-          fixCommentsValue = "fix-comments-prompt.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          prompts: { ...current.prompts, fixComments: fixCommentsValue },
-        });
-        setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setFixCommentsPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setFixCommentsPrompt((v) => v + input);
-      }
-    } else if (screen === "check-issue-prompt") {
-      if (key.return) {
-        let checkIssueValue: string | undefined;
-        if (checkIssuePrompt) {
-          writePromptFile("check-issue-prompt.md", checkIssuePrompt);
-          checkIssueValue = "check-issue-prompt.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          prompts: { ...current.prompts, checkIssue: checkIssueValue },
-        });
-        setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setCheckIssuePrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setCheckIssuePrompt((v) => v + input);
-      }
-    } else if (screen === "allowed-users") {
-      if (key.return) {
-        setScreen("agent-user");
-      } else if (key.backspace || key.delete) {
-        setAllowedUsers((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setAllowedUsers((v) => v + input);
-      }
-    } else if (screen === "agent-user") {
-      if (key.return) {
-        const parsedUsers = parseAllowedUsers(allowedUsers);
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          allowedUsers: parsedUsers.length > 0 ? parsedUsers : undefined,
-          agentUser: agentUser.trim() || undefined,
-        });
-        exit();
-      } else if (key.backspace || key.delete) {
-        setAgentUser((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("allowed-users");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setAgentUser((v) => v + input);
-      }
+      handleMenu(input, key, promptsMenuIndex, PROMPTS_MENU_OPTIONS.length, setPromptsMenuIndex, exit, () => {
+        setScreen(PROMPT_SCREEN_BY_OPTION[PROMPTS_MENU_OPTIONS[promptsMenuIndex]]);
+      }, () => setScreen("main"));
+    } else if (screen === "do-work-executor") {
+      handleMenu(
+        input,
+        key,
+        doWorkExecutorIndex,
+        EXECUTOR_OPTIONS.length,
+        setDoWorkExecutorIndex,
+        exit,
+        () => setScreen("do-work-claude-model"),
+        () => setScreen("do-work-base-branch"),
+      );
     }
   });
 
