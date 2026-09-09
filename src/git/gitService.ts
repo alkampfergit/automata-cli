@@ -774,8 +774,14 @@ export function isUpstreamGone(branch: string): boolean {
   return status !== 0;
 }
 
-export function hasUncommittedChanges(): boolean {
-  const { stdout } = run("git", ["status", "--porcelain"]);
+export function hasUncommittedChanges(excludePaths: string[] = []): boolean {
+  const args = ["status", "--porcelain"];
+  if (excludePaths.length > 0) {
+    // Pathspec magic, so a file automata created itself cannot make the tree
+    // look dirty to automata.
+    args.push("--", ".", ...excludePaths.map((path) => `:(exclude)${path}`));
+  }
+  const { stdout } = run("git", args);
   return stdout.trim().length > 0;
 }
 
@@ -788,6 +794,48 @@ export function checkoutAndPull(targetBranch: string): void {
   if (pull.status !== 0) {
     throw new Error(`Failed to pull ${targetBranch}: ${pull.stderr.trim()}`);
   }
+}
+
+export interface GitCommandResult {
+  ok: boolean;
+  stderr: string;
+}
+
+function gitCommand(args: string[]): GitCommandResult {
+  const { stderr, status } = run("git", args);
+  return { ok: status === 0, stderr: stderr.trim() };
+}
+
+/** `git checkout <branch>` — does not create the branch. */
+export function checkoutBranch(branch: string): GitCommandResult {
+  return gitCommand(["checkout", branch]);
+}
+
+/** `git checkout -b <branch> origin/<branch>` — create a local tracking branch. */
+export function createTrackingBranch(branch: string): GitCommandResult {
+  return gitCommand(["checkout", "-b", branch, `origin/${branch}`]);
+}
+
+/**
+ * Fetch a branch *into its remote-tracking ref*.
+ *
+ * `git fetch origin <branch>` writes only `FETCH_HEAD`, so for a branch created
+ * after this checkout was cloned it would succeed while leaving
+ * `refs/remotes/origin/<branch>` absent — and `createTrackingBranch` would then
+ * fail. That is the common case for `do-work`: the branch was made on another
+ * machine. The refspec is forced so a force-pushed pull request branch updates
+ * rather than being rejected as a non-fast-forward.
+ */
+export function fetchBranch(branch: string): GitCommandResult {
+  return gitCommand(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+}
+
+/**
+ * `git pull --ff-only` — fast-forward only, so a diverged branch fails loudly
+ * instead of being silently merged by an unattended tool.
+ */
+export function pullFastForwardOnly(branch?: string): GitCommandResult {
+  return gitCommand(branch === undefined ? ["pull", "--ff-only"] : ["pull", "--ff-only", "origin", branch]);
 }
 
 export function fetchPrune(): void {

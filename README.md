@@ -115,14 +115,21 @@ See [docs/execute.md](docs/execute.md) for full details.
 
 ## `automata execute-prompt`
 
-Run predefined AI workflows that gather context from the current branch before invoking Claude or Codex.
+Run predefined AI workflows that gather context from the current branch's PR — or from a GitHub issue's conversation — before invoking Claude or Codex.
 
 ```bash
 automata execute-prompt sonar --with claude
 automata execute-prompt fix-comments --with codex --model o3
+automata execute-prompt check-issue 34 --with claude
 ```
 
 See [docs/execute-prompt.md](docs/execute-prompt.md) for full details.
+
+---
+
+## `automata do-work`
+
+One tick of the autonomous loop: answer the open issues whose newest message from an authorized account the agent has not answered. Reference: [docs/do-work.md](docs/do-work.md). Process, trust model and setup: [the wiki](docs/wiki/Home.md).
 
 ---
 
@@ -136,10 +143,18 @@ See [docs/execute-prompt.md](docs/execute-prompt.md) for full details.
 ### Setup
 
 ```bash
-git clone https://github.com/alkampfergit/automata-cli.git
+git clone --recurse-submodules https://github.com/alkampfergit/automata-cli.git
 cd automata-cli
 npm install
 ```
+
+Already cloned without `--recurse-submodules`? Fetch the vendored agent plugins with:
+
+```bash
+git submodule update --init --recursive
+```
+
+`vendor/agent-plugins-base` is registered in `.claude/settings.json` as a project-scope Claude Code marketplace, and the `github-alk` plugin is enabled from it — so its skills load for anyone working in this repository. See [docs/plugins.md](docs/plugins.md).
 
 ### Scripts
 
@@ -150,6 +165,8 @@ npm install
 | `npm run lint` | Lint source files with ESLint |
 | `npm run typecheck` | Type-check with tsc (no emit) |
 | `npm run format` | Check formatting with Prettier |
+
+Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
 
 ## License
 

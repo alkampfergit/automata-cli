@@ -8,6 +8,49 @@ export type IssueDiscoveryTechnique = "label" | "assignee" | "title-contains";
 export interface AutomataPrompts {
   sonar?: string;
   fixComments?: string;
+  checkIssue?: string;
+}
+
+/** The two kinds of turn `do-work` can run on an issue. */
+export type TurnKind = "issue-discuss" | "pr-work";
+
+export type Executor = "claude" | "codex";
+
+/**
+ * Turn instructions for `do-work`, as prompt text or a `.md` filename inside
+ * `.automata/`. These prompts are where a skill gets named — automata itself
+ * has no concept of a skill.
+ */
+export interface DoWorkPrompts {
+  issueDiscuss?: string;
+  prWork?: string;
+}
+
+/**
+ * Default model per executor. One shared field would be wrong: a Claude model
+ * identifier handed to Codex (or the reverse) is not a valid model there, so
+ * switching executor would silently pass nonsense.
+ */
+export interface DoWorkModels {
+  claude?: string;
+  codex?: string;
+}
+
+export interface AutomataDoWorkConfig {
+  baseBranch?: string;
+  /**
+   * Branches a build turn must never check out and push to, beyond the base and
+   * the repository default. In GitFlow the default branch is often `develop`, so
+   * relying on it alone leaves `main` unguarded — and a back-merge pull request
+   * `main -> develop` carrying `Closes #N` would otherwise be worked on `main`.
+   */
+  protectedBranches?: string[];
+  executor?: Executor;
+  models?: DoWorkModels;
+  /** 0 means unlimited. */
+  maxRunsPerTick?: number;
+  lockStaleMinutes?: number;
+  prompts?: DoWorkPrompts;
 }
 
 export interface AutomataConfig {
@@ -15,7 +58,10 @@ export interface AutomataConfig {
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
   issueDiscoveryValue?: string;
   claudeSystemPrompt?: string;
+  allowedUsers?: string[];
+  agentUser?: string;
   prompts?: AutomataPrompts;
+  doWork?: AutomataDoWorkConfig;
 }
 
 export const DEFAULT_CLAUDE_SYSTEM_PROMPT =
@@ -39,6 +85,47 @@ export const DEFAULT_SONAR_PROMPT =
   "Fix all new issues and quality-gate failures reported. " +
   "Focus on code smells, bugs, vulnerabilities, and blocking quality-gate conditions flagged in this PR. " +
   "Make targeted, minimal changes that resolve each issue without altering unrelated code.";
+
+export const DEFAULT_CHECK_ISSUE_PROMPT =
+  "You are an expert software engineer working on a GitHub issue. " +
+  "Below is the conversation on that issue, restricted to the people allowed to instruct you and your own previous replies. " +
+  "Messages marked as new arrived after your last run: treat them as the current instruction and read the earlier messages only as context. " +
+  "Do what the new messages ask, following the project's existing conventions and style, and make minimal, targeted changes. " +
+  "Run tests and linting before finishing, then reply on the issue with a short summary of what you did.";
+
+export const DEFAULT_DO_WORK = {
+  baseBranch: "develop",
+  protectedBranches: ["main", "master"],
+  executor: "claude" as Executor,
+  maxRunsPerTick: 0,
+  lockStaleMinutes: 120,
+};
+
+/**
+ * Default instructions for a discuss turn. States the turn boundary and names
+ * no skill, so `do-work` behaves correctly with no plugins installed.
+ */
+export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
+  "You are the agent named in the context below, working on a GitHub issue together with the people allowed to instruct you. " +
+  "Answer the messages marked NEW; the earlier messages are context only.\n\n" +
+  "Do not modify, create or delete any file, and do not create a branch or a pull request, " +
+  "UNLESS a message marked NEW explicitly asks you to implement the work. " +
+  "If it does: create a branch off the base branch named below, implement the change following the project's existing conventions, " +
+  "run the tests and the linter, and open a pull request whose body contains `Closes #<issue number>`.\n\n" +
+  "Otherwise do not touch the code at all: reply on the issue with the specification, the plan, or the open questions you need answered. " +
+  "Keep the reply short and concrete.\n\n" +
+  "Either way, always post a reply on the issue before you finish — including when you implemented and opened a pull request. " +
+  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.";
+
+/** Default instructions for a build turn on an existing pull request. */
+export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
+  "You are the agent named in the context below, working on the pull request for a GitHub issue together with the people allowed to instruct you. " +
+  "Work on the branch named below, which is already checked out and up to date.\n\n" +
+  "Address every message marked NEW and every unresolved review thread listed. " +
+  "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch. " +
+  "Do not merge the pull request and do not push to the base branch.\n\n" +
+  "Reply on the pull request with a short summary of what you changed, or reply in the review thread when your answer belongs to a specific comment. " +
+  "Always post a reply — silence looks like a crash.";
 
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
@@ -107,6 +194,17 @@ export function readConfig(): AutomataConfig {
   }
   if (config.prompts?.fixComments) {
     config.prompts.fixComments = resolvePromptRef(config.prompts.fixComments, dir);
+  }
+  if (config.prompts?.checkIssue) {
+    config.prompts.checkIssue = resolvePromptRef(config.prompts.checkIssue, dir);
+  }
+  // `do-work` treats an unresolvable prompt as fatal rather than falling back to
+  // the built-in default, so these throws are deliberately left to propagate.
+  if (config.doWork?.prompts?.issueDiscuss) {
+    config.doWork.prompts.issueDiscuss = resolvePromptRef(config.doWork.prompts.issueDiscuss, dir);
+  }
+  if (config.doWork?.prompts?.prWork) {
+    config.doWork.prompts.prWork = resolvePromptRef(config.doWork.prompts.prWork, dir);
   }
   return config;
 }

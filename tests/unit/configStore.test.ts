@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { readConfig, readRawConfig, writeConfig, resolvePromptRef } from "../../src/config/configStore.js";
+import {
+  readConfig,
+  readRawConfig,
+  writeConfig,
+  resolvePromptRef,
+  DEFAULT_DO_WORK,
+  DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
+  DEFAULT_DO_WORK_PR_WORK_PROMPT,
+} from "../../src/config/configStore.js";
 
 const TEST_DIR = join(process.cwd(), ".automata-test");
 
@@ -106,6 +114,22 @@ describe("prompts config field", () => {
   });
 });
 
+describe("allowedUsers and agentUser config fields", () => {
+  it("round-trips allowedUsers and agentUser", () => {
+    writeConfig({ allowedUsers: ["alice", "bob"], agentUser: "agent-bot" });
+    expect(readConfig()).toEqual({ allowedUsers: ["alice", "bob"], agentUser: "agent-bot" });
+  });
+
+  it("preserves them alongside other fields", () => {
+    writeConfig({ remoteType: "gh", agentUser: "agent-bot", prompts: { checkIssue: "Inline prompt." } });
+    expect(readConfig()).toEqual({
+      remoteType: "gh",
+      agentUser: "agent-bot",
+      prompts: { checkIssue: "Inline prompt." },
+    });
+  });
+});
+
 describe("DEFAULT_SONAR_PROMPT", () => {
   it("is exported and non-empty", async () => {
     const { DEFAULT_SONAR_PROMPT } = await import("../../src/config/configStore.js");
@@ -198,6 +222,15 @@ describe("readConfig with .md file references", () => {
     expect(readConfig()).toEqual({ prompts: { sonar: "Fix sonar issues" } });
   });
 
+  it("resolves prompts.checkIssue file reference", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "check-issue-prompt.md"), "Act on new issue messages");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ prompts: { checkIssue: "check-issue-prompt.md" } }),
+    );
+    expect(readConfig()).toEqual({ prompts: { checkIssue: "Act on new issue messages" } });
+  });
+
   it("resolves prompts.fixComments file reference", () => {
     writeFileSync(join(TEST_CWD, ".automata", "fix-comments-prompt.md"), "Fix PR comments");
     writeFileSync(
@@ -237,5 +270,93 @@ describe("readRawConfig", () => {
 
   it("returns empty object when no config exists", () => {
     expect(readRawConfig()).toEqual({});
+  });
+});
+
+describe("doWork configuration", () => {
+  beforeEach(() => {
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+  });
+
+  it("exposes documented defaults", () => {
+    expect(DEFAULT_DO_WORK).toEqual({
+      baseBranch: "develop",
+      protectedBranches: ["main", "master"],
+      executor: "claude",
+      maxRunsPerTick: 0,
+      lockStaleMinutes: 120,
+    });
+  });
+
+  it("ships default turn prompts that state their boundary and name no skill", () => {
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/Do not modify, create or delete any file/);
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/Closes #/);
+    expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/Do not merge the pull request/);
+    expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/do not push to the base branch/);
+    // The defaults must work with no plugin installed, so they name no skill.
+    for (const prompt of [DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT, DEFAULT_DO_WORK_PR_WORK_PROMPT]) {
+      expect(prompt).not.toMatch(/skill/i);
+    }
+  });
+
+  it("round-trips the doWork section", () => {
+    const doWork = {
+      baseBranch: "main",
+      executor: "codex" as const,
+      models: { claude: "claude-opus-4-6", codex: "o3" },
+      maxRunsPerTick: 2,
+      lockStaleMinutes: 30,
+    };
+    writeConfig({ doWork });
+    expect(readConfig().doWork).toEqual(doWork);
+  });
+
+  it("resolves doWork.prompts.issueDiscuss file reference", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "discuss.md"), "Discuss only");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { issueDiscuss: "discuss.md" } } }),
+    );
+    expect(readConfig().doWork?.prompts?.issueDiscuss).toBe("Discuss only");
+  });
+
+  it("resolves doWork.prompts.prWork file reference", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "pr.md"), "Fix the review comments");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { prWork: "pr.md" } } }),
+    );
+    expect(readConfig().doWork?.prompts?.prWork).toBe("Fix the review comments");
+  });
+
+  it("keeps inline doWork prompts unchanged", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { issueDiscuss: "Talk, do not code." } } }),
+    );
+    expect(readConfig().doWork?.prompts?.issueDiscuss).toBe("Talk, do not code.");
+  });
+
+  // `do-work` must refuse a tick rather than silently running the built-in
+  // default, so resolution failures have to propagate out of readConfig().
+  it("throws when a doWork prompt file is missing", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { issueDiscuss: "missing.md" } } }),
+    );
+    expect(() => readConfig()).toThrow(/missing\.md/);
+  });
+
+  it("throws when a doWork prompt file escapes .automata/", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { prWork: "../escape.md" } } }),
+    );
+    expect(() => readConfig()).toThrow(/plain filename/);
+  });
+
+  it("leaves the doWork section absent when not configured", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "config.json"), JSON.stringify({ remoteType: "gh" }));
+    expect(readConfig().doWork).toBeUndefined();
   });
 });

@@ -8,6 +8,34 @@ export interface GitHubIssue {
   url: string;
 }
 
+export interface IssueComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface IssueConversation {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  author: string;
+  createdAt: string;
+  comments: IssueComment[];
+}
+
+/** Shape returned by `gh issue view --json`, before author logins are flattened. */
+interface RawIssueView {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  author?: { login?: string };
+  createdAt: string;
+  comments?: { id: string; author?: { login?: string }; body: string; createdAt: string }[];
+}
+
 const GITHUB_ISSUE_COMMENT_URL_RE = /github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)/;
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
@@ -58,6 +86,41 @@ export function listIssues(technique: IssueDiscoveryTechnique, value: string, li
   }
 
   return JSON.parse(stdout) as GitHubIssue[];
+}
+
+/**
+ * Read a single issue together with its comments, oldest comment first.
+ * Author logins are flattened to plain strings; an unknown author becomes "".
+ */
+export function getIssueConversation(issueNumber: number): IssueConversation {
+  const { stdout, stderr, status } = run("gh", [
+    "issue", "view", String(issueNumber),
+    "--json", "number,title,body,url,author,createdAt,comments",
+  ]);
+
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to read issue #${issueNumber}. Is \`gh\` installed and authenticated?`);
+  }
+
+  const raw = JSON.parse(stdout) as RawIssueView;
+  const comments: IssueComment[] = (raw.comments ?? [])
+    .map((comment) => ({
+      id: comment.id,
+      author: comment.author?.login ?? "",
+      body: comment.body,
+      createdAt: comment.createdAt,
+    }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  return {
+    number: raw.number,
+    title: raw.title,
+    body: raw.body,
+    url: raw.url,
+    author: raw.author?.login ?? "",
+    createdAt: raw.createdAt,
+    comments,
+  };
 }
 
 /**

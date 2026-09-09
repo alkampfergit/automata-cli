@@ -1,6 +1,6 @@
 # automata execute-prompt
 
-AI-powered prompt execution commands. These commands look up context from the current branch (e.g. a SonarCloud analysis URL or open review comments) and invoke an AI assistant with a pre-configured prompt.
+AI-powered prompt execution commands. These commands look up context from the remote — the current branch's pull request (a SonarCloud analysis URL, open review comments) or a named issue's conversation — and invoke an AI assistant with a pre-configured prompt.
 
 ---
 
@@ -97,3 +97,88 @@ If no custom prompt is configured, the built-in default is used:
 | `1` | No current branch, no PR found, no open comments found, unsupported remote, or AI tool error |
 
 > **Note**: `fix-comments` is not supported for Azure DevOps remotes.
+
+---
+
+## `automata execute-prompt check-issue <issue-number>`
+
+Read a GitHub issue, decide whether one of the configured allowed users has posted a message since the agent's last run, and — if so — invoke the AI assistant with the configured Check-Issue prompt and the issue conversation.
+
+```bash
+automata execute-prompt check-issue 34 --with claude
+automata execute-prompt check-issue 34 --with codex --model o3
+automata execute-prompt check-issue 34 --with claude --force
+automata execute-prompt check-issue 34 --with claude --push
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--with <executor>` | Required executor selector: `claude` or `codex` |
+| `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
+| `--push` | Append instruction to commit and push changes after the AI finishes |
+| `--force` | Skip the new-message check and invoke the AI directly |
+
+### Required configuration
+
+| Key | Description |
+|---|---|
+| `allowedUsers` | Logins allowed to instruct the agent on an issue. Their messages both trigger runs and appear in the prompt. |
+| `agentUser` | The login the agent posts as. Used as the last-execution boundary and included in the conversation. |
+
+Set them with `automata config set allowed-users alice,bob` and `automata config set agent-user agent-bot`, or through **Issue Watch** in `automata config`. See [docs/config.md](config.md).
+
+### How it works
+
+1. Reads the issue and all of its comments via `gh issue view`.
+2. Takes the **newest comment authored by `agentUser`** as the last-execution boundary.
+3. Reports a new message when at least one comment from a user in `allowedUsers` is strictly newer than that boundary. When `agentUser` has never commented, the issue counts as new if it was opened by an allowed user or any allowed user has commented.
+4. If there is no new message and `--force` was not passed, prints an explanation and exits `0` without posting anything or invoking the AI.
+5. Otherwise builds the prompt from `prompts.checkIssue` (or the built-in default), the issue number, title and URL, and the filtered conversation.
+6. Posts a short marker comment on the issue as the agent account — this is what moves the boundary — and aborts without invoking the AI if that comment cannot be posted.
+7. Invokes Claude Code or Codex with the composed prompt.
+
+Claude follows the same output behavior as `automata execute`: verbose progress is on by default, and `--silent` suppresses step-by-step output.
+
+### Detection rules
+
+- The boundary is stored on the issue itself, not on disk, so the command behaves identically from any machine, container, or CI runner.
+- Comments authored by `agentUser` never count as new messages, even if that login is also listed in `allowedUsers`. This is what stops the command from retriggering on its own marker comment.
+- Messages from anyone who is neither allowed nor the agent are ignored: they never trigger a run and never appear in the prompt.
+- The same filter applies to the issue description, so an issue opened by a non-allowed user contributes its number, title and URL to the prompt but not its body.
+- Login matching is case-insensitive.
+- A comment whose timestamp exactly equals the boundary counts as *not* new; use `--force` to run anyway.
+
+### Conversation format
+
+Messages are rendered oldest-first, one block each:
+
+```text
+[alice] issue description · 2026-09-09T05:00:00Z
+Please add the check-issue command.
+
+[agent-bot] comment · 2026-09-09T06:00:00Z
+working
+
+[bob] comment · 2026-09-09T07:00:00Z · NEW since last agent run
+also handle the --force flag
+```
+
+### Configuring the Check-Issue prompt
+
+Run `automata config` and navigate to **Prompts → Check-Issue** to set a custom prompt. The prompt is stored in `.automata/config.json` under `prompts.checkIssue`.
+
+If no custom prompt is configured, the built-in default is used:
+
+> You are an expert software engineer working on a GitHub issue. Below is the conversation on that issue, restricted to the people allowed to instruct you and your own previous replies. Messages marked as new arrived after your last run: treat them as the current instruction and read the earlier messages only as context. Do what the new messages ask, following the project's existing conventions and style, and make minimal, targeted changes. Run tests and linting before finishing, then reply on the issue with a short summary of what you did.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | AI invocation completed successfully, **or** no new message was found and nothing needed to be done |
+| `1` | Invalid issue number, missing `allowedUsers` / `agentUser`, Azure DevOps remote, issue could not be read, marker comment could not be posted, or AI tool error |
+
+> **Note**: `check-issue` requires GitHub; it is rejected when `remoteType` is `azdo`. See [docs/azdo-gap.md](azdo-gap.md).
