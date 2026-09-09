@@ -211,6 +211,30 @@ automata execute-prompt check-issue 42 --with claude # act on new messages on on
 (Copilot, SonarCloud). `do-work` ignores bots on purpose — they comment after
 every push, so a loop that answered them would never settle.
 
+#### Complete PR feedback monitoring
+
+`automata git get-pr-comments` reports only unresolved inline review threads. It does
+not include top-level PR conversation comments, review-submission bodies, or replies
+beyond the first comment returned for a thread. A monitor must inspect all three
+GitHub feedback surfaces read-only:
+
+```bash
+# Top-level PR conversation comments
+gh api repos/<owner>/<repo>/issues/<N>/comments --paginate
+
+# Review submissions and their summary bodies
+gh api repos/<owner>/<repo>/pulls/<N>/reviews --paginate
+
+# Inline review comments and replies
+gh api repos/<owner>/<repo>/pulls/<N>/comments --paginate
+```
+
+Sort the combined results by `created_at` / `submitted_at` and compare them with the
+previously processed comment/review IDs or timestamps. Surface every new human,
+reviewer, Copilot, or bot item, including a newer owner comment; do not equate an
+unchanged unresolved-thread count with no new feedback. Keep this monitoring pass
+read-only unless the user separately authorizes fixes or PR comments.
+
 ### Finish a merged feature
 
 ```bash
