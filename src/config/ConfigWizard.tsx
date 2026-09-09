@@ -231,8 +231,8 @@ export function ConfigWizard() {
 
   const [screen, setScreen] = useState<Screen>("main");
   const [mainMenuIndex, setMainMenuIndex] = useState(0);
-  const [selectedRemoteIndex, setSelectedRemoteIndex] = useState(initialRemoteIndex >= 0 ? initialRemoteIndex : 0);
-  const [selectedTechIndex, setSelectedTechIndex] = useState(initialTechIndex >= 0 ? initialTechIndex : 0);
+  const [selectedRemoteIndex, setSelectedRemoteIndex] = useState(Math.max(initialRemoteIndex, 0));
+  const [selectedTechIndex, setSelectedTechIndex] = useState(Math.max(initialTechIndex, 0));
   const [discoveryValue, setDiscoveryValue] = useState(existing.issueDiscoveryValue ?? "");
   const [systemPrompt, setSystemPrompt] = useState(existing.claudeSystemPrompt ?? "");
   const [promptsMenuIndex, setPromptsMenuIndex] = useState(0);
