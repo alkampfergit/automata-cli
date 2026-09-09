@@ -24,7 +24,7 @@ function formatThreads(threads: ReviewThread[]): string {
   return threads
     .map((thread) => {
       const location = thread.line === null ? `${thread.path}:(file)` : `${thread.path}:${String(thread.line)}`;
-      const newest = thread.comments[thread.comments.length - 1];
+      const newest = thread.comments.at(-1);
       const author = newest?.author ?? "unknown";
       const body = newest?.body ?? "";
       return `[${author}] ${location}\n${body}`;

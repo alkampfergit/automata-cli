@@ -100,9 +100,7 @@ export function ConfigWizard() {
     existing.doWork?.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
   );
   const initialExecutorIndex = EXECUTOR_OPTIONS.findIndex((o) => o.value === existing.doWork?.executor);
-  const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(
-    initialExecutorIndex >= 0 ? initialExecutorIndex : 0,
-  );
+  const [doWorkExecutorIndex, setDoWorkExecutorIndex] = useState(Math.max(initialExecutorIndex, 0));
   const [doWorkMaxRuns, setDoWorkMaxRuns] = useState(
     String(existing.doWork?.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
   );
@@ -118,7 +116,131 @@ export function ConfigWizard() {
   );
   const { exit } = useApp();
 
+  /**
+   * The Do Work screens, lifted out of the main key handler: adding them inline
+   * pushed that function past its cognitive-complexity budget.
+   *
+   * Returns true when the key was consumed by one of these screens.
+   */
+  const handleDoWorkInput = (input: string, key: { upArrow: boolean; downArrow: boolean; return: boolean; escape: boolean; backspace: boolean; delete: boolean; ctrl: boolean; meta: boolean }): boolean => {
+    if (screen === "do-work-base-branch") {
+      if (key.return) {
+        setScreen("do-work-executor");
+      } else if (key.backspace || key.delete) {
+        setDoWorkBaseBranch((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("main");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkBaseBranch((v) => v + input);
+      }
+      return true;
+    }
+
+    if (screen === "do-work-executor") {
+      if (key.upArrow) {
+        setDoWorkExecutorIndex((i) => (i > 0 ? i - 1 : EXECUTOR_OPTIONS.length - 1));
+      } else if (key.downArrow) {
+        setDoWorkExecutorIndex((i) => (i < EXECUTOR_OPTIONS.length - 1 ? i + 1 : 0));
+      } else if (key.return) {
+        setScreen("do-work-max-runs");
+      } else if (key.escape) {
+        setScreen("do-work-base-branch");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      }
+      return true;
+    }
+
+    if (screen === "do-work-max-runs") {
+      if (key.return) {
+        const parsedMaxRuns = Number.parseInt(doWorkMaxRuns, 10);
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            baseBranch: doWorkBaseBranch.trim() || undefined,
+            executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
+            maxRunsPerTick: Number.isNaN(parsedMaxRuns) || parsedMaxRuns < 0 ? undefined : parsedMaxRuns,
+          },
+        });
+        exit();
+      } else if (key.backspace || key.delete) {
+        setDoWorkMaxRuns((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("do-work-executor");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkMaxRuns((v) => v + input);
+      }
+      return true;
+    }
+
+    if (screen === "do-work-discuss-prompt") {
+      if (key.return) {
+        let discussValue: string | undefined;
+        if (doWorkDiscussPrompt) {
+          writePromptFile("do-work-issue-discuss.md", doWorkDiscussPrompt);
+          discussValue = "do-work-issue-discuss.md";
+        }
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            prompts: { ...current.doWork?.prompts, issueDiscuss: discussValue },
+          },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setDoWorkDiscussPrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkDiscussPrompt((v) => v + input);
+      }
+      return true;
+    }
+
+    if (screen === "do-work-pr-prompt") {
+      if (key.return) {
+        let prValue: string | undefined;
+        if (doWorkPrPrompt) {
+          writePromptFile("do-work-pr-work.md", doWorkPrPrompt);
+          prValue = "do-work-pr-work.md";
+        }
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            prompts: { ...current.doWork?.prompts, prWork: prValue },
+          },
+        });
+        setScreen("prompts-menu");
+      } else if (key.backspace || key.delete) {
+        setDoWorkPrPrompt((v) => v.slice(0, -1));
+      } else if (key.escape) {
+        setScreen("prompts-menu");
+      } else if (key.ctrl && input === "c") {
+        exit();
+      } else if (input && !key.ctrl && !key.meta) {
+        setDoWorkPrPrompt((v) => v + input);
+      }
+      return true;
+    }
+
+    return false;
+  };
+
   useInput((input, key) => {
+    if (handleDoWorkInput(input, key)) return;
+
     if (screen === "main") {
       if (key.upArrow) {
         setMainMenuIndex((i) => (i > 0 ? i - 1 : MAIN_MENU_OPTIONS.length - 1));
@@ -332,103 +454,6 @@ export function ConfigWizard() {
         exit();
       } else if (input && !key.ctrl && !key.meta) {
         setAgentUser((v) => v + input);
-      }
-    } else if (screen === "do-work-base-branch") {
-      if (key.return) {
-        setScreen("do-work-executor");
-      } else if (key.backspace || key.delete) {
-        setDoWorkBaseBranch((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("main");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkBaseBranch((v) => v + input);
-      }
-    } else if (screen === "do-work-executor") {
-      if (key.upArrow) {
-        setDoWorkExecutorIndex((i) => (i > 0 ? i - 1 : EXECUTOR_OPTIONS.length - 1));
-      } else if (key.downArrow) {
-        setDoWorkExecutorIndex((i) => (i < EXECUTOR_OPTIONS.length - 1 ? i + 1 : 0));
-      } else if (key.return) {
-        setScreen("do-work-max-runs");
-      } else if (key.escape) {
-        setScreen("do-work-base-branch");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      }
-    } else if (screen === "do-work-max-runs") {
-      if (key.return) {
-        const parsedMaxRuns = Number.parseInt(doWorkMaxRuns, 10);
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          doWork: {
-            ...current.doWork,
-            baseBranch: doWorkBaseBranch.trim() || undefined,
-            executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
-            maxRunsPerTick: Number.isNaN(parsedMaxRuns) || parsedMaxRuns < 0 ? undefined : parsedMaxRuns,
-          },
-        });
-        exit();
-      } else if (key.backspace || key.delete) {
-        setDoWorkMaxRuns((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("do-work-executor");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkMaxRuns((v) => v + input);
-      }
-    } else if (screen === "do-work-discuss-prompt") {
-      if (key.return) {
-        let discussValue: string | undefined;
-        if (doWorkDiscussPrompt) {
-          writePromptFile("do-work-issue-discuss.md", doWorkDiscussPrompt);
-          discussValue = "do-work-issue-discuss.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          doWork: {
-            ...current.doWork,
-            prompts: { ...current.doWork?.prompts, issueDiscuss: discussValue },
-          },
-        });
-        setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setDoWorkDiscussPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkDiscussPrompt((v) => v + input);
-      }
-    } else if (screen === "do-work-pr-prompt") {
-      if (key.return) {
-        let prValue: string | undefined;
-        if (doWorkPrPrompt) {
-          writePromptFile("do-work-pr-work.md", doWorkPrPrompt);
-          prValue = "do-work-pr-work.md";
-        }
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          doWork: {
-            ...current.doWork,
-            prompts: { ...current.doWork?.prompts, prWork: prValue },
-          },
-        });
-        setScreen("prompts-menu");
-      } else if (key.backspace || key.delete) {
-        setDoWorkPrPrompt((v) => v.slice(0, -1));
-      } else if (key.escape) {
-        setScreen("prompts-menu");
-      } else if (key.ctrl && input === "c") {
-        exit();
-      } else if (input && !key.ctrl && !key.meta) {
-        setDoWorkPrPrompt((v) => v + input);
       }
     }
   });

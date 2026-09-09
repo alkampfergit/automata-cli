@@ -85,24 +85,22 @@ describe("composePrompt — the frame", () => {
 });
 
 describe("composePrompt — context", () => {
-  it("includes the repository, agent identity, turn kind and base branch", () => {
-    const prompt = compose(discussItem());
-    expect(prompt).toContain("Repository: acme/widget");
-    expect(prompt).toContain("You are: automata-bot");
-    expect(prompt).toContain("Turn: issue-discuss");
-    expect(prompt).toContain("Base branch: develop");
+  it.each([
+    ["the repository", "Repository: acme/widget"],
+    ["the agent identity", "You are: automata-bot"],
+    ["the turn kind", "Turn: issue-discuss"],
+    ["the base branch", "Base branch: develop"],
+    ["the issue number and title", "Issue #42: Add a flag"],
+    ["the issue URL", "Issue URL: https://gh/i/42"],
+  ])("includes %s", (_what, expected) => {
+    expect(compose(discussItem())).toContain(expected);
   });
 
-  it("includes the issue number, title and URL", () => {
-    const prompt = compose(discussItem());
-    expect(prompt).toContain("Issue #42: Add a flag");
-    expect(prompt).toContain("Issue URL: https://gh/i/42");
-  });
-
-  it("omits pull request fields on a discuss turn", () => {
-    const prompt = compose(discussItem());
-    expect(prompt).not.toContain("Pull request #");
-    expect(prompt).not.toContain("Branch: feature/042-flag");
+  it.each([
+    ["pull request identity", "Pull request #"],
+    ["a branch line", "Branch: feature/042-flag"],
+  ])("omits %s on a discuss turn", (_what, absent) => {
+    expect(compose(discussItem())).not.toContain(absent);
   });
 
   it("includes the pull request number, URL and branch on a build turn", () => {

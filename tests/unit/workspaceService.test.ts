@@ -1,33 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const mockSpawnSync = vi.fn();
 const mockHasUncommittedChanges = vi.fn();
+const mockCheckoutBranch = vi.fn();
+const mockCreateTrackingBranch = vi.fn();
+const mockFetchBranch = vi.fn();
+const mockPullFastForwardOnly = vi.fn();
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, spawnSync: (...args: unknown[]) => mockSpawnSync(...args) };
-});
-
+// The git invocations live in gitService, which owns the process runner; this
+// module only sequences them, so that is what the tests pin down.
 vi.mock("../../src/git/gitService.js", () => ({
   hasUncommittedChanges: () => mockHasUncommittedChanges(),
+  checkoutBranch: (...a: unknown[]) => mockCheckoutBranch(...a),
+  createTrackingBranch: (...a: unknown[]) => mockCreateTrackingBranch(...a),
+  fetchBranch: (...a: unknown[]) => mockFetchBranch(...a),
+  pullFastForwardOnly: (...a: unknown[]) => mockPullFastForwardOnly(...a),
 }));
 
-function ok(stdout = ""): { stdout: string; stderr: string; status: number } {
-  return { stdout, stderr: "", status: 0 };
+function ok(): { ok: boolean; stderr: string } {
+  return { ok: true, stderr: "" };
 }
 
-function fail(stderr: string): { stdout: string; stderr: string; status: number } {
-  return { stdout: "", stderr, status: 1 };
-}
-
-function gitArgs(): string[][] {
-  return mockSpawnSync.mock.calls.map((call) => call[1] as string[]);
+function fail(stderr: string): { ok: boolean; stderr: string } {
+  return { ok: false, stderr };
 }
 
 beforeEach(() => {
-  mockSpawnSync.mockReset();
-  mockHasUncommittedChanges.mockReset();
+  vi.clearAllMocks();
   mockHasUncommittedChanges.mockReturnValue(false);
+  mockCheckoutBranch.mockReturnValue(ok());
+  mockCreateTrackingBranch.mockReturnValue(ok());
+  mockFetchBranch.mockReturnValue(ok());
+  mockPullFastForwardOnly.mockReturnValue(ok());
 });
 
 afterEach(() => {
@@ -38,35 +41,36 @@ describe("prepareBaseBranch", () => {
   it("refuses a dirty tree before running any git command", async () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
-    const result = prepareBaseBranch("develop");
-    expect(result).toEqual({
+    expect(prepareBaseBranch("develop")).toEqual({
       ok: false,
       reason: "dirty-tree",
       detail: expect.stringContaining("uncommitted changes"),
     });
     // The critical part: nothing was mutated, so no human work can be lost.
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    expect(mockCheckoutBranch).not.toHaveBeenCalled();
+    expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
   });
 
   it("checks out the base branch and fast-forwards it", async () => {
-    mockSpawnSync.mockReturnValue(ok());
     const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
     expect(prepareBaseBranch("develop")).toEqual({ ok: true, branch: "develop" });
-    expect(gitArgs()).toEqual([["checkout", "develop"], ["pull", "--ff-only"]]);
+    expect(mockCheckoutBranch).toHaveBeenCalledWith("develop");
+    expect(mockPullFastForwardOnly).toHaveBeenCalledWith();
   });
 
   it("reports a checkout failure", async () => {
-    mockSpawnSync.mockReturnValueOnce(fail("error: pathspec 'develop' did not match"));
+    mockCheckoutBranch.mockReturnValue(fail("error: pathspec 'develop' did not match"));
     const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
     expect(prepareBaseBranch("develop")).toEqual({
       ok: false,
       reason: "checkout-failed",
       detail: "error: pathspec 'develop' did not match",
     });
+    expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
   });
 
   it("reports a diverged branch as a pull failure instead of merging it", async () => {
-    mockSpawnSync.mockReturnValueOnce(ok()).mockReturnValueOnce(fail("fatal: Not possible to fast-forward"));
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
     const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
     expect(prepareBaseBranch("develop")).toEqual({
       ok: false,
@@ -81,35 +85,31 @@ describe("preparePrBranch", () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "dirty-tree" });
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    expect(mockFetchBranch).not.toHaveBeenCalled();
+    expect(mockCheckoutBranch).not.toHaveBeenCalled();
   });
 
   it("fetches, checks out and fast-forwards an existing local branch", async () => {
-    mockSpawnSync.mockReturnValue(ok());
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toEqual({ ok: true, branch: "feature/042" });
-    expect(gitArgs()).toEqual([
-      ["fetch", "origin", "feature/042"],
-      ["checkout", "feature/042"],
-      ["pull", "--ff-only", "origin", "feature/042"],
-    ]);
+    expect(mockFetchBranch).toHaveBeenCalledWith("feature/042");
+    expect(mockCheckoutBranch).toHaveBeenCalledWith("feature/042");
+    expect(mockPullFastForwardOnly).toHaveBeenCalledWith("feature/042");
+    expect(mockCreateTrackingBranch).not.toHaveBeenCalled();
   });
 
   it("creates the local tracking branch when this checkout has never seen it", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok())
-      .mockReturnValueOnce(fail("error: pathspec 'feature/042' did not match"))
-      .mockReturnValueOnce(ok());
+    mockCheckoutBranch.mockReturnValue(fail("error: pathspec 'feature/042' did not match"));
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toEqual({ ok: true, branch: "feature/042" });
-    expect(gitArgs()[2]).toEqual(["checkout", "-b", "feature/042", "origin/feature/042"]);
+    expect(mockCreateTrackingBranch).toHaveBeenCalledWith("feature/042");
+    // A freshly created tracking branch is already at the remote tip.
+    expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
   });
 
   it("reports a failure to create the branch", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok())
-      .mockReturnValueOnce(fail("no local branch"))
-      .mockReturnValueOnce(fail("fatal: 'origin/feature/042' is not a commit"));
+    mockCheckoutBranch.mockReturnValue(fail("no local branch"));
+    mockCreateTrackingBranch.mockReturnValue(fail("fatal: 'origin/feature/042' is not a commit"));
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toEqual({
       ok: false,
@@ -118,17 +118,15 @@ describe("preparePrBranch", () => {
     });
   });
 
-  it("reports a fetch failure", async () => {
-    mockSpawnSync.mockReturnValueOnce(fail("fatal: couldn't find remote ref"));
+  it("reports a fetch failure without attempting a checkout", async () => {
+    mockFetchBranch.mockReturnValue(fail("fatal: couldn't find remote ref"));
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "checkout-failed" });
+    expect(mockCheckoutBranch).not.toHaveBeenCalled();
   });
 
   it("reports a diverged head branch as a pull failure", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok())
-      .mockReturnValueOnce(ok())
-      .mockReturnValueOnce(fail("fatal: Not possible to fast-forward"));
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "pull-failed" });
   });

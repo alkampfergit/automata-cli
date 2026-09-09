@@ -1937,3 +1937,57 @@ describe("git get-pr-info SonarCloud fields", () => {
     expect(parsed.sonarFailures?.privateMessage).toContain("authenticated browser");
   });
 });
+
+describe("gitService branch primitives", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  const cases: [string, (m: Record<string, (b: string) => unknown>) => unknown, string[]][] = [
+    ["checkoutBranch", (m) => m.checkoutBranch("feature/042"), ["checkout", "feature/042"]],
+    [
+      "createTrackingBranch",
+      (m) => m.createTrackingBranch("feature/042"),
+      ["checkout", "-b", "feature/042", "origin/feature/042"],
+    ],
+    ["fetchBranch", (m) => m.fetchBranch("feature/042"), ["fetch", "origin", "feature/042"]],
+  ];
+
+  it.each(cases)("%s issues the expected git argv", async (_name, call, expected) => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const mod = (await import("../../src/git/gitService.js")) as unknown as Record<
+      string,
+      (b: string) => unknown
+    >;
+    expect(call(mod)).toEqual({ ok: true, stderr: "" });
+    expect(mockSpawnSync).toHaveBeenCalledWith("git", expected, expect.anything());
+  });
+
+  it("pullFastForwardOnly targets the current branch when none is named", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { pullFastForwardOnly } = await import("../../src/git/gitService.js");
+    pullFastForwardOnly();
+    expect(mockSpawnSync).toHaveBeenCalledWith("git", ["pull", "--ff-only"], expect.anything());
+  });
+
+  it("pullFastForwardOnly targets a named branch on origin", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { pullFastForwardOnly } = await import("../../src/git/gitService.js");
+    pullFastForwardOnly("feature/042");
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "git",
+      ["pull", "--ff-only", "origin", "feature/042"],
+      expect.anything(),
+    );
+  });
+
+  it("reports failure with trimmed stderr", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "  fatal: nope\n", status: 1 });
+    const { checkoutBranch } = await import("../../src/git/gitService.js");
+    expect(checkoutBranch("nope")).toEqual({ ok: false, stderr: "fatal: nope" });
+  });
+});

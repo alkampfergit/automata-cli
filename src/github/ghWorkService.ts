@@ -312,6 +312,12 @@ query($owner:String!,$repo:String!,$prNumber:Int!){
   }
 }`.trim();
 
+function normalizePrState(state: string | undefined): PullRequestRef["state"] {
+  if (state === "MERGED") return "MERGED";
+  if (state === "CLOSED") return "CLOSED";
+  return "OPEN";
+}
+
 export function getPrSurface(prNumber: number): PrSurface {
   const raw = ghJson<RawPrView>(
     [
@@ -376,7 +382,7 @@ export function getPrSurface(prNumber: number): PrSurface {
     }),
   );
 
-  const state = raw.state === "MERGED" ? "MERGED" : raw.state === "CLOSED" ? "CLOSED" : "OPEN";
+  const state = normalizePrState(raw.state);
 
   return {
     pr: {

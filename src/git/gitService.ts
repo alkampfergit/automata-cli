@@ -790,6 +790,38 @@ export function checkoutAndPull(targetBranch: string): void {
   }
 }
 
+export interface GitCommandResult {
+  ok: boolean;
+  stderr: string;
+}
+
+function gitCommand(args: string[]): GitCommandResult {
+  const { stderr, status } = run("git", args);
+  return { ok: status === 0, stderr: stderr.trim() };
+}
+
+/** `git checkout <branch>` — does not create the branch. */
+export function checkoutBranch(branch: string): GitCommandResult {
+  return gitCommand(["checkout", branch]);
+}
+
+/** `git checkout -b <branch> origin/<branch>` — create a local tracking branch. */
+export function createTrackingBranch(branch: string): GitCommandResult {
+  return gitCommand(["checkout", "-b", branch, `origin/${branch}`]);
+}
+
+export function fetchBranch(branch: string): GitCommandResult {
+  return gitCommand(["fetch", "origin", branch]);
+}
+
+/**
+ * `git pull --ff-only` — fast-forward only, so a diverged branch fails loudly
+ * instead of being silently merged by an unattended tool.
+ */
+export function pullFastForwardOnly(branch?: string): GitCommandResult {
+  return gitCommand(branch === undefined ? ["pull", "--ff-only"] : ["pull", "--ff-only", "origin", branch]);
+}
+
 export function fetchPrune(): void {
   const result = run("git", ["fetch", "--prune"]);
   if (result.status !== 0) {

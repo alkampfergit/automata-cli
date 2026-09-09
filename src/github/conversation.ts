@@ -107,8 +107,8 @@ export function analyzeSurface(messages: RawMessage[], p: Participants): Surface
  */
 export function lastAuthorClass(messages: RawMessage[], p: Participants): AuthorClass {
   if (messages.length === 0) return "none";
-  const newest = [...messages].sort(byCreatedAt)[messages.length - 1];
-  return classify(newest.author, p);
+  const newest = [...messages].sort(byCreatedAt).at(-1);
+  return newest === undefined ? "none" : classify(newest.author, p);
 }
 
 /** Render an analysed conversation as plain text for a prompt. */
