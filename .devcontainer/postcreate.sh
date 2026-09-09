@@ -6,6 +6,10 @@ echo "=========================================="
 echo "Starting devcontainer post-creation setup"
 echo "=========================================="
 
+# Every download below is an install script or a release tarball, so pin the
+# transport: a redirect must not be able to downgrade the fetch to plaintext.
+CURL_TLS_OPTS=(--proto '=https' --tlsv1.2)
+
 # Fix apt sources issue with yarn (copied from reference container)
 echo "Cleaning up apt sources..."
 sudo rm -f /etc/apt/sources.list.d/yarn.list
@@ -22,7 +26,7 @@ bash .devcontainer/setup-git-aliases.sh
 # Install Claude Code CLI via official native installer (auto-updates)
 # See: https://docs.anthropic.com/en/docs/claude-code/overview
 echo "Installing Claude Code CLI..."
-curl --proto '=https' --tlsv1.2 -fsSL https://claude.ai/install.sh | bash || true
+curl "${CURL_TLS_OPTS[@]}" -fsSL https://claude.ai/install.sh | bash || true
 
 # Install CLI tools that are distributed via npm
 if command -v npm >/dev/null 2>&1; then
@@ -41,7 +45,7 @@ fi
 # uv provides a universal version manager; we install via official script
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv..."
-    curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | sh
+    curl "${CURL_TLS_OPTS[@]}" -LsSf https://astral.sh/uv/install.sh | sh
 else
     echo "uv already installed, skipping."
 fi
@@ -59,7 +63,7 @@ fi
 
 # tokensave: semantic code intelligence for Claude Code and Codex CLI.
 echo "Installing tokensave..."
-TOKENSAVE_TAG=$(curl --proto '=https' --tlsv1.2 -sI https://github.com/aovestdipaperino/tokensave/releases/latest | grep -i '^location:' | sed 's|.*/tag/||;s/\r//')
+TOKENSAVE_TAG=$(curl "${CURL_TLS_OPTS[@]}" -sI https://github.com/aovestdipaperino/tokensave/releases/latest | grep -i '^location:' | sed 's|.*/tag/||;s/\r//')
 TOKENSAVE_VERSION="${TOKENSAVE_TAG#v}"
 ARCH=$(uname -m)
 if [[ "$ARCH" = "aarch64" ]] || [[ "$ARCH" = "arm64" ]]; then
@@ -69,7 +73,7 @@ else
 fi
 TOKENSAVE_URL="https://github.com/aovestdipaperino/tokensave/releases/download/${TOKENSAVE_TAG}/tokensave-${TOKENSAVE_TAG}-${TOKENSAVE_ARCH}.tar.gz"
 echo "  Downloading tokensave ${TOKENSAVE_VERSION} (${TOKENSAVE_ARCH})..."
-curl --proto '=https' --tlsv1.2 -sL "$TOKENSAVE_URL" -o /tmp/tokensave.tar.gz
+curl "${CURL_TLS_OPTS[@]}" -sL "$TOKENSAVE_URL" -o /tmp/tokensave.tar.gz
 tar xzf /tmp/tokensave.tar.gz -C /tmp
 sudo mv /tmp/tokensave /usr/local/bin/tokensave
 rm -f /tmp/tokensave.tar.gz
@@ -98,7 +102,7 @@ append_if_missing() {
 
 if ! command -v brew >/dev/null 2>&1; then
     echo "Installing Homebrew..."
-    NONINTERACTIVE=1 bash -c "$(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    NONINTERACTIVE=1 bash -c "$(curl "${CURL_TLS_OPTS[@]}" -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 else
     echo "Homebrew already installed, skipping."
 fi
