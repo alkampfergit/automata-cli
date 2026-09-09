@@ -37,16 +37,49 @@ export interface LockOwner {
   command: string;
   /** Unique per acquisition, so a holder only ever releases its own lock. */
   token: string;
+  /**
+   * The holding process's own start time, where the platform exposes it. Pids
+   * are reused, so liveness alone cannot tell "our old tick" from "whatever
+   * inherited its pid".
+   */
+  pidStartedAt?: string;
 }
 
 export interface LockHandle {
   release(): void;
 }
 
-export type AcquireResult = { ok: true; handle: LockHandle } | { ok: false; heldBy: LockOwner };
+export type AcquireResult =
+  | { ok: true; handle: LockHandle }
+  /**
+   * `suspect` marks a same-host lock that looks alive but has outlived the
+   * staleness window, which on a host where the pid start time is unavailable
+   * cannot be distinguished from a pid-reuse orphan. The caller should complain
+   * loudly rather than exit 0, or an operator has no way to notice a loop that
+   * has quietly stopped working.
+   */
+  | { ok: false; heldBy: LockOwner; suspect: boolean };
 
 function lockPath(): string {
   return join(process.cwd(), LOCK_DIR, LOCK_FILE);
+}
+
+/**
+ * The process's start time, as an opaque comparable string, or null when the
+ * platform does not expose it cheaply. Linux `/proc/<pid>/stat` field 22 is the
+ * start time in clock ticks since boot — stable for the life of the process and
+ * enough to tell a reused pid from the original.
+ */
+function processStartedAt(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
+    // The comm field can contain spaces and parentheses, so split after it.
+    const afterComm = stat.slice(stat.lastIndexOf(")") + 2);
+    const field = afterComm.split(" ")[19];
+    return field === undefined || field.length === 0 ? null : field;
+  } catch {
+    return null;
+  }
 }
 
 function isAlive(pid: number): boolean {
@@ -70,6 +103,7 @@ function readOwner(path: string): LockOwner | null {
       host: parsed.host ?? "unknown",
       command: parsed.command ?? "unknown",
       token: parsed.token ?? "",
+      pidStartedAt: parsed.pidStartedAt,
     };
   } catch {
     return null;
@@ -85,8 +119,20 @@ function isStale(owner: LockOwner | null, staleMinutes: number): boolean {
   // legitimate tick can outlive the staleness window (the run cap is unlimited
   // by default), and stealing the lock from a running tick would put two model
   // sessions in one checkout — the exact thing the lock exists to prevent.
+  //
+  // Liveness is not proof of identity, though: pids are small and reused in a
+  // container, so an unrelated process can inherit the pid of a killed tick and
+  // keep the lock alive forever. `pidStartedAt` is compared where the platform
+  // exposes it, which retires that case; where it does not, `acquireRunLock`
+  // reports the lock as suspect so the caller can complain loudly rather than
+  // idling at exit 0.
   if (owner.host === hostname()) {
-    return !isAlive(owner.pid);
+    if (!isAlive(owner.pid)) return true;
+    const startedAt = processStartedAt(owner.pid);
+    if (owner.pidStartedAt !== undefined && startedAt !== null && startedAt !== owner.pidStartedAt) {
+      return true;
+    }
+    return false;
   }
 
   // Another host's process cannot be probed, so age is the only signal left.
@@ -117,6 +163,16 @@ function isStale(owner: LockOwner | null, staleMinutes: number): boolean {
  * `lockStaleMinutes`. Closing it fully needs `flock`, which Node does not expose
  * without a native dependency.
  */
+/** A live same-host lock that has outlived the staleness window. */
+function heldTooLong(owner: LockOwner, staleMinutes: number): boolean {
+  if (owner.host !== hostname()) return false;
+  // With a verifiable pid start time there is no ambiguity, so nothing to flag.
+  if (owner.pidStartedAt !== undefined && processStartedAt(owner.pid) !== null) return false;
+  const startedAt = Date.parse(owner.startedAt);
+  if (Number.isNaN(startedAt)) return true;
+  return Date.now() - startedAt > staleMinutes * 60 * 1000;
+}
+
 function makeHandle(path: string, token: string): LockHandle {
   let released = false;
   return {
@@ -171,6 +227,7 @@ function write(path: string, command: string, token: string, flag: "wx" | "w" = 
     host: hostname(),
     command,
     token,
+    pidStartedAt: processStartedAt(process.pid) ?? undefined,
   };
   // "wx" fails if the file exists, and that check-and-create is atomic on every
   // platform we target — which is what makes this a lock rather than a hint.
@@ -191,10 +248,11 @@ export function acquireRunLock(command: string, staleMinutes: number): AcquireRe
 
   const owner = readOwner(path);
   if (!isStale(owner, staleMinutes)) {
-    return { ok: false, heldBy: owner as LockOwner };
+    const held = owner as LockOwner;
+    return { ok: false, heldBy: held, suspect: heldTooLong(held, staleMinutes) };
   }
 
-  return reclaim(path, command, token);
+  return reclaim(path, command, token, owner);
 }
 
 const UNKNOWN_OWNER: LockOwner = {
@@ -222,21 +280,49 @@ const UNKNOWN_OWNER: LockOwner = {
  * Exported for tests, which need to drive two contenders against one stale lock
  * deterministically — the race cannot be reproduced by sequential acquisition.
  */
-export function claimStaleLock(path: string, token: string): boolean {
+export function claimStaleLock(path: string, token: string, expected?: LockOwner | null): boolean {
+  const claimed = `${path}.stale.${token}`;
   try {
-    renameSync(path, `${path}.stale.${token}`);
-    return true;
+    renameSync(path, claimed);
   } catch (err) {
     // ENOENT: another contender claimed it first. Anything else is a real fault.
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
+
+  // "Exactly one rename wins" only holds while nothing recreates the path. A
+  // contender that renamed the stale file away and then wrote its own lock
+  // leaves the path occupied again — and a second contender still acting on its
+  // earlier "this is stale" reading would rename that *live* lock away and
+  // destroy it. So verify we took away the file we judged stale, and put it back
+  // if not.
+  if (expected !== undefined) {
+    const taken = readOwner(claimed);
+    const sameFile =
+      (expected === null && taken === null) ||
+      (expected !== null && taken !== null && taken.token === expected.token);
+    if (!sameFile) {
+      try {
+        linkSync(claimed, path);
+      } catch {
+        // A newer lock already occupies the path; it stands.
+      }
+      try {
+        unlinkSync(claimed);
+      } catch {
+        // Already gone.
+      }
+      return false;
+    }
+  }
+
+  return true;
 }
 
-function reclaim(path: string, command: string, token: string): AcquireResult {
-  if (!claimStaleLock(path, token)) {
+function reclaim(path: string, command: string, token: string, expected: LockOwner | null): AcquireResult {
+  if (!claimStaleLock(path, token, expected)) {
     // Someone else is taking it over; whatever they write is authoritative.
-    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER };
+    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
   }
 
   const claimed = `${path}.stale.${token}`;
@@ -247,7 +333,7 @@ function reclaim(path: string, command: string, token: string): AcquireResult {
     return { ok: true, handle: makeHandle(path, token) };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER };
+    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
   } finally {
     try {
       unlinkSync(claimed);

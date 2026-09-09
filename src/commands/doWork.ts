@@ -36,13 +36,21 @@ import {
 import { composePrompt } from "../github/workPrompt.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { getCurrentBranch } from "../git/gitService.js";
-import { acquireRunLock, type LockHandle } from "../run/runLock.js";
+import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
 import { shellQuote } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
+
+/**
+ * The marker of the item currently running, so an interrupted tick can explain
+ * itself. Without this, `SIGTERM` exits with a `working…` comment still in place
+ * holding the boundary, and the message behind it is never answered — with
+ * nothing on GitHub saying why.
+ */
+let inFlightMarker: { marker: MarkerRef; item: WorkItem } | null = null;
 
 interface DoWorkOptions {
   with?: string;
@@ -75,6 +83,8 @@ interface ItemReport {
   turn: TurnKind | null;
   outcome: Outcome;
   detail: string;
+  /** True only when the executor was actually invoked — what the run cap counts. */
+  ranExecutor?: boolean;
 }
 
 /** stdout carries the plan and the summary; stderr carries progress and warnings. */
@@ -441,6 +451,52 @@ function describePlan(decisions: Decision[]): string {
 }
 
 /**
+ * Add the agent as an assignee, so the claim is visible in the issue list.
+ *
+ * Advisory: a repository where the agent lacks write access must still be able
+ * to run the loop, so a failure warns rather than stopping the turn.
+ */
+function claimIssue(item: WorkItem, settings: Settings): void {
+  if (!item.needsAssignment) return;
+  try {
+    assignIssueToAgent(item.issue.number, settings.participants.agentUser);
+    progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
+  } catch (err) {
+    progress(`  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+  }
+}
+
+/**
+ * Note on the issue that the work is happening on its pull request.
+ *
+ * The surfaces keep independent boundaries, so a build turn triggered by issue
+ * messages must advance the issue's too — otherwise that comment starts another
+ * build turn on every tick. Returns false when the note could not be posted, in
+ * which case the caller must not proceed; the marker is withdrawn first so
+ * neither boundary moves.
+ */
+function notePickupOnIssue(item: WorkItem, marker: MarkerRef): boolean {
+  if (item.turn !== "pr-work" || item.pr === null || !item.issueAnalysis.hasNewMessage) return true;
+  try {
+    postMarker(
+      "issue",
+      item.issue.number,
+      `automata do-work: picked this up on pull request #${String(item.pr.number)} — ${item.pr.url}`,
+    );
+    progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr.number)}.\n`);
+    return true;
+  } catch (err) {
+    progress(`  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`);
+    try {
+      deleteMarker(marker);
+    } catch (deleteErr) {
+      progress(`  warning: could not withdraw the working marker: ${(deleteErr as Error).message}\n`);
+    }
+    return false;
+  }
+}
+
+/**
  * Re-decide one item against the current state of GitHub.
  *
  * Returns a skip when the issue has since been closed or answered, which is the
@@ -457,6 +513,27 @@ function refreshItem(item: WorkItem, settings: Settings): Decision {
     settings.participants,
     settings.baseBranch,
   );
+}
+
+/**
+ * Authorized messages that arrived after the marker.
+ *
+ * A stateless boundary cannot carry these forward: the agent's answer is newer
+ * than they are, so the next tick will not see them as new. They are therefore
+ * lost unless a human is told, which is what the caller does. Nothing can be
+ * done about the loss itself without persisting state outside GitHub.
+ */
+function authorizedMessagesSince(
+  messages: RawMessage[],
+  participants: Participants,
+  marker: MarkerRef,
+): RawMessage[] {
+  const allowed = participants.allowedUsers.map((user) => user.toLowerCase());
+  const agent = participants.agentUser.toLowerCase();
+  return messages.filter((message) => {
+    const author = message.author.toLowerCase();
+    return author !== agent && allowed.includes(author) && message.createdAt > marker.createdAt;
+  });
 }
 
 /** Re-read the surface the turn answered, flattened for the answer predicate. */
@@ -488,12 +565,15 @@ function markerSurfaceLabel(item: WorkItem): string {
 function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
-  agentUser: string,
+  participants: Participants,
   runError: Error | null,
 ): { outcome: Outcome; detail: string } {
+  const agentUser = participants.agentUser;
+  let surfaceMessages: RawMessage[] = [];
   let answered: boolean | "unknown";
   try {
-    answered = agentAnsweredAfter(readAnsweringSurface(item), agentUser, marker);
+    surfaceMessages = readAnsweringSurface(item);
+    answered = agentAnsweredAfter(surfaceMessages, agentUser, marker);
   } catch (err) {
     progress(
       `  warning: could not re-read issue #${String(item.issue.number)} to check for an answer: ${(err as Error).message}\n`,
@@ -520,10 +600,34 @@ function reconcileMarker(
   }
 
   if (answered) {
+    // Anything an authorized account posted while the run was in flight is older
+    // than the answer, so the next tick will not see it as new. Say so on the
+    // thread — the alternative is losing it in silence.
+    const interleaved = authorizedMessagesSince(surfaceMessages, participants, marker);
+    if (interleaved.length > 0) {
+      const authors = [...new Set(interleaved.map((message) => message.author))].join(", ");
+      try {
+        postMarker(
+          item.turn === "pr-work" ? "pr" : "issue",
+          item.turn === "pr-work" && item.pr ? item.pr.number : item.issue.number,
+          `automata do-work: ${authors} posted here while this run was already in progress, so ` +
+            `${interleaved.length === 1 ? "that message was" : "those messages were"} not included in it. ` +
+            "Please post again to have them acted on.",
+        );
+      } catch (err) {
+        progress(`  warning: could not report the interleaved message(s): ${(err as Error).message}\n`);
+      }
+    }
+
     try {
       deleteMarker(marker);
     } catch (err) {
       progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
+    }
+
+    const noted = interleaved.length > 0 ? ` (${String(interleaved.length)} message(s) arrived mid-run and were flagged)` : "";
+    if (interleaved.length > 0) {
+      return { outcome: "answered-no-reply", detail: `answered${noted}` };
     }
     return runError === null
       ? { outcome: "answered", detail: "answered" }
@@ -589,7 +693,9 @@ function repairIssueLink(item: WorkItem, baseBranch: string): void {
       progress(`  issue #${String(item.issue.number)} is still in discussion (no pull request).\n`);
       return;
     }
-    if (pr.body.includes(`Closes #${String(item.issue.number)}`)) {
+    // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
+    const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(item.issue.number) + String.raw`\b`, "i");
+    if (closesRef.test(pr.body)) {
       progress(`  pull request #${String(pr.number)} already closes issue #${String(item.issue.number)}.\n`);
       return;
     }
@@ -642,37 +748,7 @@ async function processItem(
     return { ...base, outcome: "skipped", detail: `${prepared.reason}: ${prepared.detail}` };
   }
 
-  if (item.needsAssignment) {
-    try {
-      assignIssueToAgent(item.issue.number, settings.participants.agentUser);
-      progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
-    } catch (err) {
-      // Assignment is a visible claim, not a correctness mechanism: a repository
-      // where the agent lacks write access must still be able to run the loop.
-      progress(`  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
-    }
-  }
-
-  // A build turn can be triggered by new *issue* messages, and its marker goes on
-  // the pull request. The two surfaces keep independent boundaries, so answering
-  // on the pull request would never advance the issue's — and that issue comment
-  // would start another build turn on every tick, forever. Leave a permanent
-  // pointer on the issue so its boundary moves too.
-  if (item.turn === "pr-work" && item.pr && item.issueAnalysis.hasNewMessage) {
-    try {
-      postMarker(
-        "issue",
-        item.issue.number,
-        `automata do-work: picked this up on pull request #${String(item.pr.number)} — ${item.pr.url}`,
-      );
-      progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr.number)}.\n`);
-    } catch (err) {
-      // Without it the issue comment re-triggers a build turn every tick, so this
-      // is not cosmetic: skip rather than loop.
-      progress(`  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`);
-      return { ...base, outcome: "skipped", detail: `issue pickup note failed: ${(err as Error).message}` };
-    }
-  }
+  claimIssue(item, settings);
 
   let marker: MarkerRef;
   const markerSurface = item.turn === "pr-work" && item.pr ? item.pr.number : item.issue.number;
@@ -684,6 +760,15 @@ async function processItem(
     progress(`  skipped: could not post the working marker — ${(err as Error).message}\n`);
     return { ...base, outcome: "skipped", detail: `marker failed: ${(err as Error).message}` };
   }
+  inFlightMarker = { marker, item };
+
+  // Ordered *after* the marker deliberately: the note is permanent, so posting
+  // it and then failing to post the marker would advance the issue boundary past
+  // a message that never got answered.
+  if (!notePickupOnIssue(item, marker)) {
+    inFlightMarker = null;
+    return { ...base, outcome: "skipped", detail: "issue pickup note failed" };
+  }
 
   const prompt = composePrompt({
     item,
@@ -693,21 +778,48 @@ async function processItem(
     frame: settings.prompts[item.turn],
   });
 
+  // Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt
+  // is passed as one. A long-lived issue with many authorized comments can reach
+  // that, and the raw failure is an opaque E2BIG from spawn. Fail legibly
+  // instead; piping the prompt through stdin is the real fix and is tracked
+  // separately.
+  const MAX_PROMPT_BYTES = 96 * 1024;
+  const promptBytes = Buffer.byteLength(prompt, "utf8");
+  if (promptBytes > MAX_PROMPT_BYTES) {
+    const detail =
+      `the composed prompt is ${String(Math.round(promptBytes / 1024))} KiB, over the ${String(MAX_PROMPT_BYTES / 1024)} KiB ` +
+      "limit for a single command-line argument. The conversation is too long to hand to the executor this way.";
+    progress(`  failed: ${detail}\n`);
+    inFlightMarker = null;
+    try {
+      updateMarker(
+        marker,
+        `automata do-work: could not start a run because ${detail} ` +
+          "Summarise the discussion in a new issue, or shorten the thread, and try again.",
+      );
+    } catch (err) {
+      progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
+    }
+    return { ...base, outcome: "failed", detail };
+  }
+
   let runError: Error | null = null;
   try {
     await invokeExecutor(prompt, settings, silent);
   } catch (err) {
     runError = err as Error;
   }
+  const ranExecutor = true;
 
-  const reconciled = reconcileMarker(item, marker, settings.participants.agentUser, runError);
+  inFlightMarker = null;
+  const reconciled = reconcileMarker(item, marker, settings.participants, runError);
   progress(`  ${reconciled.detail}\n`);
 
   if (item.turn === "issue-discuss") {
     repairIssueLink(item, settings.baseBranch);
   }
 
-  return { ...base, outcome: reconciled.outcome, detail: reconciled.detail };
+  return { ...base, outcome: reconciled.outcome, detail: reconciled.detail, ranExecutor };
 }
 
 function summarize(reports: ItemReport[]): void {
@@ -739,6 +851,16 @@ export const doWorkCommand = new Command("do-work")
   .action(async (options: DoWorkOptions) => {
     const settings = resolveSettings(options);
 
+    // A dry run changes nothing, so it neither needs the lock nor should be
+    // blocked by one — being unable to inspect the plan while a tick is running
+    // would defeat the primary diagnostic. It also avoids creating the lock file
+    // in a repository that has not ignored it.
+    if (options.dryRun === true) {
+      const exitCode = await runTick(settings, options);
+      if (exitCode !== 0) process.exit(exitCode);
+      return;
+    }
+
     const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
     if (!lock.ok) {
       // Not a failure: cron firing while a tick is still running is normal.
@@ -746,13 +868,30 @@ export const doWorkCommand = new Command("do-work")
       const sentence =
         `Another automata instance is already running here (pid ${String(held.pid)} on ` +
         `${held.host}, started ${held.startedAt}, command ${held.command}). Doing nothing.\n`;
+      // A lock that looks alive but has outlived the staleness window may be a
+      // pid-reuse orphan, in which case every future tick would also do nothing.
+      // Exiting 0 there hides a dead loop behind a healthy status.
+      const suspectSentence = lock.suspect
+        ? `Warning: that lock has been held longer than ${String(settings.lockStaleMinutes)} minutes. ` +
+          "If no tick is really running, its process id was probably reused; remove " +
+          `${RUN_LOCK_RELATIVE_PATH} once you have confirmed that.\n`
+        : "";
+      const exitCode = lock.suspect ? 2 : 0;
       if (options.json === true) {
         // stdout must stay parseable for a caller that asked for JSON.
-        progress(sentence);
-        out(JSON.stringify({ lockHeld: true, heldBy: held, plan: [], items: [], exitCode: 0 }, null, 2) + "\n");
+        progress(sentence + suspectSentence);
+        out(
+          JSON.stringify(
+            { lockHeld: true, suspect: lock.suspect, heldBy: held, plan: [], items: [], exitCode },
+            null,
+            2,
+          ) + "\n",
+        );
       } else {
         out(sentence);
+        if (suspectSentence) progress(suspectSentence);
       }
+      if (exitCode !== 0) process.exit(exitCode);
       return;
     }
 
@@ -765,6 +904,20 @@ export const doWorkCommand = new Command("do-work")
       if (shuttingDown) return;
       shuttingDown = true;
       progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
+      const pending = inFlightMarker;
+      if (pending !== null) {
+        // Leave an explanation rather than a bare "working…" that silently holds
+        // the boundary for good.
+        try {
+          updateMarker(
+            pending.marker,
+            "automata do-work: this run was interrupted before it finished, so no answer was produced. " +
+              `The branch \`${pending.item.branch}\` may have been changed. Reply here to have another attempt made.`,
+          );
+        } catch (err) {
+          progress(`Warning: could not update the in-flight marker: ${(err as Error).message}\n`);
+        }
+      }
       void terminateTrackedChildren().then((allExited) => {
         if (allExited) {
           handle.release();
@@ -847,7 +1000,9 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
         detail: (err as Error).message,
       };
     }
-    if (report.outcome !== "skipped") runsUsed++;
+    // The cap counts model runs. An item that failed before reaching the
+    // executor — a refresh read error, say — did not spend one.
+    if (report.ranExecutor === true) runsUsed++;
     reports.push(report);
   }
 

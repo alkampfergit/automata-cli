@@ -197,7 +197,12 @@ The file is named for automata rather than for `do-work` so other long-running c
 | `1` | A precondition or configuration check failed. Nothing was attempted. |
 | `2` | The tick ran, but at least one item ended in any outcome other than `answered`. |
 
-Exit 2 means degraded, not broken: an item was `skipped` (dirty tree, branch or marker failure), `failed` (the run errored), `deferred` (run cap reached), or `answered-no-reply` (the run finished without posting anything, and a human must now reply).
+Exit 2 means degraded, not broken. An item was:
+
+- `skipped` — nothing was attempted: a dirty tree, branch preparation failed, the marker could not be posted, the item stopped being actionable, or the pull request is unsafe to work on (from a fork, or its head *is* the base branch);
+- `failed` — the run errored, or a read failed before the executor was reached. A marker is updated only if one had already been posted;
+- `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
+- `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
 
 A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 

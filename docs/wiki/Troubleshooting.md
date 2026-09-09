@@ -38,7 +38,16 @@ The marker mechanism failed. Look for:
 automata config set agent-user "$(gh api user --jq .login)"   # run as the agent account
 ```
 
-For a GitHub App, use the full bot login including the `[bot]` suffix.
+For a GitHub App the right value is whatever `gh` actually reports as the comment
+author, which is not necessarily the login you see in the web UI — GraphQL and
+REST differ on the `[bot]` suffix. Read it off a real comment rather than
+guessing:
+
+```bash
+gh issue view <n> --json comments --jq '.comments[].author.login'
+```
+
+Use exactly the string that appears there for a comment the agent posted.
 
 ## An issue stays in discussion after a go-ahead
 

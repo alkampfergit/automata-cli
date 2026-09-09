@@ -18,6 +18,9 @@ export interface PullRequestRef {
   url: string;
   title: string;
   headRefName: string;
+  baseRefName: string;
+  /** True when the head branch lives in a fork rather than this repository. */
+  isCrossRepository: boolean;
   state: "OPEN" | "CLOSED" | "MERGED";
   isDraft: boolean;
   updatedAt: string;
@@ -74,6 +77,8 @@ interface RawPrView {
   title: string;
   url: string;
   headRefName: string;
+  baseRefName?: string;
+  isCrossRepository?: boolean;
   state?: string;
   isDraft?: boolean;
   body: string;
@@ -94,11 +99,13 @@ interface RawLinkMapResponse {
           url: string;
           title: string;
           headRefName: string;
+          baseRefName: string;
+          isCrossRepository: boolean;
           isDraft: boolean;
           updatedAt: string;
           closingIssuesReferences: {
             pageInfo: { hasNextPage: boolean };
-            nodes: { number: number }[];
+            nodes: { number: number; repository: { nameWithOwner: string } }[];
           };
         }[];
       };
@@ -262,10 +269,10 @@ query($owner:String!,$repo:String!,$cursor:String){
     pullRequests(states:OPEN, first:100, after:$cursor, orderBy:{field:UPDATED_AT, direction:DESC}){
       pageInfo{ hasNextPage endCursor }
       nodes{
-        number url title headRefName isDraft updatedAt
+        number url title headRefName baseRefName isCrossRepository isDraft updatedAt
         closingIssuesReferences(first:50){
           pageInfo{ hasNextPage }
-          nodes{ number }
+          nodes{ number repository{ nameWithOwner } }
         }
       }
     }
@@ -277,13 +284,19 @@ const MAX_LINK_MAP_PAGES = 50;
 
 type RawLinkMapNode = RawLinkMapResponse["data"]["repository"]["pullRequests"]["nodes"][number];
 
-/** Record one pull request against every issue it closes. */
-function indexPullRequest(map: Map<number, PullRequestRef[]>, node: RawLinkMapNode): void {
+/** Record one pull request against every issue *in this repository* it closes. */
+function indexPullRequest(
+  map: Map<number, PullRequestRef[]>,
+  node: RawLinkMapNode,
+  nameWithOwner: string,
+): void {
   const ref: PullRequestRef = {
     number: node.number,
     url: node.url,
     title: node.title,
     headRefName: node.headRefName,
+    baseRefName: node.baseRefName,
+    isCrossRepository: node.isCrossRepository,
     state: "OPEN",
     isDraft: node.isDraft,
     updatedAt: node.updatedAt,
@@ -301,6 +314,9 @@ function indexPullRequest(map: Map<number, PullRequestRef[]>, node: RawLinkMapNo
   }
 
   for (const issue of node.closingIssuesReferences.nodes) {
+    // `Closes other-org/lib#42` would otherwise be indexed as this repository's
+    // issue 42, linking an unrelated pull request to it.
+    if (issue.repository.nameWithOwner !== nameWithOwner) continue;
     const existing = map.get(issue.number);
     if (existing) {
       existing.push(ref);
@@ -333,7 +349,7 @@ export function getOpenPrLinkMap(): Map<number, PullRequestRef[]> {
     const connection = response.data.repository.pullRequests;
 
     for (const node of connection.nodes) {
-      indexPullRequest(map, node);
+      indexPullRequest(map, node, `${owner}/${repo}`);
     }
 
     if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
@@ -453,7 +469,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,state,isDraft,body,author,createdAt,updatedAt,comments,reviews",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,comments,reviews",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -487,6 +503,8 @@ export function getPrSurface(prNumber: number): PrSurface {
       url: raw.url,
       title: raw.title,
       headRefName: raw.headRefName,
+      baseRefName: raw.baseRefName ?? "",
+      isCrossRepository: raw.isCrossRepository ?? false,
       state,
       isDraft: raw.isDraft ?? false,
       updatedAt: raw.updatedAt ?? raw.createdAt,

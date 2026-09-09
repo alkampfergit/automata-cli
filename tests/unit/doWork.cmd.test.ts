@@ -151,6 +151,8 @@ const PR: PullRequestRef = {
   url: "https://gh/pr/57",
   title: "Flag",
   headRefName: "feature/042",
+  baseRefName: "develop",
+  isCrossRepository: false,
   state: "OPEN",
   isDraft: false,
   updatedAt: "2026-01-05T00:00:00Z",
@@ -630,6 +632,39 @@ describe("do-work marker reconciliation", () => {
     expect(exitCode).toBe(2);
   });
 
+  it("flags an authorized message that arrived while the run was in progress", async () => {
+    // A stateless boundary cannot carry it forward: the agent's answer is newer,
+    // so the next tick will not see it as new. Saying so is the only honest
+    // option — the alternative is losing it silently.
+    gh.getIssueSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 0
+        ? {
+            ...needsWork(42),
+            messages: [
+              message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+              message("alice", "2026-01-10T00:03:00Z"),
+              message("automata-bot", "2026-01-10T00:08:00Z"),
+            ],
+          }
+        : needsWork(42),
+    );
+    await runDoWork();
+    const notes = gh.postMarker.mock.calls.filter((call) => String(call[2]).includes("while this run"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0][2]).toMatch(/alice posted here while this run was already in progress/);
+    expect(notes[0][2]).toMatch(/Please post again/);
+    // The answer still counted, so the marker is gone, but the tick is degraded.
+    expect(gh.deleteMarker).toHaveBeenCalled();
+    expect(exitCode).toBe(2);
+  });
+
+  it("does not flag anything when no message arrived mid-run", async () => {
+    answersAfterMarker();
+    await runDoWork();
+    expect(gh.postMarker.mock.calls.filter((call) => String(call[2]).includes("while this run"))).toHaveLength(0);
+    expect(exitCode).toBeUndefined();
+  });
+
   it("counts a reply inside a review thread as an answer on a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
     gh.getOpenPrLinkMap.mockReturnValue(new Map([[42, [PR]]]));
@@ -721,6 +756,23 @@ describe("do-work build turn", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/issue pickup note failed/);
+  });
+
+  it("withdraws the working marker when the issue note fails, so neither boundary moves", async () => {
+    // The note is permanent. Posting it and then failing to post the marker
+    // would advance the issue boundary past a message that was never answered —
+    // buried, with nothing on GitHub saying so. So the marker goes first and is
+    // withdrawn if the note cannot follow it.
+    gh.getIssueSurface.mockReturnValue(needsWork(42, ["automata-bot"]));
+    const order: string[] = [];
+    gh.postMarker.mockImplementation((surface: string) => {
+      order.push(surface);
+      if (surface === "issue") throw new Error("HTTP 403");
+      return MARKER;
+    });
+    await runDoWork();
+    expect(order).toEqual(["pr", "issue"]);
+    expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
   });
 
   it("does not attempt link repair on a build turn", async () => {
@@ -1066,6 +1118,19 @@ describe("do-work output modes", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
   });
 
+  it("--dry-run takes no lock, so it neither creates the file nor is blocked by one", async () => {
+    // It changes nothing, and being unable to inspect the plan while a tick is
+    // running would defeat the primary diagnostic.
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      heldBy: { pid: 4242, startedAt: "x", host: "h", command: "do-work", token: "t" },
+      suspect: false,
+    });
+    await runDoWork(["--dry-run"]);
+    expect(mockAcquireRunLock).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/issues need an answer/);
+  });
+
   it("--dry-run honours the run cap and says how many were deferred", async () => {
     gh.listCandidateIssues.mockReturnValue([issue(42), issue(43), issue(44)]);
     gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
@@ -1111,7 +1176,14 @@ describe("do-work output modes", () => {
     await runDoWork(["--json"]);
     const payload = JSON.parse(stdout) as { items: Record<string, unknown>[]; exitCode: number };
     expect(payload.items).toEqual([
-      { issue: 42, title: "Issue 42", turn: "issue-discuss", outcome: "answered-no-reply", detail: expect.any(String) },
+      {
+        issue: 42,
+        title: "Issue 42",
+        turn: "issue-discuss",
+        outcome: "answered-no-reply",
+        detail: expect.any(String),
+        ranExecutor: true,
+      },
     ]);
     expect(payload.exitCode).toBe(2);
   });

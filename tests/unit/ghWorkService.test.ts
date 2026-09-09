@@ -17,15 +17,20 @@ function json(value: unknown): { stdout: string; stderr: string; status: number 
 
 const REMOTE = ok("git@github.com:acme/widget.git\n");
 
-function prNode(number: number, updatedAt: string, closes = 42) {
+function prNode(number: number, updatedAt: string, closes = 42, repo = "acme/widget") {
   return {
     number,
     url: `https://gh/pr/${String(number)}`,
     title: "t",
     headRefName: `feature/${String(number)}`,
+    baseRefName: "develop",
+    isCrossRepository: false,
     isDraft: false,
     updatedAt,
-    closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: closes }] },
+    closingIssuesReferences: {
+      pageInfo: { hasNextPage: false },
+      nodes: [{ number: closes, repository: { nameWithOwner: repo } }],
+    },
   };
 }
 
@@ -173,22 +178,12 @@ describe("getOpenPrLinkMap", () => {
             pullRequests: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [
+                { ...prNode(57, "2026-01-05T00:00:00Z"), title: "Flag", headRefName: "feature/042" },
                 {
-                  number: 57,
-                  url: "https://gh/pr/57",
-                  title: "Flag",
-                  headRefName: "feature/042",
-                  isDraft: false,
-                  updatedAt: "2026-01-05T00:00:00Z",
-                  closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [{ number: 42 }] },
-                },
-                {
-                  number: 58,
-                  url: "https://gh/pr/58",
+                  ...prNode(58, "2026-01-06T00:00:00Z"),
                   title: "Unrelated",
                   headRefName: "feature/099",
                   isDraft: true,
-                  updatedAt: "2026-01-06T00:00:00Z",
                   closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
                 },
               ],
@@ -206,6 +201,8 @@ describe("getOpenPrLinkMap", () => {
         url: "https://gh/pr/57",
         title: "Flag",
         headRefName: "feature/042",
+        baseRefName: "develop",
+        isCrossRepository: false,
         state: "OPEN",
         isDraft: false,
         updatedAt: "2026-01-05T00:00:00Z",
@@ -228,6 +225,25 @@ describe("getOpenPrLinkMap", () => {
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
     expect(getOpenPrLinkMap().get(42)?.map((pr) => pr.number)).toEqual([57, 58]);
+  });
+
+  it("ignores a closing reference to an issue in another repository", async () => {
+    // `Closes other-org/lib#42` would otherwise be indexed as this repository's
+    // issue 42, linking an unrelated pull request to it.
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      json({
+        data: {
+          repository: {
+            pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [prNode(57, "2026-01-05T00:00:00Z", 42, "other-org/lib")],
+            },
+          },
+        },
+      }),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect([...getOpenPrLinkMap().keys()]).toEqual([]);
   });
 
   it("follows every page, because callers treat the map as authoritative", async () => {

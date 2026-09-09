@@ -25,7 +25,7 @@ export interface IssueState {
   prSurface: PrSurface | null;
 }
 
-export type SkipReason = "issue-closed" | "no-new-messages";
+export type SkipReason = "issue-closed" | "no-new-messages" | "unsafe-pr-branch";
 
 export interface WorkItem {
   issue: GitHubIssue;
@@ -142,7 +142,49 @@ export function decideWork(state: IssueState, p: Participants, baseBranch: strin
   }
 
   const surface = prSurface;
-  const prAnalysis = analyzeSurface(surface.messages, p);
+
+  // A build turn checks out the head branch and tells the model to commit and
+  // push to it, so two shapes have to be refused rather than worked:
+  //
+  //  - a pull request whose head *is* the base branch (a GitFlow release PR
+  //    `develop -> main` carrying `Closes #42`, say). Pushing there violates the
+  //    documented promise never to push to the base branch, and the prompt would
+  //    contradict itself.
+  //  - a pull request from a fork. `headRefName` names a branch in the fork, but
+  //    preparation fetches `origin/<headRefName>` — a different branch, or none.
+  if (surface.pr.isCrossRepository) {
+    return {
+      kind: "skip",
+      issue,
+      reason: "unsafe-pr-branch",
+      detail: `pull request #${String(surface.pr.number)} comes from a fork; its head branch is not in this repository`,
+    };
+  }
+  if (surface.pr.headRefName === baseBranch) {
+    return {
+      kind: "skip",
+      issue,
+      reason: "unsafe-pr-branch",
+      detail: `pull request #${String(surface.pr.number)} has the base branch (${baseBranch}) as its head`,
+    };
+  }
+
+  // The agent's own replies *inside review threads* count towards the pull
+  // request boundary. They are stored separately from `messages`, and the answer
+  // check (`agentAnsweredAfter`) already treats such a reply as an answer — so
+  // omitting them here made the boundary move backwards relative to the answer
+  // check: the marker was deleted, the older review body read as new again, and
+  // the same message started a build turn on every tick. The default build
+  // prompt explicitly invites replying in the thread, so this was the likely
+  // path, not a corner case.
+  //
+  // Only *agent* thread comments are folded in. Authorized ones already drive
+  // the turn through `actionableThreads`, and adding them here would double
+  // count them as new messages and duplicate them in the prompt.
+  const agentThreadMessages = surface.threads
+    .flatMap((thread) => thread.comments)
+    .filter((comment) => comment.author.toLowerCase() === p.agentUser.toLowerCase());
+  const prAnalysis = analyzeSurface([...surface.messages, ...agentThreadMessages], p);
   const actionableThreads = findActionableThreads(surface.threads, p);
   const hasPrWork = prAnalysis.hasNewMessage || actionableThreads.length > 0;
 

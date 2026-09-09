@@ -32,6 +32,8 @@ function pullRequest(overrides: Partial<PullRequestRef> = {}): PullRequestRef {
     url: "https://gh/pr/57",
     title: "Add a flag",
     headRefName: "feature/042-flag",
+    baseRefName: "develop",
+    isCrossRepository: false,
     state: "OPEN",
     isDraft: false,
     updatedAt: "2026-01-05T00:00:00Z",
@@ -370,6 +372,120 @@ describe("decideWork — actionable threads", () => {
       BASE,
     );
     expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+});
+
+describe("decideWork — the pull request boundary", () => {
+  it("counts the agent's reply inside a review thread as having answered the pull request", () => {
+    // The answer check flattens thread comments in, so if the boundary did not,
+    // the marker would be deleted while an older review body still read as new —
+    // and the same message would start a build turn on every tick. The default
+    // build prompt explicitly invites replying in the thread, so this is the
+    // expected path, not a corner case.
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({
+          messages: [message("alice", "2026-01-06T00:00:00Z", "pr-review")],
+          threads: [
+            thread({
+              comments: [
+                message("alice", "2026-01-06T00:00:00Z", "thread-comment"),
+                message("automata-bot", "2026-01-07T00:00:00Z", "thread-comment"),
+              ],
+            }),
+          ],
+        }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+
+  it("still treats an authorized message newer than the agent's thread reply as new", () => {
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({
+          messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+          threads: [
+            thread({
+              comments: [message("automata-bot", "2026-01-07T00:00:00Z", "thread-comment")],
+            }),
+          ],
+        }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.turn).toBe("pr-work");
+  });
+
+  it("does not double count an authorized thread comment as a new pull request message", () => {
+    const decision = decideWork(
+      state({
+        issueSurface: issueSurface({
+          messages: [
+            message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+            message("automata-bot", "2026-01-02T00:00:00Z"),
+          ],
+        }),
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({ threads: [thread()] }),
+      }),
+      P,
+      BASE,
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.prAnalysis?.newMessageCount).toBe(0);
+    expect(decision.item.actionableThreads).toHaveLength(1);
+  });
+});
+
+describe("decideWork — unsafe pull request branches", () => {
+  it("refuses a build turn on a pull request from a fork", () => {
+    // headRefName names a branch in the fork, but preparation fetches
+    // origin/<headRefName> — a different branch, or none at all.
+    const fork = pullRequest({ isCrossRepository: true });
+    const decision = decideWork(
+      state({ linkedPrs: [fork], prSurface: prSurface({ pr: fork }) }),
+      P,
+      BASE,
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+    if (decision.kind !== "skip") return;
+    expect(decision.detail).toMatch(/comes from a fork/);
+  });
+
+  it("refuses a build turn whose head is the base branch", () => {
+    // A GitFlow release pull request `develop -> main` carrying `Closes #42`
+    // would otherwise be checked out and pushed to, breaking the promise never
+    // to push to the base branch.
+    const release = pullRequest({ headRefName: BASE, baseRefName: "main" });
+    const decision = decideWork(
+      state({ linkedPrs: [release], prSurface: prSurface({ pr: release }) }),
+      P,
+      BASE,
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+    if (decision.kind !== "skip") return;
+    expect(decision.detail).toMatch(/base branch/);
   });
 });
 

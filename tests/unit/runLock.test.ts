@@ -76,6 +76,27 @@ describe("acquireRunLock", () => {
     expect(acquireRunLock("do-work", 60).ok).toBe(true);
   });
 
+  it("flags a same-host lock held past the staleness window as suspect", () => {
+    // Pids are reused in a container, so a live pid is not proof that *our* tick
+    // is running. Where the pid start time cannot be verified, an over-age live
+    // lock is reported as suspect so the caller can complain rather than idling
+    // at exit 0 forever.
+    const longAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    writeLock({ pid: process.pid, startedAt: longAgo, host: hostname(), command: "do-work", token: "t" });
+    const result = acquireRunLock("do-work", 60);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.suspect).toBe(true);
+  });
+
+  it("does not flag a recently taken same-host lock", () => {
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work", token: "t" });
+    const result = acquireRunLock("do-work", 60);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.suspect).toBe(false);
+  });
+
   it("keeps a fresh lock held by another host", () => {
     writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: "some-other-box", command: "do-work" });
     const result = acquireRunLock("do-work", 60);
@@ -187,6 +208,25 @@ describe("acquireRunLock", () => {
     const second = claimStaleLock(lockFile(), "token-b");
 
     expect([first, second]).toEqual([true, false]);
+  });
+
+  it("refuses to claim a lock that is no longer the stale one it judged", () => {
+    // "Exactly one rename wins" only holds while nothing recreates the path. A
+    // contender that already renamed the stale file away and written its own
+    // lock leaves the path occupied again — and a second contender still acting
+    // on its earlier reading would rename that *live* lock away and destroy it.
+    const stale = { pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work", token: "stale" };
+    writeLock(stale);
+    const judged = JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string };
+
+    // A live replacement now occupies the path.
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work", token: "live" });
+
+    const claimed = claimStaleLock(lockFile(), "late-contender", judged as never);
+    expect(claimed).toBe(false);
+    // The live lock is intact, and no stray files remain.
+    expect((JSON.parse(readFileSync(lockFile(), "utf8")) as { token: string }).token).toBe("live");
+    expect(readdirSync(join(TEST_CWD, ".automata")).filter((f) => f !== "automata.lock")).toEqual([]);
   });
 
   it("reports no claim when there is no stale lock to take over", () => {
