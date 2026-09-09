@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analyseAnswer, promptWatermark } from "../../src/github/markerReconciliation.js";
+import { analyseAnswer, messagesBetween, promptWatermark } from "../../src/github/markerReconciliation.js";
 import type { Participants, RawMessage } from "../../src/github/conversation.js";
 
 const P: Participants = { allowedUsers: ["alice", "bob"], agentUser: "automata-bot" };
@@ -13,15 +13,15 @@ describe("promptWatermark", () => {
   it("takes the newest timestamp across every surface the prompt carried", () => {
     expect(
       promptWatermark([
-        { messages: [{ author: "alice", createdAt: "2026-01-01T00:00:00Z" }] },
-        { messages: [{ author: "bob", createdAt: "2026-01-05T00:00:00Z" }] },
+        [{ createdAt: "2026-01-01T00:00:00Z" }],
+        [{ createdAt: "2026-01-05T00:00:00Z" }],
       ]),
     ).toBe("2026-01-05T00:00:00Z");
   });
 
   it("is null when the prompt carried nothing", () => {
     expect(promptWatermark([])).toBeNull();
-    expect(promptWatermark([{ messages: [] }])).toBeNull();
+    expect(promptWatermark([[]])).toBeNull();
   });
 });
 
@@ -63,6 +63,37 @@ describe("analyseAnswer — did the agent answer?", () => {
       null,
     );
     expect(result.answeredAt).toBe("2026-01-10T00:09:00Z");
+  });
+});
+
+describe("messagesBetween", () => {
+  it("returns authorized messages a later agent comment buried", () => {
+    const buried = messagesBetween(
+      [
+        msg("alice", "2026-01-01T00:00:00Z"),
+        msg("alice", "2026-01-05T00:00:00Z"),
+        msg("alice", "2026-01-20T00:00:00Z"),
+      ],
+      P,
+      "2026-01-01T00:00:00Z",
+      "2026-01-10T00:00:00Z",
+    );
+    expect(buried.map((m) => m.createdAt)).toEqual(["2026-01-05T00:00:00Z"]);
+  });
+
+  it("includes a message in the same second as the burying comment", () => {
+    const buried = messagesBetween([msg("alice", "2026-01-10T00:00:00Z")], P, null, "2026-01-10T00:00:00Z");
+    expect(buried).toHaveLength(1);
+  });
+
+  it("excludes the agent's own and unauthorized messages", () => {
+    const buried = messagesBetween(
+      [msg("automata-bot", "2026-01-05T00:00:00Z"), msg("drive-by", "2026-01-05T00:00:00Z")],
+      P,
+      null,
+      "2026-01-10T00:00:00Z",
+    );
+    expect(buried).toEqual([]);
   });
 });
 
@@ -125,6 +156,19 @@ describe("analyseAnswer — messages the answer overtook", () => {
       "2026-01-09T23:59:00Z",
       "2026-01-10T00:09:00Z",
     ]);
+  });
+
+  it("reports a message posted in the same second as the answer", () => {
+    // The boundary rule is strict in the other direction, so a same-second tie
+    // is neither reported here nor new next tick — it would vanish. GitHub
+    // timestamps are second-resolution, so the tie is reachable.
+    const result = analyseAnswer(
+      [msg("alice", "2026-01-10T00:05:00Z"), msg("automata-bot", "2026-01-10T00:05:00Z")],
+      P,
+      MARKER,
+      watermark,
+    );
+    expect(result.missed.map((m) => m.author)).toEqual(["alice"]);
   });
 
   it("ignores unauthorized accounts entirely", () => {

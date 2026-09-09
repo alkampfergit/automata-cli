@@ -45,10 +45,10 @@ function isAuthorized(author: string, p: Participants): boolean {
  * the marker is posted. A message arriving in that window is older than the
  * marker, so measuring against the marker declares it seen when it was not.
  */
-export function promptWatermark(analysed: { messages: { author: string; createdAt: string }[] }[]): string | null {
+export function promptWatermark(messageSets: { createdAt: string }[][]): string | null {
   let watermark: string | null = null;
-  for (const surface of analysed) {
-    for (const message of surface.messages) {
+  for (const messages of messageSets) {
+    for (const message of messages) {
       if (watermark === null || message.createdAt > watermark) watermark = message.createdAt;
     }
   }
@@ -62,6 +62,23 @@ export function promptWatermark(analysed: { messages: { author: string; createdA
  * `messages` is the answering surface re-read after the run — for a build turn
  * that includes review-thread comments, since a reply there is a real answer.
  */
+/**
+ * Authorized messages strictly between a watermark and a later agent comment —
+ * the ones that comment buried without their having been seen.
+ */
+export function messagesBetween(
+  messages: RawMessage[],
+  p: Participants,
+  watermark: string | null,
+  until: string,
+): RawMessage[] {
+  const since = watermark ?? "";
+  return messages.filter(
+    (message) =>
+      isAuthorized(message.author, p) && message.createdAt > since && message.createdAt <= until,
+  );
+}
+
 export function analyseAnswer(
   messages: RawMessage[],
   p: Participants,
@@ -87,8 +104,13 @@ export function analyseAnswer(
   // Only what the answer overtook is *lost*. Anything newer than the answer is
   // still newer than the boundary, so the next tick picks it up unaided — it
   // needs no rescue, and treating it as a loss would raise a false alarm.
+  // `<=`, not `<`. The boundary rule in `conversation.ts` treats "newer than the
+  // agent's message" strictly, so a message in the *same second* as the answer is
+  // not new next tick either — it would fall through both tests and vanish.
+  // GitHub timestamps are second-resolution, so that tie is reachable. The safe
+  // direction is a possible false flag, never a silent loss.
   const missed =
-    answeredAt === null ? [] : toReport.filter((message) => message.createdAt < answeredAt);
+    answeredAt === null ? [] : toReport.filter((message) => message.createdAt <= answeredAt);
 
   return { answeredAt, missed, toReport };
 }

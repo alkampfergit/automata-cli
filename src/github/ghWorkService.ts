@@ -129,7 +129,13 @@ interface RawThreadsResponse {
             line: number | null;
             comments: {
               pageInfo: { hasPreviousPage: boolean };
-              nodes: { author?: RawAuthor; body: string; createdAt: string; url?: string }[];
+              nodes: {
+                author?: RawAuthor;
+                body: string;
+                createdAt: string;
+                url?: string;
+                pullRequestReview?: { submittedAt?: string | null } | null;
+              }[];
             };
           }[];
         };
@@ -169,6 +175,19 @@ function login(author: RawAuthor | undefined): string {
 
 function byCreatedAt(a: RawMessage, b: RawMessage): number {
   return a.createdAt.localeCompare(b.createdAt);
+}
+
+/**
+ * When a review comment became visible to others.
+ *
+ * A pending review's comments are stamped as they are drafted, so `createdAt`
+ * can precede visibility by however long the reviewer took. A comment whose
+ * review has not been submitted has no visible time yet, so its draft time is
+ * the best available answer.
+ */
+function visibleAt(createdAt: string, submittedAt: string | null | undefined): string {
+  if (submittedAt === null || submittedAt === undefined) return createdAt;
+  return submittedAt > createdAt ? submittedAt : createdAt;
 }
 
 export function getRepoSlug(): { owner: string; repo: string } {
@@ -387,7 +406,7 @@ query($owner:String!,$repo:String!,$prNumber:Int!,$cursor:String){
           isResolved isOutdated path line
           comments(last:100){
             pageInfo{ hasPreviousPage }
-            nodes{ author{login} body createdAt url }
+            nodes{ author{login} body createdAt url pullRequestReview{ submittedAt } }
           }
         }
       }
@@ -457,7 +476,14 @@ function getReviewThreads(prNumber: number): ReviewThread[] {
             kind: "thread-comment" as const,
             author: login(comment.author),
             body: comment.body,
-            createdAt: comment.createdAt,
+            // When the comment became *visible*, not when it was drafted.
+            // GitHub stamps `createdAt` the moment a comment is added to a
+            // pending review, and it only becomes visible when the review is
+            // submitted — minutes later for a human working through a diff.
+            // Using `createdAt` let an agent answer posted in between look newer
+            // than the review, which marked every one of its threads answered
+            // and discarded the whole review silently.
+            createdAt: visibleAt(comment.createdAt, comment.pullRequestReview?.submittedAt),
           }))
           .sort(byCreatedAt),
       });

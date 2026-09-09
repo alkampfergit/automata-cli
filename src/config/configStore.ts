@@ -38,6 +38,13 @@ export interface DoWorkModels {
 
 export interface AutomataDoWorkConfig {
   baseBranch?: string;
+  /**
+   * Branches a build turn must never check out and push to, beyond the base and
+   * the repository default. In GitFlow the default branch is often `develop`, so
+   * relying on it alone leaves `main` unguarded — and a back-merge pull request
+   * `main -> develop` carrying `Closes #N` would otherwise be worked on `main`.
+   */
+  protectedBranches?: string[];
   executor?: Executor;
   models?: DoWorkModels;
   /** 0 means unlimited. */
@@ -88,6 +95,7 @@ export const DEFAULT_CHECK_ISSUE_PROMPT =
 
 export const DEFAULT_DO_WORK = {
   baseBranch: "develop",
+  protectedBranches: ["main", "master"],
   executor: "claude" as Executor,
   maxRunsPerTick: 0,
   lockStaleMinutes: 120,

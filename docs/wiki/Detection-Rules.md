@@ -36,7 +36,11 @@ A review thread needs an answer when:
 - it is **not resolved**, **and**
 - its **newest** comment is from an authorized account that is not the agent.
 
-The second half is what matters. If the agent replied last, the thread is answered — even though it is still unresolved — because resolving is the reviewer's action, not the agent's. Treating "unresolved" alone as actionable would make every thread retrigger a turn on every tick, forever.
+The second half is what matters. If the agent has answered, the thread is answered — even though it is still unresolved — because resolving is the reviewer's action, not the agent's. Treating "unresolved" alone as actionable would make every thread retrigger a turn on every tick, forever.
+
+"The agent has answered" means an agent message newer than the thread's newest authorized comment **anywhere on the pull request**, not only inside the thread. The prompt gives the model a file, a line and the comment's URL, but nothing guarantees an in-thread reply is achievable, and the shipped prompt explicitly permits answering on the conversation. Judging in-thread alone left such a thread actionable forever.
+
+Timestamps for review comments come from when the review was **submitted**, not when the comment was drafted: GitHub stamps a pending review's comments as they are written, so a review drafted over twenty minutes would otherwise look older than an answer posted in the middle of it, and the whole review would be marked answered.
 
 "Newest" is decided **after** Rule 1 has dropped the unauthorized comments, not before. Otherwise a bot commenting in the thread after a maintainer's request would make the bot the newest author and silently suppress that request. The filtered comments are also what reach the prompt, so bot text never appears there.
 

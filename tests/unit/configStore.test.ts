@@ -281,6 +281,7 @@ describe("doWork configuration", () => {
   it("exposes documented defaults", () => {
     expect(DEFAULT_DO_WORK).toEqual({
       baseBranch: "develop",
+      protectedBranches: ["main", "master"],
       executor: "claude",
       maxRunsPerTick: 0,
       lockStaleMinutes: 120,

@@ -114,12 +114,53 @@ function plural(count: number, noun: string): string {
   return `${String(count)} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export function decideWork(
-  state: IssueState,
-  p: Participants,
-  baseBranch: string,
-  defaultBranch: string | null = null,
-): Decision {
+export interface BranchPolicy {
+  baseBranch: string;
+  /** The repository default branch, when known. */
+  defaultBranch?: string | null;
+  /** Extra branches a turn must never push to. */
+  protectedBranches?: string[];
+}
+
+/** Branches no build turn may check out and push to. */
+function protectedHeads(policy: BranchPolicy): string[] {
+  return [policy.baseBranch, policy.defaultBranch ?? "", ...(policy.protectedBranches ?? [])].filter(
+    (branch) => branch.length > 0,
+  );
+}
+
+/**
+ * Refuse a build turn that would have to push somewhere it must not.
+ *
+ * A fork's head branch is not in this repository at all, and preparation would
+ * fetch `origin/<name>` — a different branch, or none. An integration branch as
+ * the head means the turn would commit to it: a release pull request
+ * `develop -> main`, or a back-merge `main -> develop`, both carrying `Closes #N`.
+ */
+function unsafeBranchSkip(pr: PullRequestRef, issue: GitHubIssue, policy: BranchPolicy): Decision | null {
+  if (pr.isCrossRepository) {
+    return {
+      kind: "skip",
+      issue,
+      reason: "unsafe-pr-branch",
+      detail: `pull request #${String(pr.number)} comes from a fork; its head branch is not in this repository`,
+    };
+  }
+  if (protectedHeads(policy).includes(pr.headRefName)) {
+    return {
+      kind: "skip",
+      issue,
+      reason: "unsafe-pr-branch",
+      detail:
+        `pull request #${String(pr.number)} has a protected branch (${pr.headRefName}) ` +
+        "as its head, so a turn would have to push to it",
+    };
+  }
+  return null;
+}
+
+export function decideWork(state: IssueState, p: Participants, policy: BranchPolicy): Decision {
+  const baseBranch = policy.baseBranch;
   const { issueSurface, prSurface } = state;
   const issue = issueSurface.issue;
 
@@ -167,40 +208,8 @@ export function decideWork(
 
   const surface = prSurface;
 
-  // A build turn checks out the head branch and tells the model to commit and
-  // push to it, so two shapes have to be refused rather than worked:
-  //
-  //  - a pull request whose head *is* the base branch (a GitFlow release PR
-  //    `develop -> main` carrying `Closes #42`, say). Pushing there violates the
-  //    documented promise never to push to the base branch, and the prompt would
-  //    contradict itself.
-  //  - a pull request from a fork. `headRefName` names a branch in the fork, but
-  //    preparation fetches `origin/<headRefName>` — a different branch, or none.
-  if (surface.pr.isCrossRepository) {
-    return {
-      kind: "skip",
-      issue,
-      reason: "unsafe-pr-branch",
-      detail: `pull request #${String(surface.pr.number)} comes from a fork; its head branch is not in this repository`,
-    };
-  }
-  // Both the base branch and the repository default branch are refused. A
-  // back-merge pull request `main -> develop` carrying `Closes #42` keeps the
-  // literal promise (its head is not the base branch) while defeating the reason
-  // the guard exists: the model would be told to commit and push to `main`.
-  const protectedHead = [baseBranch, defaultBranch].filter(
-    (branch): branch is string => branch !== null && branch.length > 0,
-  );
-  if (protectedHead.includes(surface.pr.headRefName)) {
-    return {
-      kind: "skip",
-      issue,
-      reason: "unsafe-pr-branch",
-      detail:
-        `pull request #${String(surface.pr.number)} has a protected branch (${surface.pr.headRefName}) ` +
-        "as its head, so a turn would have to push to it",
-    };
-  }
+  const unsafe = unsafeBranchSkip(surface.pr, issue, policy);
+  if (unsafe !== null) return unsafe;
 
   // The agent's own replies *inside review threads* count towards the pull
   // request boundary. They are stored separately from `messages`, and the answer

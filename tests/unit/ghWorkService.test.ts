@@ -454,6 +454,90 @@ describe("getPrSurface", () => {
     expect(getPrSurface(57).pr.state).toBe("MERGED");
   });
 
+  it("dates a review comment from when its review was submitted, not drafted", async () => {
+    // GitHub stamps a pending review's comments as they are written. Using the
+    // draft time let an answer posted mid-review look newer than the review, so
+    // every thread in it was marked answered and the review was discarded.
+    mockSpawnSync
+      .mockReturnValueOnce(json(prView))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      isResolved: false,
+                      isOutdated: false,
+                      path: "src/a.ts",
+                      line: 1,
+                      comments: {
+                        pageInfo: { hasPreviousPage: false },
+                        nodes: [
+                          {
+                            author: { login: "alice" },
+                            body: "drafted early, submitted late",
+                            createdAt: "2026-01-10T10:05:00Z",
+                            pullRequestReview: { submittedAt: "2026-01-10T10:20:00Z" },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      );
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    const [thread] = getPrSurface(57).threads;
+    expect(thread.comments[0].createdAt).toBe("2026-01-10T10:20:00Z");
+  });
+
+  it("keeps the draft time when the review has not been submitted", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(json(prView))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    {
+                      isResolved: false,
+                      isOutdated: false,
+                      path: "src/a.ts",
+                      line: 1,
+                      comments: {
+                        pageInfo: { hasPreviousPage: false },
+                        nodes: [
+                          {
+                            author: { login: "alice" },
+                            body: "pending",
+                            createdAt: "2026-01-10T10:05:00Z",
+                            pullRequestReview: { submittedAt: null },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      );
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    expect(getPrSurface(57).threads[0].comments[0].createdAt).toBe("2026-01-10T10:05:00Z");
+  });
+
   it("requests every comment in a thread, not just the first", async () => {
     mockSpawnSync
       .mockReturnValueOnce(json(prView))

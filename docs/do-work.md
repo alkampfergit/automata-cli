@@ -141,7 +141,8 @@ Because that link is the state machine, `do-work` repairs it after a discussion 
 - Logins are matched case-insensitively.
 - A timestamp tie is **not** new, so the agent's own marker comment can never retrigger the turn that produced it.
 - The issue body never acts as the boundary, so an issue opened by the agent is still processed.
-- On a pull request, messages come from the conversation comments, non-empty review bodies, and unresolved review threads. A thread counts only when its **newest** comment is from an authorized human: if the agent replied last the thread is answered, even while it is still marked unresolved, because resolving is the reviewer's action.
+- On a pull request, messages come from the conversation comments, non-empty review bodies, and unresolved review threads. A thread counts only when its **newest** comment is from an authorized human *and* the agent has not posted anywhere on the pull request since. Replying in the thread answers it; so does a conversation comment, because the prompt cannot guarantee the model is able to reply in-thread. Either way an unresolved thread the agent has answered does not retrigger, since resolving is the reviewer's action.
+- A review comment's timestamp is taken from when its review was **submitted**, not when it was drafted. GitHub stamps a pending review's comments as they are written, so a reviewer working through a diff for twenty minutes produces comments dated before an answer the agent posted in the meantime — and using the draft time would mark that whole review answered and discard it.
 - A merged or closed pull request is treated as no pull request, so the turn becomes a discussion.
 - New messages on **both** the issue and its pull request produce exactly one build turn, with both sets of messages in the prompt.
 
@@ -160,6 +161,8 @@ After the run, `do-work` re-reads the surface:
 | Yes | **Deleted.** The answer is newer and holds the boundary, so the marker is noise. |
 | No | **Updated in place** to say the run finished or failed without posting an answer on that surface, to warn that the branch may still have changed, and to ask for a reply. |
 | Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
+
+A third comment appears only when the timing was unlucky: if an authorized account posts while a run is already in flight, that message cannot reach the run, and because the agent's answer is newer the next tick will not see it as new either. A stateless boundary cannot carry it forward, so the agent says so and asks for it to be posted again. The same applies to an issue message buried by the pickup note. Either case reports the item as degraded (exit 2) rather than losing the message in silence.
 
 The marker is deleted only after the answer is confirmed to exist, never on the strength of the executor's exit code — a run can exit non-zero having posted a good reply, and exit zero having posted nothing. Updating keeps the comment's creation time, so a run that produced nothing still holds the boundary and is **not** retried automatically; the updated text is what asks a human to step in.
 

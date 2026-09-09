@@ -10,7 +10,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
   DEFAULT_CHECK_ISSUE_PROMPT: "default check-issue prompt",
-  DEFAULT_DO_WORK: { baseBranch: "develop", executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
+  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
 }));

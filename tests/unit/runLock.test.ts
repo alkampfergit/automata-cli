@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock, claimStaleLock } from "../../src/run/runLock.js";
@@ -241,6 +241,35 @@ describe("acquireRunLock", () => {
     expect(result.ok).toBe(false);
     // The stale lock is untouched — the contender that holds the claim owns it.
     expect((JSON.parse(readFileSync(lockFile(), "utf8")) as { pid: number }).pid).toBe(4194304);
+  });
+
+  it("recovers from an empty claim file rather than wedging the lock forever", () => {
+    // A signal between the exclusive create and the write leaves the claim
+    // empty. Treating an unreadable claim as current made every later tick
+    // report "another instance is running" and exit 0 — a dead loop looking
+    // healthy, which is exactly what the suspect mechanism exists to prevent.
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    const claim = join(TEST_CWD, ".automata", "automata.lock.claim");
+    writeFileSync(claim, "");
+    // Backdate it so the age test can retire it via mtime.
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(claim, old, old);
+
+    expect(acquireRunLock("do-work", 120).ok).toBe(true);
+    expect(existsSync(claim)).toBe(false);
+  });
+
+  it("reports a lock it cannot claim as suspect when the owner is gone", () => {
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    writeFileSync(
+      join(TEST_CWD, ".automata", "automata.lock.claim"),
+      JSON.stringify({ pid: 1, at: new Date().toISOString() }),
+    );
+    const result = acquireRunLock("do-work", 120);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Nothing is really running, so the caller must not report a healthy tick.
+    expect(result.suspect).toBe(true);
   });
 
   it("reclaims an abandoned claim file, so one crash cannot wedge the lock forever", () => {

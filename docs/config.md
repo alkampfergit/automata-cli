@@ -145,6 +145,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | Key | Default | Meaning |
 |---|---|---|
 | `baseBranch` | `develop` | The branch a discussion turn returns to, and the branch new work is expected to branch off. |
+| `protectedBranches` | `["main", "master"]` | Extra branches a build turn must never check out and push to. The base branch and the repository default are always refused; this covers the rest. In GitFlow the default branch is often `develop`, so without it a back-merge pull request `main → develop` carrying `Closes #N` would be worked on `main`. |
 | `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. |
 | `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
 | `models.codex` | *(none)* | Default model when the executor is Codex. |

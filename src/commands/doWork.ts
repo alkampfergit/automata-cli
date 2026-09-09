@@ -33,7 +33,12 @@ import {
   type WorkItem,
 } from "../github/workDetection.js";
 import { composePrompt } from "../github/workPrompt.js";
-import { analyseAnswer, promptWatermark, type AnswerAnalysis } from "../github/markerReconciliation.js";
+import {
+  analyseAnswer,
+  messagesBetween,
+  promptWatermark,
+  type AnswerAnalysis,
+} from "../github/markerReconciliation.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
@@ -65,6 +70,7 @@ interface DoWorkOptions {
 
 interface Settings {
   baseBranch: string;
+  protectedBranches: string[];
   executor: Executor;
   model: string | undefined;
   maxRuns: number;
@@ -174,6 +180,7 @@ function resolveSettings(options: DoWorkOptions): Settings {
 
   return {
     baseBranch: doWork.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
+    protectedBranches: doWork.protectedBranches ?? DEFAULT_DO_WORK.protectedBranches,
     executor,
     // --model wins; otherwise take the default for the executor in use.
     model: options.model ?? doWork.models?.[executor],
@@ -369,6 +376,13 @@ function validateDoWorkConfig(section: unknown): void {
   validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
   validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
 
+  const protectedBranches = section["protectedBranches"];
+  if (protectedBranches !== undefined && protectedBranches !== null) {
+    if (!Array.isArray(protectedBranches) || protectedBranches.some((b) => typeof b !== "string" || b.trim().length === 0)) {
+      fail("doWork.protectedBranches must be an array of non-empty strings.");
+    }
+  }
+
   for (const container of ["models", "prompts"] as const) {
     const value = section[container];
     if (value === undefined || value === null) continue;
@@ -475,16 +489,14 @@ function claimIssue(item: WorkItem, settings: Settings): void {
  * which case the caller must not proceed; the marker is withdrawn first so
  * neither boundary moves.
  */
-function notePickupOnIssue(item: WorkItem, marker: MarkerRef): boolean {
-  if (item.turn !== "pr-work" || item.pr === null || !item.issueAnalysis.hasNewMessage) return true;
+function notePickupOnIssue(item: WorkItem, marker: MarkerRef): MarkerRef | null | false {
+  if (item.turn !== "pr-work" || item.pr === null || !item.issueAnalysis.hasNewMessage) return null;
   try {
-    postMarker(
+    return postMarker(
       "issue",
       item.issue.number,
       `automata do-work: picked this up on pull request #${String(item.pr.number)} — ${item.pr.url}`,
     );
-    progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr.number)}.\n`);
-    return true;
   } catch (err) {
     progress(`  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`);
     try {
@@ -494,6 +506,46 @@ function notePickupOnIssue(item: WorkItem, marker: MarkerRef): boolean {
     }
     return false;
   }
+}
+
+/**
+ * Report issue messages the pickup note buried.
+ *
+ * The note becomes the issue's newest agent message, so anything authorized that
+ * arrived between reading the issue and posting the note is behind the boundary
+ * and will never be new again — the same window the prompt watermark closes on
+ * the answering surface, one surface over. Reconciliation only re-reads the pull
+ * request, so without this those messages vanish unremarked.
+ */
+function reportIssueMessagesBuriedByNote(
+  item: WorkItem,
+  note: MarkerRef,
+  participants: Participants,
+): number {
+  const watermark = promptWatermark([item.issueAnalysis.messages]);
+  let buried: RawMessage[];
+  try {
+    const messages = getIssueSurface(item.issue.number).messages;
+    buried = messagesBetween(messages, participants, watermark, note.createdAt);
+  } catch (err) {
+    progress(`  warning: could not re-read issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+    return 0;
+  }
+  if (buried.length === 0) return 0;
+
+  const authors = [...new Set(buried.map((message) => message.author))].join(", ");
+  try {
+    postMarker(
+      "issue",
+      item.issue.number,
+      `automata do-work: ${authors} posted here while this issue was being picked up, so ` +
+        `${buried.length === 1 ? "that message was" : "those messages were"} not included in the run. ` +
+        "Please post again to have them acted on.",
+    );
+  } catch (err) {
+    progress(`  warning: could not report the buried issue message(s): ${(err as Error).message}\n`);
+  }
+  return buried.length;
 }
 
 /**
@@ -508,12 +560,11 @@ function refreshItem(item: WorkItem, settings: Settings): Decision {
   // none and we would run a discussion turn on the base branch — starting a
   // competing implementation against the branch that already exists.
   const linkMap = getOpenPrLinkMap();
-  return decideWork(
-    buildIssueState(item.issue, linkMap),
-    settings.participants,
-    settings.baseBranch,
-    linkMap.defaultBranch,
-  );
+  return decideWork(buildIssueState(item.issue, linkMap), settings.participants, {
+    baseBranch: settings.baseBranch,
+    defaultBranch: linkMap.defaultBranch,
+    protectedBranches: settings.protectedBranches,
+  });
 }
 
 /** Re-read the surface the turn answered, flattened for the answer analysis. */
@@ -573,13 +624,29 @@ function reportOvertakenMessages(item: WorkItem, analysis: AnswerAnalysis): void
  * which keeps its creation time, and therefore the boundary, so a failing run is
  * not retried automatically on every later tick.
  */
+/**
+ * Why a turn ended without a usable answer.
+ *
+ * `answered-no-reply` has three causes and they are not interchangeable: only
+ * "the model posted nothing" may later be overridden by the discovery of a new
+ * pull request. Overriding a flagged mid-run message, or an unverified read,
+ * would silence a real degradation.
+ */
+type ReconcileReason = "answered" | "no-answer" | "flagged" | "unverified";
+
+interface Reconciled {
+  outcome: Outcome;
+  detail: string;
+  reason: ReconcileReason;
+}
+
 function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
   participants: Participants,
   watermark: string | null,
   runError: Error | null,
-): { outcome: Outcome; detail: string } {
+): Reconciled {
   let analysis: AnswerAnalysis;
   try {
     analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
@@ -601,18 +668,19 @@ function reconcileMarker(
       return {
         outcome: "answered-no-reply",
         detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
+        reason: "flagged",
       };
     }
     return runError === null
-      ? { outcome: "answered", detail: "answered" }
-      : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}` };
+      ? { outcome: "answered", detail: "answered", reason: "answered" }
+      : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}`, reason: "answered" };
   }
 
   return reportNoAnswer(item, marker, runError);
 }
 
 /** The surface could not be re-read, so nothing about the answer is established. */
-function reportUnverified(item: WorkItem, marker: MarkerRef): { outcome: Outcome; detail: string } {
+function reportUnverified(item: WorkItem, marker: MarkerRef): Reconciled {
   const surface = markerSurfaceLabel(item);
   try {
     updateMarker(
@@ -624,7 +692,11 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): { outcome: Outcome
   } catch (err) {
     progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
   }
-  return { outcome: "answered-no-reply", detail: "could not verify whether an answer was posted" };
+  return {
+    outcome: "answered-no-reply",
+    detail: "could not verify whether an answer was posted",
+    reason: "unverified",
+  };
 }
 
 /**
@@ -632,11 +704,7 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): { outcome: Outcome
  * can commit and push and still fail to comment, and a failed run can leave
  * partial work behind.
  */
-function reportNoAnswer(
-  item: WorkItem,
-  marker: MarkerRef,
-  runError: Error | null,
-): { outcome: Outcome; detail: string } {
+function reportNoAnswer(item: WorkItem, marker: MarkerRef, runError: Error | null): Reconciled {
   const surface = markerSurfaceLabel(item);
   const sideEffects =
     item.turn === "issue-discuss"
@@ -657,8 +725,8 @@ function reportNoAnswer(
     );
   }
   return runError === null
-    ? { outcome: "answered-no-reply", detail: "run finished but posted no answer" }
-    : { outcome: "failed", detail: `run failed: ${runError.message}` };
+    ? { outcome: "answered-no-reply", detail: "run finished but posted no answer", reason: "no-answer" }
+    : { outcome: "failed", detail: `run failed: ${runError.message}`, reason: "no-answer" };
 }
 
 async function invokeExecutor(prompt: string, settings: Settings, silent: boolean): Promise<void> {
@@ -769,18 +837,30 @@ async function processItem(
   // Ordered *after* the marker deliberately: the note is permanent, so posting
   // it and then failing to post the marker would advance the issue boundary past
   // a message that never got answered.
-  if (!notePickupOnIssue(item, marker)) {
+  const note = notePickupOnIssue(item, marker);
+  if (note === false) {
     inFlightMarker = null;
     return { ...base, outcome: "skipped", detail: "issue pickup note failed" };
+  }
+  let buriedByNote = 0;
+  if (note !== null) {
+    progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr?.number ?? 0)}.\n`);
+    buriedByNote = reportIssueMessagesBuriedByNote(item, note, settings.participants);
   }
 
   // Measured from the messages the prompt actually carries, not from the marker:
   // the marker is posted several API calls later (link-map pagination, branch
   // fetch and checkout, assignment), so measuring against it would declare a
   // message seen when the prompt never contained it.
+  // Every message the prompt carried, including the authorized review-thread
+  // comments. Those live in `actionableThreads`, not in `prAnalysis` — only the
+  // agent's thread comments are folded in there — so leaving them out made the
+  // trigger of a thread-driven turn look like a message that arrived mid-run,
+  // and every such turn posted a spurious "please post again" comment.
   const watermark = promptWatermark([
-    item.issueAnalysis,
-    ...(item.prAnalysis === null ? [] : [item.prAnalysis]),
+    item.issueAnalysis.messages,
+    item.prAnalysis?.messages ?? [],
+    item.actionableThreads.flatMap((thread) => thread.comments),
   ]);
 
   const prompt = composePrompt({
@@ -829,14 +909,27 @@ async function processItem(
   progress(`  ${reconciled.detail}\n`);
 
   let outcome = reconciled;
+  if (buriedByNote > 0 && outcome.outcome === "answered") {
+    outcome = {
+      outcome: "answered-no-reply",
+      detail: `${outcome.detail} (${String(buriedByNote)} issue message(s) were buried by the pickup note and flagged)`,
+      reason: "flagged",
+    };
+  }
   if (item.turn === "issue-discuss") {
     const linked = repairIssueLink(item, settings.baseBranch);
     // A discuss turn that implemented and opened a pull request has plainly not
     // stalled, even if the model never commented on the issue. Reporting it as
     // "produced no answer" would raise a false alarm; the pull request is the
     // answer, and its `Closes #N` is the durable record.
-    if (linked && outcome.outcome === "answered-no-reply") {
-      outcome = { outcome: "answered", detail: "opened a pull request (no issue comment)" };
+    // Only a genuine silence is overridden. A flagged mid-run message or an
+    // unverified read are real degradations and must keep their exit 2.
+    if (linked && outcome.reason === "no-answer") {
+      outcome = {
+        outcome: "answered",
+        detail: "opened a pull request (no issue comment)",
+        reason: "answered",
+      };
       progress("  a pull request was opened, so the turn is counted as answered.\n");
     }
   }
@@ -978,12 +1071,11 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   const linkMap = getOpenPrLinkMap();
 
   const decisions = issues.map((issue) =>
-    decideWork(
-      buildIssueState(issue, linkMap),
-      settings.participants,
-      settings.baseBranch,
-      linkMap.defaultBranch,
-    ),
+    decideWork(buildIssueState(issue, linkMap), settings.participants, {
+      baseBranch: settings.baseBranch,
+      defaultBranch: linkMap.defaultBranch,
+      protectedBranches: settings.protectedBranches,
+    }),
   );
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 

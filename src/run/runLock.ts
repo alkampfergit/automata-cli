@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync, linkSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync, linkSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -348,16 +348,26 @@ function acquireClaim(path: string): string | null {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
-  // A reclaim takes a handful of syscalls, so a claim file older than a minute
-  // belongs to a process that died holding it. Without this, one crash would
-  // make the stale lock permanently unreclaimable.
+  // A reclaim takes a handful of syscalls, so a claim older than a minute belongs
+  // to a process that died holding it. Without recovering it, one crash — or a
+  // SIGKILL between the create and the write, which leaves the file empty — would
+  // make the stale lock permanently unreclaimable while every tick reported
+  // "another instance is running" and exited 0: a dead loop looking healthy.
+  if (!claimIsAbandoned(claimPath)) return null;
+
+  // Taken away by rename, not unlink: two contenders could both see an
+  // abandoned claim, and with unlink the second would delete the first's fresh
+  // claim and both would proceed. Renaming an existing file is exactly-one-wins.
   try {
-    const raw = JSON.parse(readFileSync(claimPath, "utf8")) as { at?: string };
-    const at = raw.at === undefined ? Number.NaN : Date.parse(raw.at);
-    if (!Number.isNaN(at) && Date.now() - at < CLAIM_STALE_MS) return null;
-    unlinkSync(claimPath);
+    renameSync(claimPath, `${claimPath}.abandoned.${String(process.pid)}`);
   } catch {
-    // Unparseable or already gone: fall through and try once more.
+    // Someone else took it first, or it vanished; either way we do not hold it.
+    return null;
+  }
+  try {
+    unlinkSync(`${claimPath}.abandoned.${String(process.pid)}`);
+  } catch {
+    // Already gone.
   }
 
   try {
@@ -371,11 +381,42 @@ function acquireClaim(path: string): string | null {
   }
 }
 
+/**
+ * Is an existing claim old enough to be presumed dead?
+ *
+ * The recorded timestamp is preferred, but a claim can be empty or truncated —
+ * a signal between `open(O_CREAT|O_EXCL)` and the write, or a full disk — so the
+ * file's own mtime is the fallback. Treating an unreadable claim as *current*
+ * would wedge reclaim forever.
+ */
+function claimIsAbandoned(claimPath: string): boolean {
+  let at = Number.NaN;
+  try {
+    const raw = JSON.parse(readFileSync(claimPath, "utf8")) as { at?: string };
+    if (raw.at !== undefined) at = Date.parse(raw.at);
+  } catch {
+    // Unparseable: fall through to the mtime.
+  }
+  if (Number.isNaN(at)) {
+    try {
+      at = statSync(claimPath).mtimeMs;
+    } catch {
+      // Gone between checks: nothing is holding it.
+      return true;
+    }
+  }
+  return Date.now() - at >= CLAIM_STALE_MS;
+}
+
 function reclaim(path: string, command: string, token: string, expected: LockOwner | null): AcquireResult {
   const claimPath = acquireClaim(path);
   if (claimPath === null) {
     // Another contender is reclaiming; whatever it writes is authoritative.
-    return { ok: false, heldBy: readOwner(path) ?? UNKNOWN_OWNER, suspect: false };
+    // Unless the lock we could not claim belongs to a process that is gone — then
+    // nothing is really running and the caller must not report a healthy tick.
+    const owner = readOwner(path);
+    const ownerDead = owner !== null && owner.host === hostname() && !isAlive(owner.pid);
+    return { ok: false, heldBy: owner ?? UNKNOWN_OWNER, suspect: ownerDead };
   }
 
   try {
