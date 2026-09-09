@@ -21,7 +21,7 @@ Run the full speckit pipeline completely autonomously through to a merged-ready 
 1. Existing code patterns in `src/`
 2. Project conventions in `CLAUDE.md` and `.specify/memory/constitution.md`
 3. Persistent repo memory in `.specify/memory/speckit-memory.md` (if present)
-4. Relevant project-local helper skills under `.agents/skills/` (if present)
+4. Relevant project-local helper skills under `.claude/skills/` (if present)
 5. Industry-standard defaults for a TypeScript CLI tool
 6. Conservative scope (never add features not mentioned in the description)
 
@@ -173,9 +173,9 @@ After implementation is green and PR artifacts are final, persist reusable lesso
 
 ### Steps
 
-1. Execute the `speckit-memory` workflow in `.agents/skills/speckit-memory/SKILL.md`.
+1. Execute the `speckit-memory` workflow in `.claude/skills/speckit-memory/SKILL.md`.
 2. Update `.specify/memory/speckit-memory.md` with stable, reusable lessons from this run only.
-3. If this run revealed a repeatable repo-specific workflow that deserves its own helper skill, create or update that skill under `.agents/skills/`.
+3. If this run revealed a repeatable repo-specific workflow that deserves its own helper skill, create or update that skill under `.claude/skills/`.
 4. If the memory file or helper skill files changed, commit them:
 
    ```sh

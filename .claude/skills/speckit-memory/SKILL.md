@@ -18,7 +18,7 @@ Use any user-provided notes as additional context, but do not require them.
 
 Persist reusable lessons from the current `speckit-full` execution so the next run starts with better repo-specific context and less friction.
 
-Write durable memory to `.specify/memory/speckit-memory.md`. Create or update a helper skill under `.agents/skills/` only when a repeated repo-specific workflow is stable enough to deserve its own instructions.
+Write durable memory to `.specify/memory/speckit-memory.md`. Create or update a helper skill under `.claude/skills/` only when a repeated repo-specific workflow is stable enough to deserve its own instructions.
 
 ## What Belongs In Memory
 
@@ -81,7 +81,7 @@ Create or update a helper skill only if **all** of the following are true:
 
 When promoting:
 
-1. Create or update `.agents/skills/<skill-name>/SKILL.md`
+1. Create or update `.claude/skills/<skill-name>/SKILL.md`
 2. Keep the helper skill narrow and procedural
 3. Reference `.specify/memory/speckit-memory.md` only when needed; do not copy large memory sections into the skill
 4. Add or refresh a matching bullet in the memory file's `## Helper Skills` section
