@@ -22,6 +22,10 @@ function formatPrInfoContext(pr: PrInfo): string {
   return JSON.stringify(pr, null, 2);
 }
 
+function pluralSuffix(count: number): string {
+  return count === 1 ? "" : "s";
+}
+
 type ExecutePromptAiOptions = {
   with: string;
   model?: string;
@@ -217,9 +221,8 @@ const executeCheckIssueCmd = addAiOptions(
     }
 
     if (analysis.hasNewMessage) {
-      const plural = analysis.newMessageCount === 1 ? "" : "s";
       process.stdout.write(
-        `Found ${String(analysis.newMessageCount)} new message${plural} on issue #${String(issueNumber)}. Invoking AI…\n`,
+        `Found ${String(analysis.newMessageCount)} new message${pluralSuffix(analysis.newMessageCount)} on issue #${String(issueNumber)}. Invoking AI…\n`,
       );
     } else {
       process.stdout.write(`No new messages on issue #${String(issueNumber)} — forced run. Invoking AI…\n`);
@@ -237,7 +240,7 @@ const executeCheckIssueCmd = addAiOptions(
     // start unless it is safely on the issue — otherwise the same message
     // would start a fresh run on every later invocation.
     const marker = analysis.hasNewMessage
-      ? `automata check-issue: picked up ${String(analysis.newMessageCount)} new message${analysis.newMessageCount === 1 ? "" : "s"}, starting an agent run.`
+      ? `automata check-issue: picked up ${String(analysis.newMessageCount)} new message${pluralSuffix(analysis.newMessageCount)}, starting an agent run.`
       : "automata check-issue: forced run, starting an agent run.";
     try {
       postComment(issueNumber, marker);
