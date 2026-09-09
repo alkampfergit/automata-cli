@@ -37,10 +37,6 @@ else
     echo "npm not available, skipping npm-based CLI installs."
 fi
 
-# Install beads
-echo "Installing beads..."
-curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/v0.49.6/scripts/install.sh | bash
-
 # Install uv (Astral) and GitHub spec-kit via uv tool
 # uv provides a universal version manager; we install via official script
 if ! command -v uv >/dev/null 2>&1; then
