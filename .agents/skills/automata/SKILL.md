@@ -1,193 +1,236 @@
 ---
 name: automata
 description: >
-  Use when the user wants to work through the automata CLI feature-delivery
-  loop: pick up the next GitHub issue with `automata implement-next`, monitor
-  PR status and CI checks with `automata git get-pr-info`, inspect unresolved
-  review threads with `automata git get-pr-comments`, address reviewer
-  feedback, and finish a merged feature with `automata git finish-feature`.
-  Also use when the user asks how automata works for day-to-day implementation
-  flow in this repository.
+  Use when working through the automata CLI in this repository. Two modes.
+  Autonomous: `automata do-work` runs one tick of the GitHub-driven loop —
+  it finds the open issues whose newest message from an authorized account
+  the agent has not answered, on the issue or on its pull request, and
+  answers them. Manual: pick up an issue with `automata implement-next`,
+  monitor PR status and CI with `automata git get-pr-info`, inspect
+  unresolved review threads with `automata git get-pr-comments`, address
+  reviewer feedback, and clean up a merged branch with
+  `automata git finish-feature`. Also use when the user asks how automata
+  works, which mode applies, or why a `do-work` tick did or did not act.
 ---
 
 # Automata Skill
 
-This skill covers the normal GitHub-based implementation loop for `automata`.
-Use it when the task is "take the next feature", "check PR status", "fix PR
-comments", or "finish the feature after approval".
+automata has two modes, and picking the wrong one wastes work.
+
+| Mode | Command | Use when |
+|---|---|---|
+| **Autonomous** | `automata do-work` | The repository is being driven through GitHub: issues are labelled and the agent answers them on a schedule. This is the normal mode for this repository. |
+| **Manual** | `implement-next`, `execute-prompt`, `git *` | You are doing one specific thing by hand: claiming a single issue, fixing Sonar findings, answering review comments on the branch you are on. |
+
+They share no logic. `do-work` decides *what* to answer next and then invokes a
+model once per item; the manual commands each do one step and assume a human
+chose it.
 
 Prefer `automata ...` when the CLI is installed. Inside this repository,
-`npm exec -- automata ...` is a safe fallback.
+`npm exec -- automata ...` is a safe fallback, and `node dist/index.js ...`
+works after `npm run build`.
 
-## Preconditions
+---
 
-Use this workflow only when all of these are true:
+## Mode 1: the autonomous loop (`do-work`)
+
+Read `docs/do-work.md` for the option reference and `docs/wiki/` for the
+process — `docs/wiki/Detection-Rules.md` in particular, which has the full turn
+decision table.
+
+### Preconditions
+
+`do-work` refuses the whole tick (exit 1) unless all of these hold:
 
 - `remoteType` is `gh`
-- `gh` is installed and authenticated
-- `.automata/config.json` has `issueDiscoveryTechnique` and `issueDiscoveryValue`
+- `issueDiscoveryTechnique` and `issueDiscoveryValue` are set
+- `allowedUsers` is non-empty and `agentUser` is set
+- every configured `doWork` prompt resolves
+- **`gh` is not authenticated as an account listed in `allowedUsers`**
 
-Do not use this skill for Azure DevOps review-comment or issue-pickup flows:
+That last one is the one to remember. Everything the agent posts is attributed
+to whoever `gh` is authenticated as. If that account may instruct the agent, the
+agent's own marker comment reads as a new instruction and every tick answers the
+previous tick's marker forever. `do-work` refuses rather than start.
 
-- `automata implement-next` is not supported in `azdo` mode
-- `automata git get-pr-comments` is not supported in `azdo` mode
-
-If you need exact command semantics, read:
-
-- `docs/implement-next.md` for pickup and implementation
-- `docs/git.md` for PR status, review comments, and feature cleanup
-- `docs/azdo-gap.md` for unsupported Azure DevOps paths
-
-## Standard Workflow
-
-### 1. Pick up the next feature
-
-Start by seeing what automata would claim:
+### Always look before running
 
 ```bash
-automata implement-next --query-only
+automata do-work --dry-run
 ```
 
-This prints the selected open issue and exits without claiming it.
+This prints the decision and the reason for every candidate issue and changes
+nothing — nothing assigned, nothing posted, no branch touched, no model invoked.
+Use it whenever you are asked why a tick did or did not act on an issue: the
+reason string names the rule that fired.
 
-When you are ready to take the work:
+`--dry-run --json` gives the same information as data.
+
+### Running a tick
 
 ```bash
-automata implement-next
+automata do-work                    # one tick over every issue needing an answer
+automata do-work --issue 42         # restrict the tick to one issue
+automata do-work --max-runs 1       # cap the model runs this tick
+automata do-work --with codex       # override the configured executor
+automata do-work --silent           # only the final summary from Claude
 ```
 
-Important behavior:
+### What a tick does per item
 
-- automata finds the first matching open GitHub issue from the configured filter
-- it posts a `working` comment to claim the issue
-- it then launches the AI tool unless disabled
+1. checks out the branch the turn needs — the base branch for a discussion turn,
+   the pull request's head branch for a build turn;
+2. assigns the issue to `agentUser` if it is not already assigned;
+3. posts a `working…` marker comment;
+4. invokes the executor;
+5. reconciles the marker — deletes it if the agent posted an answer, otherwise
+   updates it in place to say what happened;
+6. after a discussion turn only, ensures any new pull request closes the issue.
 
-Useful variants:
+### The two turns
+
+| Turn | When | Boundary |
+|---|---|---|
+| `issue-discuss` | The issue has **no** linked open pull request | Reply on the issue; do not touch the code — unless a NEW message explicitly asks for implementation, in which case branch, implement, and open a pull request whose body contains `Closes #N`. |
+| `pr-work` | The issue **has** a linked open pull request | Work on that branch, address the feedback, commit, push, reply on the pull request. Never merge, never push to the base branch. |
+
+The link is GitHub's closing reference, so **opening a pull request that closes
+the issue is what moves an issue from discussion into implementation**. If a
+pull request exists without that reference, the issue stays stuck in
+discussion — `do-work` repairs it, but check `Closes #N` is present if an issue
+seems stuck.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Tick completed, every item answered. Also "nothing to do", `--dry-run`, and "another instance is running". |
+| `1` | Precondition failed; nothing attempted. |
+| `2` | Tick ran, but an item was `skipped`, `failed`, `deferred`, or `answered-no-reply`. |
+
+Exit 2 is degraded, not broken. `answered-no-reply` means the run posted
+nothing, so a human must reply before that issue moves again — the loop will not
+retry it on its own.
+
+### Changing the agent's behaviour
+
+The turn instructions are prompts in configuration, and that text is where a
+skill gets named — automata itself has no concept of a skill.
+
+- `.automata/do-work-issue-discuss.md`
+- `.automata/do-work-pr-work.md`
+
+Editing those files changes behaviour with no code change and no release. The
+contract for what automata supplies versus what the prompt owns is in
+`docs/wiki/Prompts.md`. A configured prompt that cannot be resolved **fails the
+tick** rather than silently falling back to the built-in default.
+
+### If you are the model invoked by a tick
+
+You are already inside a `do-work` turn. Do not run `do-work`, `implement-next`
+or `execute-prompt` — that would launch an agent inside an agent, and the run
+lock would refuse anyway. Do the work described in your prompt and post your
+reply on the surface it names.
+
+---
+
+## Mode 2: the manual commands
+
+Use these when a human has chosen the single step to perform. They are
+unaffected by `do-work` and behave exactly as they always have.
+
+Preconditions: `remoteType` is `gh`, `gh` is installed and authenticated, and
+`.automata/config.json` has `issueDiscoveryTechnique` and `issueDiscoveryValue`.
+
+Not available in `azdo` mode: `do-work`, `implement-next`,
+`git get-pr-comments`, `execute-prompt check-issue`. See `docs/azdo-gap.md`.
+
+### Pick up one issue
 
 ```bash
-automata implement-next --no-claude
-automata implement-next --codex
-automata implement-next --codex --yolo --verbose
-automata implement-next --json
+automata implement-next --query-only    # inspect without claiming
+automata implement-next                 # claim and invoke the executor
+automata implement-next --no-claude     # claim, then implement manually
 ```
 
-Use these flags deliberately:
+Useful flags — note these were renamed in feature 022, so `--codex` and
+`--verbose` no longer exist:
 
-- `--query-only`: inspect the issue without claiming it
-- `--no-claude`: claim the issue but do implementation manually
-- `--codex`: use Codex CLI instead of Claude Code
-- `--yolo`: skip permission prompts
-- `--verbose`: stream progress
-- `--json`: emit machine-readable issue data
+- `--with claude|codex` — choose the executor (default `claude`)
+- `--silent` — suppress step-by-step output (the inverse of the old `--verbose`)
+- `--model <id>` — pass a model identifier through
+- `--yolo` — bypass permission prompts
+- `--take-first` — pick the first match instead of prompting
+- `--limit <n>` — how many issues to fetch (default 10)
+- `--ask-copilot-review` — request a Copilot review on the resulting PR
+- `--json` — machine-readable issue data
 
-If you are the agent doing the work yourself, `--query-only` or `--no-claude`
-is often the safest path because it avoids launching another agent inside the
-agent.
+If you are already the coding agent, `--query-only` or `--no-claude` is safest:
+it avoids launching another agent inside the agent.
 
-### 2. Implement the feature
-
-After pickup, do the repository work normally:
-
-- inspect the codebase and the claimed issue
-- make targeted changes
-- run the relevant tests and lint checks
-- commit and push the branch
-- open or update the pull request
-
-automata does not replace normal engineering judgment. It helps with issue
-selection, PR inspection, and post-review cleanup.
-
-### 3. Check PR status and CI
-
-Use `get-pr-info` on the current branch:
+### Check PR status and CI
 
 ```bash
 automata git get-pr-info
-```
-
-Useful variants:
-
-```bash
 automata git get-pr-info --json
 automata git get-pr-info --wait-finish-checks
-automata git get-pr-info --wait-finish-checks --json
 ```
 
-How to use it:
+Check symbols: `✓` passed · `✗` failed · `●` pending · `○` skipped or neutral.
+Failure details and URLs are printed when available. Use
+`--wait-finish-checks` as the default merge-readiness gate.
 
-- use the default output for a quick human read of PR number, state, URL, and checks
-- use `--json` when you need to parse the full PR object
-- use `--wait-finish-checks` when you want automata to block until all checks finish
-
-Check symbols:
-
-- `✓` passed
-- `✗` failed
-- `●` pending
-- `○` skipped or neutral
-
-When a check fails, automata prints the failure details and URL when available.
-Use that output to decide whether to fix code, retry CI, or inspect external
-pipeline logs.
-
-### 4. Review unresolved PR comments
-
-After reviewers leave feedback, inspect unresolved review threads:
+### Review unresolved PR comments
 
 ```bash
 automata git get-pr-comments
-```
-
-Machine-readable form:
-
-```bash
 automata git get-pr-comments --json
 ```
 
-Use the results as a work queue:
+Each block is one unresolved review thread with author, file and line.
+`No open comments.` means nothing is unresolved. Run this *after* review, not
+before. Expected loop: read comments → fix → test → push →
+`get-pr-info --wait-finish-checks` → repeat.
 
-- each block is an unresolved review thread
-- comments include author, file path, and line when available
-- `No open comments.` means there are no unresolved GitHub review threads
+### Targeted prompt workflows
 
-Expected loop:
+```bash
+automata execute-prompt sonar --with claude          # fix SonarCloud findings on this PR
+automata execute-prompt fix-comments --with claude   # address unresolved review threads
+automata execute-prompt check-issue 42 --with claude # act on new messages on one issue
+```
 
-1. run `automata git get-pr-comments`
-2. fix the requested changes
-3. rerun relevant tests
-4. push updates
-5. run `automata git get-pr-info --wait-finish-checks`
-6. repeat until comments are resolved and checks pass
+`sonar` and `fix-comments` are the right tools for **bot** reviewer feedback
+(Copilot, SonarCloud). `do-work` ignores bots on purpose — they comment after
+every push, so a loop that answered them would never settle.
 
-### 5. Finish the feature after approval and merge
-
-Once the PR is approved, merged, and the remote feature branch is gone, clean up:
+### Finish a merged feature
 
 ```bash
 automata git finish-feature
 ```
 
-This command is intentionally strict. It requires:
+Intentionally strict. It requires: you are not on `develop`, the working tree is
+clean, a PR exists for the branch, that PR is merged, and the remote tracking
+branch is gone. Then it fetches with prune, checks out `develop`, pulls, and
+deletes the local branch. Do not run it before the PR is merged.
 
-- you are not currently on `develop`
-- the working tree is clean
-- a PR exists for the branch
-- that PR is merged
-- the remote tracking branch no longer exists
+---
 
-On success it:
+## Agent guidance
 
-1. fetches with prune
-2. checks out `develop`
-3. pulls the latest `develop`
-4. deletes the local feature branch
-
-Do not run `finish-feature` before the PR is merged.
-
-## Agent Guidance
-
-- Prefer `implement-next --query-only` first when you need to inspect before claiming.
-- Prefer `implement-next --no-claude` or manual implementation when already acting as the coding agent.
-- Use `get-pr-info --wait-finish-checks` as the default merge-readiness gate.
-- Use `get-pr-comments` after review, not before, because it only shows unresolved review threads.
-- Treat `finish-feature` as the final cleanup step after merge, not as part of active review.
+- **Check which mode applies first.** If the repository is driven through
+  GitHub issues, `do-work` is the entry point and the manual commands are
+  escape hatches.
+- **Always `--dry-run` before a real tick** when anything about the
+  configuration or the queue is uncertain. It is free.
+- **Never run `do-work` from inside a `do-work` turn.**
+- When asked why an issue was not picked up, run `--dry-run` and read the
+  reason rather than guessing; `docs/wiki/Detection-Rules.md` explains each one.
+- When asked why the agent repeated itself or answered twice, suspect
+  `agentUser` not matching the account `gh` posts as — that is the failure the
+  identity guard exists to catch.
+- `do-work` never merges, never closes an issue, and never pushes to the base
+  branch. Do not ask it to; use the manual commands or do it yourself.
+- If a command's flags do not match this document, trust `--help` and the
+  `docs/<group>.md` page, and fix this file.
