@@ -75,6 +75,29 @@ across 26 files), with no test deleted or skipped to make it pass.
 
 ---
 
+### User Story 4 - The report stays clean after the refresh (Priority: P3)
+
+As the maintainer, I want the pipeline itself to refuse a release whose shipped dependencies carry a known advisory, so
+that the zero-advisory state this feature reaches is held rather than re-earned by hand at the next refresh.
+
+**Why this priority**: P3 because it prevents regression rather than fixing anything currently broken — the tree is
+already clean once US1 lands. It is deliberately last: a gate added before the tree was clean would have failed on
+day one and been reverted.
+
+**Independent Test**: Run `npm publish --dry-run` with a failing production audit and confirm it aborts at the audit
+before packing. Run it with a clean audit and confirm the audit passes and publishing proceeds to its normal next step.
+
+**Acceptance Scenarios**:
+
+1. **Given** a published advisory against a package under `dependencies`, **When** `npm publish` runs — in CI or by
+   hand — **Then** it aborts at the audit, before the tarball is packed or the registry is contacted.
+2. **Given** a published advisory confined to `devDependencies`, **When** `npm publish` runs, **Then** it is not
+   blocked, so a toolchain advisory with no available fix does not stall unrelated releases.
+3. **Given** the gate exists, **When** someone removes it, points it at the full tree, adds `--audit-level`, or moves
+   the audit to an install-time hook, **Then** the unit suite fails.
+
+---
+
 ### Edge Cases
 
 - **A transitive package's only non-vulnerable version is older than the one currently installed.** This is the case for
@@ -90,6 +113,12 @@ across 26 files), with no test deleted or skipped to make it pass.
 - **A package's `latest` dist-tag is behind the highest published version.** `@types/node` publishes `26.5.1` but tags
   `22.20.2` as `latest`; the repo already declares `^25.5.0`. Chasing the highest number would type Node APIs that do not
   exist on the Node 24 LTS the CI targets.
+- **An advisory that cannot be blocked on.** A dev-toolchain advisory frequently has no fixed version for days. Blocking
+  releases on it would stall unrelated work in the meantime for a package that never reaches a consumer, so only the
+  production audit gates publishing; the full-tree audit reports.
+- **The gate cannot be installed where it belongs.** A CI workflow step would give pull-request-time feedback, but any
+  push touching `.github/workflows/` requires the `workflow` OAuth scope, which the automation's token does not carry.
+  The gate is placed where it can be enforced without that scope, and the workflow step is recorded as an open item.
 - **A test passes only because no real time elapses.** `ink@7` holds a bare `ESC` byte for 20 ms to distinguish it from
   the start of a longer escape sequence. A test helper that only drains microtasks never observes the keypress.
 
@@ -112,6 +141,27 @@ across 26 files), with no test deleted or skipped to make it pass.
   `--legacy-peer-deps` that leaves tooling silently broken.]
 - Q: Should the CLI's own behaviour change at all? → A: No. [AUTO: the constitution treats commands as the public
   contract, and the issue is purely maintenance; behaviour drift would make the PR unreviewable.]
+
+### Session 2026-09-09 (autonomous, converge pass)
+
+- Q: Should CI gate on `npm audit`, given the refresh leaves the tree clean but nothing stops it drifting back? → A:
+  Yes — a blocking production audit plus a non-blocking full-tree audit. [AUTO: the maintainer asked to "finish
+  implementation" and this was the only open item with no upstream blocker; the split is what makes a blocking gate
+  survivable, since `dependencies` are bundled into `dist/` by tsup and must never ship vulnerable, while a
+  dev-toolchain advisory ships to nobody and would otherwise block unrelated PRs until upstream fixes it.]
+- Q: Where should the gate live — a step in `.github/workflows/ci.yml`, or the npm publish lifecycle? → A:
+  `prepublishOnly` in `package.json`. [AUTO: a workflow step gives earlier feedback, but the automation's OAuth token
+  carries `gist, read:org, repo` and GitHub refuses any push touching `.github/workflows/` without the `workflow`
+  scope, so it could not land it. `prepublishOnly` protects the outcome that actually matters — no vulnerable version
+  reaches the registry — is enforced by npm rather than by CI configuration, and covers a hand-run `npm publish` too.
+  The workflow step is recorded as an open item for a maintainer.]
+- Q: Which lifecycle hook? → A: `prepublishOnly`, not `prepublish`, `prepare` or `build`. [AUTO: `npm audit` needs the
+  registry; `prepublish` still runs on a plain `npm install` and `prepare`/`build` run offline, so any of those would
+  fail a developer's offline install or build on a network hiccup rather than on a real defect. `prepublishOnly` runs
+  only on publish, and first in that lifecycle, so it aborts before the tarball is packed.]
+- Q: Raw commands in the workflow, or npm scripts? → A: `audit:prod` and `audit:all` scripts. [AUTO: every other CI
+  step calls an npm script, and a script is what makes the gate reproducible locally — a maintainer runs the identical
+  command CI will run rather than a remembered flag.]
 
 ## Requirements *(mandatory)*
 
@@ -136,6 +186,18 @@ across 26 files), with no test deleted or skipped to make it pass.
 - **FR-010**: No file under `src/` may change behaviour as part of this feature; source edits are permitted only where a
   library's API genuinely changed.
 - **FR-011**: The raised Node.js floor MUST be documented as a breaking change for consumers in the project docs.
+- **FR-012**: Publishing MUST fail when a package reachable from `dependencies` carries a known advisory, and MUST do so
+  before the tarball is packed or the registry is contacted. This MUST hold for a publish run by CI and by hand.
+- **FR-013**: An advisory confined to `devDependencies` MUST NOT block publishing, so a dev-toolchain advisory with no
+  available fix does not stall unrelated work. Such advisories remain visible through `audit:all` and Dependabot.
+- **FR-013a**: The audit MUST NOT run in any install-time or build-time script, so an offline install or build does not
+  fail on registry unavailability.
+- **FR-014**: Both audits MUST be exposed as npm scripts invoked identically by the gate and by a maintainer locally,
+  and neither may pass `--audit-level` (which would let a lower-severity advisory through unreported, contradicting
+  FR-002).
+- **FR-015**: The gate's wiring MUST be covered by the unit suite — which audit it runs, that it is not the full-tree
+  one, and that no install- or build-time hook runs an audit — so it cannot be removed or weakened by an unrelated
+  manifest edit without a test failing.
 
 ### Key Entities
 
@@ -158,6 +220,9 @@ across 26 files), with no test deleted or skipped to make it pass.
 - **SC-004**: `npm run lint`, `npm run typecheck` and `npm run build` each exit 0.
 - **SC-005**: `npm outdated` lists no upgradable direct dependency other than those recorded as deferred here.
 - **SC-006**: Exactly one deferred upgrade is carried (`typescript`), and its blocker is named in the PR.
+- **SC-007**: `npm run audit:prod` and `npm run audit:all` both exit 0 on the branch; a failing production audit aborts
+  `npm publish` at the audit step; and removing the gate, pointing it at the full tree, adding `--audit-level`, or
+  moving the audit to an install-time hook each fail the unit suite.
 
 ## Assumptions
 
@@ -180,7 +245,24 @@ across 26 files), with no test deleted or skipped to make it pass.
   escape-disambiguation window, because the ESC buffering is deliberate upstream behaviour and the test was only ever
   passing because it advanced no real time.
 - [AUTO] **No new commands, flags or config keys**: the issue asks only for a dependency refresh, so scope is limited to
-  `package.json`, `package-lock.json`, test-helper adaptation and documentation.
+  `package.json`, `package-lock.json`, test-helper adaptation, the publish-time audit gate and documentation. No CLI
+  surface changes.
+- [AUTO] **Production advisories block, dev advisories warn**: chose the asymmetric gate over failing on the full tree,
+  because tsup bundles `ink` and `react` into `dist/` so a `dependencies` advisory is shipped code, while a toolchain
+  advisory reaches no consumer and often has no fix available for days — failing on it would stall unrelated pull
+  requests for no security gain.
+- [AUTO] **Gate lives in the npm publish lifecycle, not the CI workflow**: chose `prepublishOnly` over a step in
+  `.github/workflows/ci.yml`, because the automation's OAuth token lacks the `workflow` scope GitHub requires for any
+  push touching `.github/workflows/`, so the workflow step could not be delivered. `prepublishOnly` enforces the
+  outcome that matters — no vulnerable version reaches the registry — through npm rather than CI configuration, and
+  also covers a publish run by hand. The workflow step remains an open item for a maintainer, recorded in
+  `docs/maintenance.md`.
+- [AUTO] **`prepublishOnly`, not `prepublish`/`prepare`/`build`**: chose the publish-only hook because `npm audit`
+  needs the registry, and the alternatives run during a plain `npm install` or an offline build — which would fail on
+  network unavailability rather than on a real defect.
+- [AUTO] **The gate is guarded by a unit test**: chose `tests/unit/ciAuditGate.test.ts` over trusting review, because a
+  security gate that is one `package.json` line can be dropped in an unrelated manifest edit and stay unnoticed until a
+  vulnerable version has already been published.
 - The GitHub Dependabot alert set is assumed to match what `npm audit` reports against the committed lockfile; `npm audit`
   is used as the checkable proxy since it can be run and verified locally and in CI.
 - CI runs `node-version: lts/*` (currently Node 24), so raising the floor to Node 22.12 does not require a CI change.

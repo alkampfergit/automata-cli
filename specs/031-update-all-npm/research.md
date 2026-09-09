@@ -162,7 +162,57 @@ first run. CI already uses `node-version: lts/*` (Node 24), so no workflow chang
 - *Stay on `commander@14` / `ink@6` to preserve Node 18* — rejected: does not meet P2, and the project's own CI has not
   tested Node 18 for some time (`lts/*` has meant 20+ then 22+ then 24).
 
+## Decision 8 — publishing gates on the production audit
+
+**Context**: the refresh takes the tree to zero advisories, but nothing holds it there. `.github/workflows/ci.yml` runs
+`lint`, `typecheck`, `build` and the unit tests — no audit — so the next advisory would surface only as a Dependabot
+alert against the default branch, with a release able to go out in between (`publish` runs on every push).
+
+**Evidence measured**:
+
+| Check | Result |
+|---|---|
+| `npm run audit:prod` (`npm audit --omit=dev`) | `found 0 vulnerabilities`, exit 0 |
+| `npm run audit:all` (`npm audit`) | `found 0 vulnerabilities`, exit 0 |
+| `tsup.config.ts` | `external: ["commander"]` only — `ink` and `react` are bundled into `dist/index.js` |
+| Baseline advisory split | 1 of 9 reached `dependencies` (`ws` via `ink`); 8 were dev-toolchain only |
+| `npm publish --dry-run`, `audit:prod` forced to exit 1 | aborts at `npm error command sh -c npm run audit:prod`, before packing or contacting the registry |
+| `npm install --dry-run` | does not run `prepublishOnly` |
+| Push of a `.github/workflows/ci.yml` change | `remote rejected … refusing to allow an OAuth App to create or update workflow ci.yml without workflow scope`; `gh auth status` reports scopes `gist, read:org, repo` |
+
+**Decision**: gate the publish lifecycle, not the CI workflow. `package.json` declares
+`"prepublishOnly": "npm run audit:prod"`. npm runs `prepublishOnly` first in that lifecycle, so a production advisory
+aborts `npm publish` — in the CI `publish` job, which runs on every push, and in a hand-run publish — before the
+tarball is packed. The full-tree `audit:all` script exists but gates nothing.
+
+**Rationale**: the bundling measurement settles the asymmetry. Because tsup inlines `ink` and `react`, an advisory
+under `dependencies` is literally shipped code, whereas the dev toolchain never leaves the repository and the baseline
+shows the realistic case is a dev advisory (8 of 9) — blocking releases on those would stall unrelated work for as long
+as upstream took to publish a fix. The *placement* is forced by the last row of the table: a workflow step would give
+earlier, pull-request-time feedback, but the automation's token cannot push a change under `.github/workflows/`, and
+routing around a scope that exists precisely to stop an app editing CI is not an acceptable workaround. `prepublishOnly`
+protects the outcome that matters — no vulnerable version reaches the registry — is enforced by npm rather than by CI
+configuration, and needs no scope the automation lacks. The workflow step is recorded in `docs/maintenance.md` as an
+open item for a maintainer.
+
+**Alternatives considered**:
+
+- *A step in `.github/workflows/ci.yml`* (written and tested first, then withdrawn): the better feedback loop, and the
+  original plan. Blocked by the OAuth `workflow` scope. Left as an open item with the exact change spelled out, since
+  `prepublishOnly` already covers the release itself.
+- *Gate on the full tree*: strictest, but the 8:1 baseline split shows it would mostly block releases over packages
+  that reach no consumer, and a gate that blocks unrelated work gets disabled rather than fixed.
+- *`prepublish`, `prepare` or folding the audit into `build`*: all run offline — `prepublish` still runs on a plain
+  `npm install` — so a developer with no registry access would see a build or install failure that has nothing to do
+  with their change. `npm audit` requires the network, so the hook must be publish-only.
+- *`npm audit --audit-level=high` as the gate*: would pass a low or moderate production advisory silently, which is
+  exactly the suppression FR-002 forbids.
+- *A scheduled audit workflow, or `npm audit fix --dry-run` in CI*: neither blocks the release path, which was the
+  actual gap.
+
 ## Autonomous Decisions
 
 Every decision on this page was made without user input, per the `speckit-full` autonomous rule. Decisions 3, 4, 5 and 7
 are the ones that shape the deliverable most and are carried into `spec-decisions.md` and the PR body verbatim.
+Decision 8 was added in a later converge pass, after the maintainer asked for the implementation to be finished: it was
+the one open item in `docs/maintenance.md` with no upstream blocker.

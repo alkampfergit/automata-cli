@@ -17,6 +17,7 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Working Defaults
 
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
+- After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
 
 ## Documentation Convention

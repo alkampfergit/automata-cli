@@ -13,6 +13,23 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **Remote gating**: reject only an explicit `remoteType: "azdo"` (pointing at `docs/azdo-gap.md`) and treat an absent `remoteType` as GitHub, unless the command's whole behaviour is remote-specific like `implement-next`'s discovery. Why: demanding a rarely-set key adds friction without safety. Confirmed: 2026-09-09.
 
 - **Dependency-refresh features**: try `npm audit fix` first and check whether it clears the tree with *no* `package.json` change — in the 031 run it cleared all 9 advisories on its own, which separates "fix the vulnerabilities" from "chase latest versions" into two independently shippable slices. Why: the low-risk half can ship even if a major upgrade turns out to be blocked. Confirmed: 2026-09-09.
+- **A cleanup feature ends with the gate that keeps it clean**: after a dependency refresh, add the audit gate in the
+  same PR — but *last*, after the tree is already at zero. Added earlier it fails on its own baseline and gets reverted.
+  Why: without it the next advisory is caught only by a Dependabot alert on the default branch, while `publish` runs on
+  every push. Confirmed: 2026-09-09.
+- **Gate the release with `prepublishOnly`, not a CI step**: `"prepublishOnly": "npm run audit:prod"` aborts
+  `npm publish` before the tarball is packed or the registry is contacted, covers a hand-run publish as well as the CI
+  `publish` job, and — decisively — needs no `workflow` OAuth scope. Verify with `npm publish --dry-run` after forcing
+  the script to exit 1. Why: it survives where a workflow edit cannot land, and it protects the outcome that matters.
+  Confirmed: 2026-09-09.
+- **Never wire `npm audit` into `prepublish`, `prepare`, `preinstall` or `build`**: it needs the registry, and those all
+  run offline — `prepublish` even runs on a plain `npm install`. Why: turns a developer's offline install or build into
+  a failure unrelated to their change. `prepublishOnly` is the only publish-exclusive hook. Confirmed: 2026-09-09.
+- **Split a security gate by what actually ships**: gate on `npm audit --omit=dev`; keep the full-tree `npm audit` as an
+  unenforced script. Why: `tsup.config.ts` externalises only `commander`, so a `dependencies` advisory is bundled into
+  `dist/` and must stop the release, while a dev-toolchain advisory (8 of the 9 in the 031 baseline) reaches no consumer
+  and would block unrelated work until upstream shipped a fix. A gate that blocks unrelated work gets disabled, not
+  fixed. Confirmed: 2026-09-09.
 - **Never force a peer conflict**: when a latest release fails `ERESOLVE`, defer it and record the exact blocking peer range in the spec and PR rather than using `--legacy-peer-deps`. Why: forcing leaves a tool running against an unsupported version while still reporting success — `typescript@7` vs `typescript-eslint@8.70` is the live example. Confirmed: 2026-09-09.
 
 ## Implementation Patterns
@@ -26,6 +43,18 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **Wizard menu additions go last**: append to `MAIN_MENU_OPTIONS` / `PROMPTS_MENU_OPTIONS` and replace the trailing `else` in the dispatch with explicit branches. Why: `tests/unit/ConfigWizard.test.tsx` navigates by counting `DOWN` presses, so inserting an entry breaks unrelated tests. Confirmed: 2026-09-09.
 - **`process.exit` in a `catch`**: the `let x: T; try { x = f(); } catch { …; process.exit(1); }` idiom typechecks because `exit` returns `never`; reuse it instead of non-null assertions. Confirmed: 2026-09-09.
 
+- **CI steps call npm scripts, never raw commands**: add the script to `package.json` first, then `run: npm run <script>`
+  in the workflow. Why: it is the pattern for every existing step, and it is what lets a maintainer run locally the
+  identical command CI runs instead of a remembered flag. Confirmed: 2026-09-09.
+- **Config-only changes are testable too**: when a change lands in JSON/YAML rather than `src/` and the repo rule still
+  demands a test, assert the configuration from a unit test (`tests/unit/ciAuditGate.test.ts` reads `package.json`).
+  Assert exact values, not substrings, and assert the *absence* of the wrong wiring too. Why: `tsconfig.json` includes
+  only `src`, so `npm run typecheck` will not cover the new test file — check it with an explicit
+  `npx tsc --noEmit --strict … <file>`, and `npx eslint`/`npx prettier --check` it individually. Confirmed: 2026-09-09.
+- **Prove a guard test guards, by mutation**: apply each regression it claims to catch (delete the step, flip
+  `continue-on-error`, add `--audit-level`), confirm the suite goes red on each, then restore. Why: a config-reading test
+  that silently matches nothing passes just as green as one that works. Confirmed: 2026-09-09.
+
 ## Process Friction
 
 - **`npm outdated`'s "Latest" column is not always the highest version**: `@types/node` publishes 26.x but DefinitelyTyped tags `22.20.2` as `latest`. Check `npm view <pkg> dist-tags` before treating a row as "behind". Why: cost a wrong-direction upgrade attempt. Confirmed: 2026-09-09.
@@ -33,6 +62,26 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **`ink@7` broke 11 wizard tests, and the fix is in the test helper**: ink 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20 ms) to disambiguate it from a longer escape sequence, so a `tick()` that only drains `setImmediate` never sees the keypress. `tests/unit/ConfigWizard.test.tsx`'s `tick()` now waits `ESC_FLUSH_MS = 30`. Why: the obvious reading is "ink 7 broke Esc handling in src/" — it did not; `parseKeypress` still maps ESC to `{name:'escape'}`. Confirmed: 2026-09-09.
 - **Isolate a multi-upgrade regression by reinstalling one package back**: with everything else at latest, `npm i ink@6` restored 44/44, pinning the cause to ink in one step. Why: far cheaper than bisecting a 370-line lockfile diff. Confirmed: 2026-09-09.
 - **Markdown is not Prettier-formatted in this repo**: all pre-existing `docs/*.md` and `README.md` fail `prettier --check`. Do not format a new doc page to match Prettier — match the neighbouring pages. Why: extends the existing `npm run format` friction note to docs. Confirmed: 2026-09-09.
+- **The agent's token cannot push anything under `.github/workflows/`**: scopes are `gist, read:org, repo`, and GitHub
+  rejects such a push with `refusing to allow an OAuth App to create or update workflow … without workflow scope`. Do
+  not design a deliverable around a workflow edit; find an enforcement point in `package.json` and leave the workflow
+  change as a documented open item (`gh auth refresh -h github.com -s workflow` is the maintainer's one-liner).
+  Do **not** route around it via the Git Data API — that scope exists to stop an app editing CI. Confirmed: 2026-09-09.
+- **`npm run lint` is rewritten by the RTK hook** into a whole-repo ESLint run and reports 10 pre-existing errors
+  outside `eslint src/`. Use `rtk proxy npm run lint` or `npx eslint src/` to read the real gate. Why: cost a false
+  "lint is broken" conclusion. Confirmed: 2026-09-09.
+- **A "the plan says X about CI" claim needs `.github/workflows/` read, not assumed**: the 031 plan and docs both stated
+  "`npm audit` runs in CI, so a future advisory surfaces there" when no audit step existed. Read the workflow before
+  writing any sentence about what CI enforces. Why: a watch item resting on a non-existent gate is worse than no watch
+  item. Confirmed: 2026-09-09.
+- **A deferred item recorded as "your call" is unfinished work**: when a run ends with an open question addressed to the
+  maintainer, expect the next instruction to be "finish it". Decide it autonomously, record the choice and its rationale
+  as a converge-pass decision in `research.md`, and add the tasks to `tasks.md` as a new phase rather than editing the
+  completed ones. Why: keeps the original run's record intact and reviewable. Confirmed: 2026-09-09.
+- **Dependabot alert counts do not match `npm audit` counts**: Dependabot reports one alert per advisory, `npm audit`
+  collapses per package — 17 alerts vs 9 audit rows on the same tree in the 031 run. Map each alert's vulnerable range
+  against the installed version before claiming the sets agree, and remember the alerts stay open until the branch
+  merges, because they are raised against the default branch. Confirmed: 2026-09-09.
 - **Verify a lockfile change with `rm -rf node_modules && npm ci`** before claiming the audit is clean. Why: incremental `npm install` steps can leave a tree that a fresh `npm ci` would not reproduce. Confirmed: 2026-09-09.
 
 - **`npm run format` is not a gate**: `develop` already fails `prettier --check src/` on 12 files, so `npm test && npm run lint` is the real bar (per `AGENTS.md`). Check new files individually with `npx prettier --check <file>` and reshape code that Prettier would mangle, rather than running `--write` across the tree. Why: a repo-wide reformat would bury the feature diff. Confirmed: 2026-09-09.

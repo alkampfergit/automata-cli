@@ -165,12 +165,14 @@ git submodule update --init --recursive
 | `npm run lint` | Lint source files with ESLint |
 | `npm run typecheck` | Type-check with tsc (no emit) |
 | `npm run format` | Check formatting with Prettier |
+| `npm run audit:prod` | Audit the dependencies that ship — also runs via `prepublishOnly`, so an advisory blocks publishing |
+| `npm run audit:all` | Audit the whole tree, dev toolchain included (advisory only) |
 
 Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
 
 ### Maintenance
 
-Dependency-refresh policy, the supported Node.js floor and the standing upgrade exceptions are documented in [docs/maintenance.md](docs/maintenance.md).
+Dependency-refresh policy, the supported Node.js floor, what the publish-time audit gate blocks on, and the standing upgrade exceptions are documented in [docs/maintenance.md](docs/maintenance.md).
 
 ## License
 

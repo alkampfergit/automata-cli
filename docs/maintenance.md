@@ -28,18 +28,50 @@ Installing on Node 18 or 20 fails at install time with an engine error rather th
 
 ## Checking the security report
 
+Two npm scripts, so a local check and CI run exactly the same thing:
+
 ```bash
-npm audit             # whole tree, including dev tooling
-npm audit --omit=dev  # only what ships to consumers of the package
+npm run audit:prod  # npm audit --omit=dev  -> only what ships to consumers
+npm run audit:all   # npm audit             -> whole tree, including dev tooling
 ```
 
-Both must report `found 0 vulnerabilities`. Run `npm audit --omit=dev` as well as the plain form — most advisories in
-this project land in the dev toolchain (vitest/vite/esbuild/eslint) and never reach a published artifact, and the
-distinction matters when triaging urgency.
+Both must report `found 0 vulnerabilities`. Run `audit:prod` as well as the full form — most advisories in this project
+land in the dev toolchain (vitest/vite/esbuild/eslint) and never reach a published artifact, and the distinction matters
+both for triaging urgency and for what the release gate below does about it.
 
-**These checks are not run by CI.** `.github/workflows/ci.yml` runs `lint`, `typecheck`, `build` and the unit tests only,
-so an advisory published after this refresh will not fail a build — it surfaces as a Dependabot alert, or the next time
-someone runs `npm audit` by hand. Treat the audit as a manual step in every dependency refresh until a gate exists.
+### The release gate
+
+`package.json` declares:
+
+```json
+"prepublishOnly": "npm run audit:prod"
+```
+
+npm runs `prepublishOnly` first in the publish lifecycle, so **a production advisory aborts `npm publish` before the
+tarball is packed or the registry is contacted**. The CI `publish` job runs `npm publish` on every push, so this gates
+every release — `dev`, `next` and `latest` alike — as well as a publish run by hand.
+
+Only `audit:prod` is gated, and the asymmetry is the point. tsup marks just `commander` as external
+(`tsup.config.ts`), so `ink` and `react` are bundled straight into `dist/index.js`: an advisory under `dependencies`
+is shipped code. The dev toolchain — vitest, eslint, tsup and their trees — never leaves the repository, and 8 of the 9
+advisories cleared in the 031 refresh were dev-only. Blocking releases on those would stall unrelated work for as long
+as upstream took to publish a fix, and a gate that blocks unrelated work gets disabled rather than fixed. Dev
+advisories surface through Dependabot and `npm run audit:all` instead.
+
+The audit is deliberately **not** wired into `build`, `prepare`, `prepublish` or any install-time hook: `npm audit`
+needs the registry, so an offline build or install would fail on a network hiccup rather than on a real defect (and
+`prepublish`, unlike `prepublishOnly`, still runs on a plain `npm install`).
+
+Neither script passes `--audit-level` — an advisory is resolved or recorded here, never silenced.
+`tests/unit/ciAuditGate.test.ts` pins all of this: the two scripts' exact commands, the absence of `--audit-level`,
+that `prepublishOnly` runs the production audit and not the full-tree one, and that no install- or build-time hook runs
+an audit.
+
+### What CI does not yet enforce
+
+`.github/workflows/ci.yml` runs `lint`, `typecheck`, `build` and the unit tests — **no audit step**. So an advisory is
+caught at publish time (above) and by Dependabot, but not at pull-request time. Adding an audit step to the `build` job
+would surface it earlier; see [Next refresh](#next-refresh--open-items) for the exact change and why it is still open.
 
 ## Refresh policy
 
@@ -51,6 +83,9 @@ someone runs `npm audit` by hand. Treat the audit as a manual step in every depe
 4. Never force a resolution with `--legacy-peer-deps`. A peer conflict means a tool is running against a version it does
    not support; defer the upgrade and record it below instead.
 5. Commit the regenerated `package-lock.json`. It is what pins the audited tree, and `npm ci` is what CI installs from.
+6. Finish with `npm run audit:prod && npm run audit:all`. The first must exit 0 before the branch is pushed, because it
+   is what blocks the release; the second may report dev-toolchain advisories, which belong in the table below rather
+   than in a blocked merge.
 
 ## Deferred upgrades
 
@@ -88,8 +123,9 @@ The pin lives in `package-lock.json`. No `overrides` entry was added, because fo
 past the range it declares support for, for no security gain — `0.27.2` predates the vulnerable window entirely.
 
 **Revisit when** tsup widens its `esbuild` range to `^0.28.0`; at that point move `esbuild` forward and delete this
-entry. If a future advisory lands on `0.27.2` itself, nothing in CI will catch it — it shows up as a Dependabot alert or
-in a manual `npm audit`, and the pin then needs re-evaluating immediately.
+entry. A future advisory on `0.27.2` itself would surface in `npm run audit:all` and as a Dependabot alert. It would
+*not* block a release — esbuild arrives through tsup, so it is dev-only and outside `audit:prod` — so the pin needs
+re-evaluating as soon as either of those starts reporting it.
 
 ## Next refresh — open items
 
@@ -97,7 +133,7 @@ The order to work through when the next refresh starts. Each row points at the s
 
 | Item | Trigger | Action |
 |---|---|---|
-| Audit gate in CI | Any time — nothing upstream blocks it | Add an `npm audit --omit=dev` step to `.github/workflows/ci.yml` so a production advisory fails the build. Decide separately whether the full-tree audit should warn or fail, since a dev-toolchain advisory would otherwise block unrelated PRs. |
+| Audit step in `ci.yml` | Needs a maintainer, or a token with the `workflow` OAuth scope | Add to the end of the `build` job in `.github/workflows/ci.yml`: a `run: npm run audit:prod` step (blocking) and a `run: npm run audit:all` step with `continue-on-error: true`. This surfaces an advisory at pull-request time instead of only at publish time; the release itself is already gated by `prepublishOnly`. GitHub refuses pushes that touch `.github/workflows/` from an OAuth token without the `workflow` scope, which is why the automation could not land it. Extend `tests/unit/ciAuditGate.test.ts` with the matching assertions when it goes in. |
 | `typescript` 5 -> 7 | `typescript-eslint` declares TypeScript 7 support | See [Deferred upgrades](#typescript--held-at-593). Expect `@types/node` resolution work alongside it. |
 | `@types/node` `^25` -> next | Project's target Node line moves past what `^25` describes | See [Deferred upgrades](#typesnode--held-at-2550). Follow the Node LTS line, not the highest published version. |
 | `esbuild` 0.27.2 -> current | `tsup` widens its `esbuild` range | See [Watch items](#esbuild-is-pinned-below-its-latest-release). Move it forward and delete that entry. |

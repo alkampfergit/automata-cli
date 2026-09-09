@@ -56,8 +56,32 @@
   stay on `commander@14`/`ink@6` to preserve Node 18 (does not meet the currency goal, and CI has not tested Node 18 for
   some time).
 
+- **Publishing gates on the production audit**: `"prepublishOnly": "npm run audit:prod"` in `package.json`.
+  **Rationale**: the refresh reaches zero advisories but nothing held it there — CI runs no audit, and `publish` runs on
+  every push, so a release could go out between an advisory landing and someone noticing the Dependabot alert. npm runs
+  `prepublishOnly` first in the publish lifecycle, so the audit aborts `npm publish` before packing or contacting the
+  registry, for CI and for a hand-run publish alike. That only `audit:prod` gates follows from a measurement:
+  `tsup.config.ts` marks only `commander` external, so `ink` and `react` are bundled into `dist/index.js` and a
+  `dependencies` advisory is shipped code, whereas 8 of the 9 baseline advisories were dev-toolchain only.
+  **Alternatives considered**: a step in `.github/workflows/ci.yml` (the better feedback loop and the original plan —
+  written and verified, then withdrawn, because GitHub rejects pushes touching `.github/workflows/` from an OAuth token
+  without the `workflow` scope; recorded as an open item rather than forced through a lower-level API, since that scope
+  exists precisely to stop an app editing CI); gating on the full tree (the 8:1 baseline split means it would mostly
+  block releases over packages that reach no consumer, and a gate that blocks unrelated work gets disabled rather than
+  fixed); `prepublish`/`prepare`/folding it into `build` (all run offline, and `prepublish` still runs on a plain
+  `npm install`, so an offline install or build would fail on registry unavailability); `--audit-level=high` as the gate
+  (would pass a low or moderate production advisory silently, the exact suppression FR-002 forbids).
+
+- **The gate is guarded by a unit test rather than by review**: `tests/unit/ciAuditGate.test.ts`, reading
+  `package.json`. **Rationale**: the whole control is one manifest line, so it can be removed in an unrelated edit and
+  stay unnoticed until a vulnerable version has already been published; the test also pins the two properties a reader
+  is most likely to "tidy" — that the gate runs the production audit rather than the full tree, and that no
+  install-time hook runs an audit. **Alternatives considered**: trusting code review (the failure mode is precisely that
+  nobody notices); an integration test that actually runs `npm publish --dry-run` (needs the registry, so it would make
+  the suite network-dependent — done once by hand and recorded instead).
+
 - **Project structure**: No structural change; the feature is confined to `package.json`, `package-lock.json`, one test
-  helper and documentation, with `src/` deliberately untouched. **Rationale**: behavioural neutrality then follows from
+  helper, one new test file and documentation, with `src/` deliberately untouched. **Rationale**: behavioural neutrality then follows from
   the diff itself, which is the cheapest thing for a reviewer to verify on a dependency PR. **Alternatives considered**:
   none — no `data-model.md`, `quickstart.md` or `contracts/` were created either, since the feature introduces no
   entities, workflow or interface contract, and empty artifacts would violate the constitution's Simplicity principle.

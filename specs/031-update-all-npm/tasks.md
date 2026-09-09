@@ -68,12 +68,62 @@
 - [X] T024 [P] Update `README.md` — dev-setup Node prerequisite and a link to `docs/maintenance.md` from the command
       table area. Nothing else in the README changes, per the documentation convention.
 
+## Phase 6: Publish-time audit gate (US4) — converge pass
+
+Added after the initial implementation, when the maintainer asked for the implementation to be finished. This was the
+one open item in `docs/maintenance.md` with no upstream blocker; `typescript`, `@types/node` and `esbuild` all remain
+blocked on upstream releases and stay deferred.
+
+`[~]` marks a task that is blocked on something outside the repository, with what it was replaced by named on the line.
+
+- [X] T025 Establish which advisories can justify a blocking gate: confirm `tsup.config.ts` declares
+      `external: ["commander"]` only, so `ink` and `react` are bundled into `dist/index.js` and a `dependencies`
+      advisory is shipped code, while the baseline's other 8 advisories were dev-only. Establishes Decision 8.
+- [X] T026 Add the `audit:prod` (`npm audit --omit=dev`) and `audit:all` (`npm audit`) scripts to `package.json`, with
+      no `--audit-level` on either. Confirm both exit 0 on this branch. Satisfies FR-014, SC-007.
+- [~] T027 Add the audit steps to the `build` job in `.github/workflows/ci.yml`. **Blocked, not skipped**: written and
+      locally verified, then withdrawn — GitHub rejects any push touching `.github/workflows/` from an OAuth token
+      without the `workflow` scope, and this automation's token carries only `gist, read:org, repo`. Circumventing that
+      scope via the Git Data API was rejected as inappropriate. The exact change is recorded in `docs/maintenance.md`
+      § Next refresh for a maintainer to apply. Superseded for FR-012 by T027a.
+- [X] T027a Gate `npm publish` instead: add `"prepublishOnly": "npm run audit:prod"`. Verify with
+      `npm publish --dry-run` that a failing production audit aborts before packing or contacting the registry, and that
+      `npm install --dry-run` does not run the hook. Establishes Decision 8. Satisfies FR-012, FR-013, FR-013a.
+      Depends on T026.
+- [X] T028 Add `tests/unit/ciAuditGate.test.ts` — 6 tests asserting both scripts' exact commands, the absence of
+      `--audit-level`, that `prepublishOnly` runs the production audit and not the full-tree one, and that no
+      install- or build-time hook (`prepublish`, `prepare`, `preinstall`, `postinstall`, `build`, `pretest`) runs an
+      audit. Satisfies FR-015. Depends on T027a.
+- [X] T029 Verify the guard test actually guards: mutate `package.json` four ways — delete `prepublishOnly`, point it at
+      `audit:all`, add `--audit-level=high` to `audit:prod`, and add a `prepublish` audit hook. Confirm each fails the
+      suite (2, 2, 2 and 1 test respectively), then restore. Satisfies SC-007.
+- [X] T030 Rewrite the audit sections of `docs/maintenance.md`: what the release gate covers and why only `audit:prod`
+      gates it, why the hook is `prepublishOnly` and not an install-time one, an explicit "what CI does not yet enforce"
+      section, the corrected `esbuild` detection claim, and the CI audit step re-stated as an open item naming the
+      `workflow` scope as its blocker. Satisfies FR-004, FR-011. Depends on T029.
+- [X] T031 [P] Add the two scripts to the README `Scripts` table and note the gate in the `Maintenance` link line —
+      nothing else in the README changes, per the documentation convention.
+- [X] T032 [P] Add the post-dependency-change audit step to `AGENTS.md` § Working Defaults, pointing at
+      `docs/maintenance.md` for the detail.
+- [X] T033 Re-run the full gate — `npm test && npm run lint` — and confirm the suite is green with the new test file
+      included and `src/` still unchanged. Satisfies FR-007, FR-009, FR-010.
+
+**Open after this phase**: T027 only, blocked on a token scope rather than on code. The release path is gated; the
+pull-request-time signal is not.
+
+**Note on `npm run lint`**: with the RTK command hook active, `npm run lint` is rewritten to a whole-repo ESLint run and
+reports 10 pre-existing errors in `validate-plugin-repo.mjs` and `tests/unit/config.cmd.test.ts` — both outside
+`eslint src/`, which is what the script and CI actually run. Use `rtk proxy npm run lint` (or `npx eslint src/`) to see
+the real gate; it exits 0.
+
 ## Dependencies
 
 - Phase 2 depends on Phase 1 (the baseline is the comparison point).
 - Phase 3 depends on Phase 2 (the failure only appears once `ink@7` is installed).
 - Phase 4 depends on Phases 2 and 3.
 - Phase 5 depends on Phase 4 — the docs must state what was verified, not what was planned.
+- Phase 6 depends on Phase 2 for a substantive reason, not just ordering: a blocking audit added before the tree was
+  cleared would have failed on its first run against the 9 baseline advisories.
 
 ## Traceability
 
@@ -88,4 +138,7 @@
 | FR-008 | T013 |
 | FR-009 | T015, T017, T018 |
 | FR-010 | T020 |
-| FR-011 | T022, T023, T024 |
+| FR-011 | T022, T023, T024, T030 |
+| FR-012, FR-013, FR-013a | T025, T027a (T027 deferred) |
+| FR-014 | T026 |
+| FR-015 | T028, T029 |
