@@ -85,7 +85,7 @@ changes nothing.
   repository, which is how the squash-merge problem was found — it initially queued
   `feature/update-spec-kit` for a rescue, and after the fix reports
   `would delete feature/update-spec-kit (no remote, PR #33 was merged)`.
-- **Gates**: `npm test` 789 passed / 29 files, `npm run lint` (`eslint src/`) clean,
+- **Gates**: `npm test` 875 passed / 30 files, `npm run lint` (`eslint src/`) clean,
   `tsc --noEmit` clean, `prettier --check` clean on every new file.
 
 ## Notes
