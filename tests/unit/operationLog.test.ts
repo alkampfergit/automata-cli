@@ -449,8 +449,8 @@ describe("recordTick", () => {
   // A rewrite that cannot complete must not strand its staging file: nothing
   // ever collects them and the name differs every tick, so they would pile up
   // in the operator's workspace root for good.
-  it("leaves no temp file behind when the rewrite cannot finish", () => {
-    if (process.getuid?.() === 0) return; // root writes to a 0555 directory anyway
+  it("leaves no temp file behind when the rewrite cannot finish", (ctx) => {
+    ctx.skip(process.getuid?.() === 0, "root writes to a 0555 directory anyway");
     const target = join(TEST_DIR, EXECUTION_LOG_FILE);
     writeFileSync(
       target,
@@ -494,10 +494,10 @@ describe("recordTick", () => {
     expect(existsSync(missing)).toBe(false);
   });
 
-  it("does nothing and does not throw when the directory is not writable", () => {
+  it("does nothing and does not throw when the directory is not writable", (ctx) => {
     // Root satisfies access(W_OK) on a 0555 directory, so the premise of this
     // test does not hold there and it would fail for the wrong reason.
-    if (process.getuid?.() === 0) return;
+    ctx.skip(process.getuid?.() === 0, "root ignores the write bit");
     const locked = join(TEST_DIR, "locked");
     mkdirSync(locked, { recursive: true });
     chmodSync(locked, 0o555);
