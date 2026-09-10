@@ -878,6 +878,105 @@ export function deleteLocalBranch(branch: string): void {
   }
 }
 
+/* -------------------------------------------------------------------------- *
+ * Repository hygiene primitives
+ *
+ * `do-work`'s once-per-tick pre-flight (`git/repoHygiene.ts`) sequences these.
+ * They live here because this module owns the process runner; the policy —
+ * which branch to keep, delete or rescue — deliberately does not.
+ * -------------------------------------------------------------------------- */
+
+/** Every local branch, short name, in `git`'s own (refname) order. */
+export function listLocalBranches(): string[] {
+  const { stdout, status } = run("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (status !== 0) return [];
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * The branch names that exist on `origin`, or null when the remote could not be
+ * asked.
+ *
+ * Null and `[]` must stay distinguishable: the caller treats "absent from this
+ * list" as proof that a branch has no remote and may be deletable, so an
+ * unreachable remote has to read as "unknown", never as "no branches exist".
+ */
+export function listRemoteBranches(): string[] | null {
+  const { stdout, status } = run("git", ["ls-remote", "--heads", "origin"]);
+  if (status !== 0) return null;
+  const names: string[] = [];
+  for (const line of stdout.split("\n")) {
+    // `<sha>\trefs/heads/<name>`; a branch name may itself contain slashes.
+    const match = /^[0-9a-f]+\s+refs\/heads\/(.+)$/.exec(line.trim());
+    if (match) names.push(match[1]);
+  }
+  return names;
+}
+
+/** `git checkout -b <branch>` — create and switch to a branch at the current HEAD. */
+export function createBranchAtHead(branch: string): GitCommandResult {
+  return gitCommand(["checkout", "-b", branch]);
+}
+
+/**
+ * Stage everything except the given paths.
+ *
+ * `-A` is the only form that stages untracked files, deletions and
+ * modifications together, which is exactly the set `hasUncommittedChanges`
+ * counts — anything it counts and this misses would leave the tree dirty. The
+ * exclusion mirrors that function's, so automata's own run lock is not committed
+ * by the rescue that the lock's own run performs.
+ */
+export function stageAllExcept(excludePaths: string[]): GitCommandResult {
+  const args = ["add", "-A"];
+  if (excludePaths.length > 0) {
+    args.push("--", ".", ...excludePaths.map((path) => `:(exclude)${path}`));
+  }
+  return gitCommand(args);
+}
+
+/** `git commit -m <message>` — commits what is already staged, nothing more. */
+export function commitStaged(message: string): GitCommandResult {
+  return gitCommand(["commit", "-m", message]);
+}
+
+/**
+ * `git push -u origin <branch>` — pushes the *named* branch, so it works
+ * without checking it out.
+ */
+export function pushSetUpstream(branch: string): GitCommandResult {
+  return gitCommand(["push", "-u", "origin", branch]);
+}
+
+/**
+ * How many commits `branch` has that `baseBranch` does not, or null when the
+ * question could not be answered.
+ *
+ * Null is the answer that matters: the caller only deletes a branch on a
+ * confirmed zero, so a missing ref or unparseable output must never look like
+ * "nothing would be lost".
+ */
+export function countCommitsNotIn(baseBranch: string, branch: string): number | null {
+  const { stdout, status } = run("git", ["rev-list", "--count", `${baseBranch}..${branch}`]);
+  if (status !== 0) return null;
+  const trimmed = stdout.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+/**
+ * `git branch -D <branch>` — the non-throwing sibling of `deleteLocalBranch`.
+ *
+ * The pre-flight reports a failed deletion as one branch it kept, rather than
+ * letting it abort a tick that has other work to do.
+ */
+export function forceDeleteLocalBranch(branch: string): GitCommandResult {
+  return gitCommand(["branch", "-D", branch]);
+}
+
 interface RawReviewThreadComment {
   author: { login: string };
   body: string;

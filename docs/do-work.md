@@ -27,7 +27,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
 | `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
 | `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
-| `--dry-run` | Print the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is assigned, posted, edited, deleted, checked out or invoked. |
+| `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
@@ -138,9 +138,10 @@ One tick, in order:
 
 1. **Validate** the configuration, resolve both turn prompts, and check that `gh` is not authenticated as an account that may instruct the agent. Any problem exits 1 before anything happens.
 2. **Take the run lock** (`.automata/automata.lock`). If another automata instance holds it, print a message and exit 0 without touching GitHub.
-3. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query. Every page is read, and if the map cannot be read completely the tick **fails** rather than continuing: callers treat absence from it as proof that an issue has no pull request, so a partial map is a wrong answer, not a degraded one. Review threads are paginated for the same reason — feedback past thread 100 would otherwise be invisible to both detection and the prompt.
-4. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
-5. **Process** each work item sequentially:
+3. **Run the repository-hygiene pre-flight** — rescue uncommitted changes, check out and fast-forward the base branch, prune dead local branches. See [the pre-flight](#the-repository-hygiene-pre-flight) below. It runs on every tick, including one with nothing to do.
+4. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query. Every page is read, and if the map cannot be read completely the tick **fails** rather than continuing: callers treat absence from it as proof that an issue has no pull request, so a partial map is a wrong answer, not a degraded one. Review threads are paginated for the same reason — feedback past thread 100 would otherwise be invisible to both detection and the prompt.
+5. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
+6. **Process** each work item sequentially:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
    3. assign the issue to the agent, if it is not already assigned;
@@ -148,7 +149,69 @@ One tick, in order:
    5. invoke the executor;
    6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
    7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
-6. **Summarise** and exit.
+7. **Summarise** and exit.
+
+---
+
+## The repository-hygiene pre-flight
+
+Every tick starts by putting the checkout into a known state, once, inside the run lock and before anything is read from GitHub. Three steps, always in this order.
+
+### 1. Rescue uncommitted changes
+
+If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only `.automata/automata.lock` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
+
+- The checkout is **on a branch other than the base branch** → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
+- The checkout is **on the base branch, or on a detached HEAD** → a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is created at HEAD first, then committed, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
+
+The commit message is `chore(automata): rescue uncommitted work from <source>`. The run lock is excluded from the commit, so a tick does not commit the lock file naming its own pid.
+
+Every step is additive, so a failure at any of them leaves the tree exactly as dirty as it was and discards nothing; the tick then continues with the pre-existing per-item `dirty-tree` skip.
+
+### 2. Check out and fast-forward the base branch
+
+`git checkout <base>` then `git pull --ff-only`, on every tick — a tick with nothing to do still leaves the checkout on the base branch at the remote's tip. A base branch that has diverged fails the pull loudly rather than being merged, rebased or reset.
+
+### 3. Prune dead local branches
+
+A local branch is a **candidate** when its name does not exist on `origin` (resolved with one `git ls-remote --heads origin`, not one call per branch). The base branch, the branch currently checked out and every branch in `doWork.protectedBranches` are never candidates.
+
+For each candidate:
+
+| State | Action |
+|---|---|
+| Has an `OPEN` pull request | Kept. |
+| Has a `MERGED` pull request | Deleted (`git branch -D`). The merge is proof the work landed; the commit count is not consulted. |
+| No pull request, or only ones closed without merging, **and** no commit outside the base branch | Deleted. |
+| No pull request, or only ones closed without merging, **but** commits the base branch does not have | Pushed, given a draft pull request, and **kept**. |
+| Its pull requests, or its commit count, could not be read | Kept, and the tick is reported as degraded. |
+
+**A branch is deleted only on proof that its work landed** — either a merged pull request, or a confirmed zero unmerged commits from `git rev-list --count <base>..<branch>`.
+
+The merged-pull-request rule comes first because this repository squash-merges: the change is in the base branch while *none* of the branch's own commits are, so reachability is highest for exactly the branches that are safest to delete. `git branch -d` is not used for the same reason — it refuses a squash-merged branch. A pull request closed *without* merging is not evidence of anything, so those branches fall through to the commit count.
+
+Every uncertainty keeps the branch: an unreachable `origin` means no branch can be shown to have no remote, so the whole step does nothing.
+
+### Pull requests the pre-flight opens
+
+Always a **draft** against the base branch, labelled `rescue` (best-effort — a repository that has not defined the label still gets the pull request), with a body naming the pre-flight as its author. They reference no issue and request no reviewer, which is also why they can never be picked up as an issue's pull request: work detection maps pull requests to issues through closing references, and these deliberately have none.
+
+### Reporting
+
+Progress goes to stderr as each step runs, and the outcome is repeated in the tick summary on stdout:
+
+```text
+Pre-flight:
+  rescue committed and pushed feature/031-update-all-npm, PR #44 already open
+  base   ready
+  prune  deleted feature/old-thing
+  prune  kept fix/wip (open-pr: PR #12 is open)
+  prune  rescued wip/scratch (pushed, draft PR #52)
+```
+
+Under `--json` the same information is a `preflight` object alongside `plan` and `items`. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
+
+A pre-flight step that failed makes an otherwise-healthy tick **exit 2** — see [exit codes](#exit-codes).
 
 ---
 
@@ -278,10 +341,12 @@ The file is named for automata rather than for `do-work` so other long-running c
 
 Exit 2 means degraded, not broken. An item was:
 
-- `skipped` — nothing was attempted: a dirty tree, branch preparation failed, the marker could not be posted, the item stopped being actionable, or the pull request is unsafe to work on (from a fork, or its head *is* the base branch);
+- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable, or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path only when the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed;
 - `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
+
+A degraded [pre-flight](#the-repository-hygiene-pre-flight) also produces exit 2 on its own — a rescue that could not push, a base branch that would not fast-forward, or a branch whose state could not be read. Exit 1 is not used for it: by then the tick has run, so "nothing was attempted" would be false.
 
 A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 
@@ -301,8 +366,10 @@ Pick an interval comfortably shorter than how long you are willing to wait for a
 
 - Merge a pull request.
 - Close an issue.
-- Push to the base branch.
-- Stash, reset or discard uncommitted changes — a dirty working tree skips the item instead.
+- Push to the base branch, or commit to it.
+- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped.
+- Delete a local branch whose work it cannot prove landed — it pushes the branch and opens a draft pull request instead. Proof is a merged pull request, or zero commits outside the base branch; a branch whose state it could not read is kept.
+- Merge, rebase or reset the base branch to make a pull succeed.
 - Act on a message from an account that is not in `allowedUsers`.
 - Read a `tool:` or `model:` directive from anything but the newest message a turn is answering.
 - Retry a failed run on its own.

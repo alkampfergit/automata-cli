@@ -89,9 +89,12 @@ absent from the base branch is pushed with a draft pull request instead of being
 1. **Given** a local branch that does not exist on `origin` and has no pull request at all, and
    whose commits are all reachable from the base branch, **When** a tick runs, **Then** the branch
    is deleted.
-2. **Given** a local branch that does not exist on `origin` whose only pull request is `MERGED`
-   or `CLOSED`, and whose commits are all reachable from the base branch, **When** a tick runs,
-   **Then** the branch is deleted.
+2. **Given** a local branch that does not exist on `origin` with a `MERGED` pull request, **When**
+   a tick runs, **Then** the branch is deleted regardless of how many of its commits are
+   unreachable from the base branch — a squash merge lands the change without the commits.
+2b. **Given** a local branch that does not exist on `origin` whose only pull request is `CLOSED`
+   without merging, **When** a tick runs, **Then** it is treated as having no pull request: deleted
+   only if its commits are all reachable from the base branch.
 3. **Given** a local branch that does not exist on `origin` and has an `OPEN` pull request,
    **When** a tick runs, **Then** the branch is kept.
 4. **Given** a local branch that does not exist on `origin`, has no open pull request, but
@@ -144,6 +147,11 @@ neither happened.
   remote-less and the prune step does nothing.
 - **A branch whose commits are all in the base branch but which has an open pull request**:
   kept — the open pull request wins over reachability.
+- **A squash-merged branch**: its own commits are never in the base branch, so the reachability
+  count is highest for exactly the branches that are safest to delete. The `MERGED` pull request
+  is checked first, and the count is not consulted at all.
+- **A branch with both a `CLOSED` and a `MERGED` pull request**: the merge wins; the branch is
+  deleted.
 - **Zero actionable issues**: the pre-flight still runs in full; it is not gated on there
   being work.
 - **`--issue <n>` restricting the tick**: the pre-flight is not per-item, so it runs unchanged.
@@ -198,9 +206,12 @@ neither happened.
   configured protected branch.
 - **FR-008**: For each candidate the prune step MUST look up that branch's pull requests in
   any state, and MUST keep the branch when one of them is open.
-- **FR-009**: A candidate with no open pull request MUST be deleted only when it carries no
-  commit that is unreachable from the base branch; otherwise it MUST be pushed, given a draft
-  pull request, and kept.
+- **FR-009**: A candidate with a `MERGED` pull request MUST be deleted, whatever its commit
+  reachability — the merge is authoritative proof the work landed, and a squash merge puts the
+  change in the base branch without any of the branch's commits.
+- **FR-009a**: A candidate with no pull request, or only ones closed without merging, MUST be
+  deleted only when it carries no commit that is unreachable from the base branch; otherwise it
+  MUST be pushed, given a draft pull request, and kept.
 - **FR-010**: Any failure inside the pre-flight (rescue, pull, pull-request lookup, deletion)
   MUST be reported and MUST NOT delete a branch, discard changes or abort the tick; the tick
   continues with its existing behaviour.
@@ -217,8 +228,9 @@ neither happened.
 
 - **Rescue outcome**: what happened to uncommitted work — nothing to do, or the branch it was
   committed to, whether it was pushed, and the pull request it landed under (existing or new).
-- **Prune candidate**: a local branch name, whether it exists on `origin`, its newest pull
-  request's state if any, and the count of its commits unreachable from the base branch.
+- **Prune candidate**: a local branch name, whether it exists on `origin`, whether any of its
+  pull requests is open or merged, and the count of its commits unreachable from the base branch
+  (consulted only when no pull request merged).
 - **Prune outcome**: per candidate — deleted, kept (open pull request), rescued (pushed with a
   new draft pull request), or kept because a lookup failed.
 - **Pre-flight report**: the rescue outcome, the base-branch preparation result, and the list
@@ -241,6 +253,13 @@ neither happened.
 
 ## Assumptions
 
+- [AUTO] **A `MERGED` pull request outranks the commit count** (decided during implementation,
+  after a dry run against this repository showed `feature/update-spec-kit` — squash-merged as
+  PR #33 — being queued for a *rescue*, because none of its three commits are in `develop`).
+  Rationale: a squash merge lands the change without the commits, so reachability is the wrong
+  question for the branches that are safest to delete; GitHub reporting the pull request merged
+  is stronger and cheaper evidence than grepping `git log` for a squash-commit message, which is
+  what the repository's `branches` skill does today.
 - [AUTO] **A branch with unmerged commits is rescued, not force-deleted**: the issue asks for
   `git branch -D`, which discards commits. Chosen behaviour is to delete only when every
   commit is already reachable from the base branch, and to push + open a draft pull request

@@ -65,7 +65,7 @@ You can also link them by hand in the GitHub UI — `closingIssuesReferences` co
 
 | Message | Cause | Fix |
 |---|---|---|
-| `dirty-tree` | The working tree has uncommitted changes. `do-work` never discards work it did not create. | Commit or stash them yourself. In a disposable container, a dirty tree usually means a previous run left changes behind — investigate before clearing. |
+| `dirty-tree` | The working tree has uncommitted changes **and** the pre-flight rescue could not put them somewhere safe. `do-work` never discards work it did not create. | Read the `Pre-flight:` block for the step that failed (usually a rejected push or an unauthenticated `gh`). The changes are untouched, so commit and push them yourself once the cause is fixed. |
 | `checkout-failed` | The branch does not exist locally or remotely, or `git fetch` failed. | Check the branch still exists on the remote. |
 | `pull-failed` | The local branch has diverged from the remote. The pull is `--ff-only`, so it fails loudly rather than merging silently. | Reconcile the branch by hand, or delete the local branch and let the next tick recreate it. |
 | `marker failed` | The `working…` comment could not be posted, so no model was invoked. | Usually the agent account cannot comment on the repository. |

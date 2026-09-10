@@ -38,7 +38,8 @@ step is additive (create branch, stage, commit, push, open pull request).
 |---|---|---|
 | `branch` | `string` | Local branch name. |
 | `openPr` | `number \| null` | The open pull request for this head, if any. |
-| `unmergedCommits` | `number` | `git rev-list --count <base>..<branch>`. |
+| `mergedPr` | `number \| null` | A merged pull request for this head, if any. Checked before the count. |
+| `unmergedCommits` | `number` | `git rev-list --count <base>..<branch>`. Not read when `mergedPr` is set. |
 
 Only branches that survived the exclusion filter (not `baseBranch`, not the current branch, not
 in `protectedBranches`, absent from `origin`) ever become candidates.
@@ -49,10 +50,10 @@ in `protectedBranches`, absent from `origin`) ever become candidates.
 
 | Variant | Fields | Meaning |
 |---|---|---|
-| `deleted` | `branch: string` | No open pull request and `unmergedCommits === 0`. |
+| `deleted` | `branch: string` | No open pull request, and either a merged one or `unmergedCommits === 0`. |
 | `would-delete` | `branch: string` | `--dry-run` equivalent of `deleted`. |
 | `kept` | `branch: string`, `reason: "open-pr" \| "lookup-failed" \| "delete-failed"`, `detail: string` | Retained. `lookup-failed` and `delete-failed` are degraded; `open-pr` is not. |
-| `rescued` | `branch: string`, `pr: number \| null`, `prUrl: string \| null` | Had `unmergedCommits > 0`: pushed and given a draft pull request, and kept. |
+| `rescued` | `branch: string`, `pr: number \| null`, `prUrl: string \| null` | No merged pull request and `unmergedCommits > 0`: pushed and given a draft pull request, and kept. `pr` is null when the push succeeded but the pull request could not be opened. |
 | `would-rescue` | `branch: string`, `unmergedCommits: number` | `--dry-run` equivalent of `rescued`. |
 
 ---
@@ -82,13 +83,15 @@ any tree                       → HEAD = base branch at origin's tip
 
 local branch, on origin              → unchanged
 local branch, absent, open PR        → unchanged
-local branch, absent, no open PR,
+local branch, absent, merged PR      → deleted (count not consulted)
+local branch, absent, no merged PR,
   0 commits outside base             → deleted
-local branch, absent, no open PR,
+local branch, absent, no merged PR,
   >0 commits outside base            → pushed + draft PR, kept
 local branch, absent, lookup failed  → unchanged
 base / current / protected branch    → unchanged
 ```
 
-No transition removes a commit that is not already reachable from the base branch, and no
-transition modifies the base branch other than fast-forwarding it.
+No transition removes a commit whose change is not already in the base branch — proven either by
+reachability or by a merged pull request — and no transition modifies the base branch other than
+fast-forwarding it.

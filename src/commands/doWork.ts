@@ -51,6 +51,7 @@ import {
   type AnswerAnalysis,
 } from "../github/markerReconciliation.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
+import { runRepoHygiene, type HygieneReport, type PruneOutcome } from "../git/repoHygiene.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
@@ -1260,6 +1261,18 @@ function explainInterruptedMarker(): void {
 }
 
 async function runTick(settings: Settings, options: DoWorkOptions): Promise<number> {
+  // Before anything is read from GitHub: put the repository into a known state.
+  // Uncommitted work is committed and pushed rather than left to make every item
+  // skip on `dirty-tree`, the base branch is fast-forwarded whether or not there
+  // turns out to be work, and dead local branches go. It runs inside the run
+  // lock (the caller took it) because every step writes to this one checkout.
+  const hygiene = runRepoHygiene({
+    baseBranch: settings.baseBranch,
+    protectedBranches: settings.protectedBranches,
+    dryRun: options.dryRun === true,
+    log: progress,
+  });
+
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
 
@@ -1280,7 +1293,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   }
 
   if (options.dryRun) {
-    reportDryRun(items, decisions, settings, options);
+    reportDryRun(items, decisions, settings, options, hygiene);
     return 0;
   }
 
@@ -1334,18 +1347,29 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   // "answered-no-reply" counts as degraded: the run produced nothing, a human has
   // to reply before anything more happens, and an unattended loop must surface
   // that rather than report a healthy tick.
-  const degraded = reports.some((report) => report.outcome !== "answered");
+  // A pre-flight step that failed degrades the tick too: the work it was meant
+  // to protect is still uncommitted, or the base branch is not where the tick
+  // assumed. Exit 1 is not available for it — that is documented as "nothing was
+  // attempted", which by this point is false.
+  const degraded = hygiene.degraded || reports.some((report) => report.outcome !== "answered");
   const exitCode = degraded ? 2 : 0;
 
   if (options.json) {
     out(
       JSON.stringify(
-        { dryRun: false, plan: decisions.map(toPlanJson), items: reports.map(toItemJson), exitCode },
+        {
+          dryRun: false,
+          preflight: toHygieneJson(hygiene),
+          plan: decisions.map(toPlanJson),
+          items: reports.map(toItemJson),
+          exitCode,
+        },
         null,
         2,
       ) + "\n",
     );
   } else {
+    summarizeHygiene(hygiene);
     summarize(reports);
   }
 
@@ -1401,6 +1425,7 @@ function reportDryRun(
   decisions: Decision[],
   settings: Settings,
   options: DoWorkOptions,
+  hygiene: HygieneReport,
 ): void {
   const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
   // An unrecognised `tool:` is described as the refusal a real tick would
@@ -1420,6 +1445,7 @@ function reportDryRun(
       JSON.stringify(
         {
           dryRun: true,
+          preflight: toHygieneJson(hygiene),
           plan: decisions.map(toPlanJson),
           runs: planned.map(toRunJson),
         },
@@ -1430,6 +1456,7 @@ function reportDryRun(
     return;
   }
 
+  summarizeHygiene(hygiene);
   for (const entry of planned) {
     out(
       "\n" +
@@ -1442,7 +1469,68 @@ function reportDryRun(
   if (deferred > 0) {
     out(`\n(${String(deferred)} further item(s) deferred by the run cap.)\n`);
   }
-  out("\nDry run: nothing was assigned, posted, checked out or executed.\n");
+  out(
+    "\nDry run: nothing was rescued, pruned, pulled, assigned, posted, checked out or executed.\n",
+  );
+}
+
+/** One stdout line per pre-flight step, so the summary is self-contained. */
+function summarizeHygiene(hygiene: HygieneReport): void {
+  out("\nPre-flight:\n");
+  out(`  rescue ${describeRescue(hygiene.rescue)}\n`);
+  out(
+    hygiene.base.ok
+      ? "  base   ready\n"
+      : `  base   ${hygiene.base.step} failed — ${hygiene.base.detail}\n`,
+  );
+  if (hygiene.prunes.length === 0) {
+    out("  prune  no candidates\n");
+  } else {
+    for (const outcome of hygiene.prunes) {
+      out(`  prune  ${describePrune(outcome)}\n`);
+    }
+  }
+}
+
+function describeRescue(rescue: HygieneReport["rescue"]): string {
+  switch (rescue.kind) {
+    case "clean":
+      return "nothing to rescue";
+    case "rescued":
+      return rescue.prCreated
+        ? `committed and pushed ${rescue.branch}, opened draft PR #${String(rescue.pr ?? 0)}`
+        : `committed and pushed ${rescue.branch}, PR #${String(rescue.pr ?? 0)} already open`;
+    case "would-rescue":
+      return `would rescue onto ${rescue.branch}`;
+    case "failed":
+      return `${rescue.step} failed — ${rescue.detail}; the tree is still dirty and nothing was discarded`;
+  }
+}
+
+function describePrune(outcome: PruneOutcome): string {
+  switch (outcome.kind) {
+    case "deleted":
+      return `deleted ${outcome.branch}`;
+    case "would-delete":
+      return `would delete ${outcome.branch}`;
+    case "kept":
+      return `kept ${outcome.branch} (${outcome.reason}: ${outcome.detail})`;
+    case "rescued":
+      return outcome.pr === null
+        ? `rescued ${outcome.branch} (pushed; no PR opened)`
+        : `rescued ${outcome.branch} (pushed, draft PR #${String(outcome.pr)})`;
+    case "would-rescue":
+      return `would rescue ${outcome.branch} (${String(outcome.unmergedCommits)} unmerged commit(s))`;
+  }
+}
+
+function toHygieneJson(hygiene: HygieneReport): Record<string, unknown> {
+  return {
+    rescue: hygiene.rescue,
+    base: hygiene.base,
+    prunes: hygiene.prunes,
+    degraded: hygiene.degraded,
+  };
 }
 
 function toPlanJson(decision: Decision): Record<string, unknown> {

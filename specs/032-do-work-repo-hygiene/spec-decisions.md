@@ -35,7 +35,20 @@
   case provable, and the unsafe case becomes idempotent because the branch then has a remote and
   an open pull request. **Alternatives considered**: unconditional `-D` (raised on issue #47 and
   answered "sounds ok proceed"); `git branch -d`, which fails on a squash-merged branch — the most
-  common case in this repository, where the base branch has the change but not the commit.
+  common case in this repository, where the base branch has the change but not the commit. That
+  same squash-merge property is what forced the converge-pass decision below.
+
+- **A merged pull request outranks the commit count** (converge-pass decision, made during
+  implementation): the order per candidate is open pull request → keep, merged pull request →
+  delete without reading the count, otherwise the count decides. **Rationale**: a `--dry-run`
+  against this repository queued `feature/update-spec-kit` for a rescue because none of its three
+  commits are in `develop` — yet its pull request #33 was squash-merged, so the change is in
+  `develop` and only the commits are not. Squash merging makes reachability the wrong question for
+  exactly the branches that are safest to delete. **Alternatives considered**: reachability alone
+  (would re-open a draft pull request for landed work on every tick); `git cherry -v` patch-id
+  comparison (a squash of several commits into one does not preserve patch ids); grepping
+  `git log` for the branch name as the `branches` skill does (matches a message convention rather
+  than a fact).
 
 - **Rescue target branch**: commit onto the branch already checked out when it is not the base
   branch; create `rescue/<source>-<YYYYMMDDTHHMMSSZ>` only from the base branch or a detached

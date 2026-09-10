@@ -51,9 +51,11 @@ kept as-is for `finish-feature`, which only ever asks about one.
 
 ## Decision: delete only what the base branch already contains
 
-**Decision**: For a candidate with no open pull request, run
+**Decision**: For a candidate with no open *and no merged* pull request, run
 `git rev-list --count <base>..<branch>`. `0` means every commit is already reachable from the
 base branch → `git branch -D`. Non-zero → push the branch, open a draft pull request, keep it.
+(The "and no merged" qualifier is the converge-pass refinement recorded further down; the
+reasoning for the count itself is unchanged.)
 
 **Rationale**: The issue asks for unconditional `-D`, but its own stated purpose is "so the user
 can avoid losing work", and `do-work`'s documented contract is that it never discards work it
@@ -189,6 +191,35 @@ The cost is one extra fast-forward pull that is already up to date.
   would trade a real guard for one cheap call.
 - *Run the pre-flight before taking the lock* — rejected: two concurrent ticks would race on
   `git checkout` in the same working tree.
+
+---
+
+## Decision (converge pass): a merged pull request outranks the commit count
+
+**Decision**: For a candidate the order is — open pull request → keep; **merged** pull request →
+delete, without reading the commit count; otherwise the count decides (`0` deletes, `> 0`
+rescues). A pull request closed *without* merging counts as no pull request.
+
+**Rationale**: Found by a `--dry-run` against this repository during implementation. It queued
+`feature/update-spec-kit` for a *rescue* — pushing it and opening a new draft pull request —
+because none of its three commits are in `develop`. But that branch's pull request #33 was
+squash-merged: the change is in `develop`, only the commits are not. A squash merge makes
+reachability the wrong question for exactly the branches that are safest to delete, which in this
+repository is most of them. GitHub reporting `MERGED` is both stronger and cheaper evidence than
+what the repository's `branches` skill does today (grepping `git log` for a squash-commit message
+that happens to mention the branch name).
+
+**Alternatives considered**:
+
+- *Keep reachability as the only rule* — rejected: it would have re-opened a draft pull request
+  for already-landed work on every tick, which is worse noise than the clutter the prune step
+  exists to remove.
+- *`git cherry -v <base> <branch>` to detect equivalent patches* — rejected: it compares patch ids,
+  which a squash merge of several commits into one does not preserve, so it answers "not merged"
+  for the same branches.
+- *Grep `git log <base>` for the branch name, as the `branches` skill does* — rejected: it matches
+  on a commit message convention rather than on a fact, so it both misses renamed branches and
+  can match an unrelated commit that mentions the name.
 
 ---
 

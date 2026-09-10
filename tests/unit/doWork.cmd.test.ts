@@ -60,6 +60,21 @@ vi.mock("../../src/git/workspaceService.js", () => ({
   preparePrBranch: (...a: unknown[]) => mockPreparePrBranch(...a),
 }));
 
+const mockRunRepoHygiene = vi.fn();
+
+// The pre-flight has its own suite (repoHygiene.test.ts); here it is mocked so
+// these tests assert only what the command does with its report.
+vi.mock("../../src/git/repoHygiene.js", () => ({
+  runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a),
+}));
+
+const CLEAN_HYGIENE = {
+  rescue: { kind: "clean" },
+  base: { ok: true },
+  prunes: [],
+  degraded: false,
+};
+
 vi.mock("../../src/run/runLock.js", () => ({
   acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
 }));
@@ -208,6 +223,7 @@ beforeEach(() => {
   gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main" });
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
+  mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
   mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
   mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042" });
   mockGetCurrentBranchPr.mockReturnValue(null);
@@ -1063,7 +1079,7 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("Executor     claude");
     expect(stdout).toContain("Permissions  bypassed");
     expect(stdout).toContain("Command that would be launched:");
-    expect(stdout).toContain("Dry run: nothing was assigned, posted, checked out or executed.");
+    expect(stdout).toContain("Dry run: nothing was rescued, pruned, pulled, assigned, posted, checked out or executed.");
   });
 
   it("--dry-run prints the same argv the real run would spawn", async () => {
@@ -1594,5 +1610,163 @@ describe("do-work invalid tool directive", () => {
     expect(stdout).toContain(
       "Command      none; a real tick would post the working marker and then replace it with this refusal",
     );
+  });
+});
+
+/* ── pre-flight repository hygiene ──────────────────────────────────────── */
+
+describe("do-work pre-flight repository hygiene", () => {
+  it("runs the pre-flight exactly once per tick, before any issue is discovered", async () => {
+    const order: string[] = [];
+    mockRunRepoHygiene.mockImplementation(() => {
+      order.push("preflight");
+      return { ...CLEAN_HYGIENE };
+    });
+    gh.listCandidateIssues.mockImplementation(() => {
+      order.push("discover");
+      return [];
+    });
+
+    await runDoWork();
+
+    expect(order).toEqual(["preflight", "discover"]);
+    expect(mockRunRepoHygiene).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the configured base branch, protected branches and dry-run flag", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { baseBranch: "main", protectedBranches: ["main", "master"] },
+    });
+    await runDoWork();
+    expect(mockRunRepoHygiene).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseBranch: "main",
+        protectedBranches: ["main", "master"],
+        dryRun: false,
+      }),
+    );
+  });
+
+  it("reports the pre-flight in the human summary", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: {
+        kind: "rescued",
+        branch: "rescue/develop-20260910T054512Z",
+        createdBranch: true,
+        pr: 51,
+        prUrl: "https://gh/pr/51",
+        prCreated: true,
+      },
+      base: { ok: true },
+      prunes: [{ kind: "deleted", branch: "old/thing" }],
+      degraded: false,
+    });
+
+    await runDoWork();
+
+    expect(stdout).toContain("Pre-flight:");
+    expect(stdout).toContain("rescue/develop-20260910T054512Z");
+    expect(stdout).toContain("opened draft PR #51");
+    expect(stdout).toContain("deleted old/thing");
+  });
+
+  // Exit 1 stays reserved for "nothing was attempted", which is false by the
+  // time the pre-flight has run and items have been discovered.
+  it("turns an otherwise-healthy tick into exit 2 when the pre-flight degraded", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "push", detail: "rejected" },
+      base: { ok: true },
+      prunes: [],
+      degraded: true,
+    });
+
+    await runDoWork();
+
+    expect(exitCode).toBe(2);
+    expect(stdout).toContain("push failed");
+    expect(stdout).toContain("nothing was discarded");
+  });
+
+  it("stays at exit 0 when the pre-flight is healthy and there is nothing to do", async () => {
+    await runDoWork();
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toContain("nothing to do");
+  });
+
+  it("tells the pre-flight it is a dry run, and reports its plan", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "would-rescue", branch: "rescue/develop-20260910T054512Z", createdBranch: true },
+      base: { ok: true },
+      prunes: [
+        { kind: "would-delete", branch: "old/thing" },
+        { kind: "would-rescue", branch: "fix/wip", unmergedCommits: 4 },
+      ],
+      degraded: false,
+    });
+
+    await runDoWork(["--dry-run"]);
+
+    expect(mockRunRepoHygiene).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    expect(stdout).toContain("would rescue onto rescue/develop-20260910T054512Z");
+    expect(stdout).toContain("would delete old/thing");
+    expect(stdout).toContain("would rescue fix/wip (4 unmerged commit(s))");
+    expect(stdout).toContain("nothing was rescued, pruned, pulled");
+  });
+
+  it("carries the pre-flight report in the --json payload of a real tick", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "clean" },
+      base: { ok: false, step: "pull", detail: "not possible to fast-forward" },
+      prunes: [{ kind: "kept", branch: "x", reason: "lookup-failed", detail: "gh: HTTP 502" }],
+      degraded: true,
+    });
+
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as {
+      preflight: { base: { ok: boolean; step: string }; degraded: boolean; prunes: unknown[] };
+      exitCode: number;
+    };
+    expect(payload.preflight.base).toEqual({
+      ok: false,
+      step: "pull",
+      detail: "not possible to fast-forward",
+    });
+    expect(payload.preflight.degraded).toBe(true);
+    expect(payload.preflight.prunes).toHaveLength(1);
+    expect(payload.exitCode).toBe(2);
+  });
+
+  it("carries the pre-flight report in the --dry-run --json payload", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "would-rescue", branch: "rescue/develop-1", createdBranch: true },
+      base: { ok: true },
+      prunes: [{ kind: "would-delete", branch: "old/thing" }],
+      degraded: false,
+    });
+
+    await runDoWork(["--dry-run", "--json"]);
+
+    const payload = JSON.parse(stdout) as {
+      dryRun: boolean;
+      preflight: { rescue: { kind: string }; prunes: { kind: string }[] };
+    };
+    expect(payload.dryRun).toBe(true);
+    expect(payload.preflight.rescue.kind).toBe("would-rescue");
+    expect(payload.preflight.prunes[0].kind).toBe("would-delete");
+  });
+
+  it("does not run the pre-flight at all when the run lock is held", async () => {
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      suspect: false,
+      heldBy: { pid: 4242, host: "box", startedAt: "2026-09-10T05:00:00Z", command: "do-work" },
+    });
+
+    await runDoWork();
+
+    // Every step writes to this one checkout, so the lock has to gate it.
+    expect(mockRunRepoHygiene).not.toHaveBeenCalled();
   });
 });
