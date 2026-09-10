@@ -114,11 +114,11 @@ When several open pull requests close the same issue, the most recently updated 
 ```console
 $ automata do-work --dry-run
 Work plan (3 of 6 candidates need an answer):
-  #42 issue-discuss on develop — 1 new issue message, no open pull request, will assign to the agent
+  #42 issue-discuss on develop — 1 new issue message, no open pull request, will assign the issue to the agent
   #43 pr-work on feature/043-x — 1 unresolved review thread on pull request #58
   #44 nothing to do — nothing new since the agent's message at 2026-09-08T11:02:00Z
   #45 nothing to do — no messages from authorized accounts
-  PR #61 pr-orphan on dependabot/npm_and_yarn/lodash-4.17.21 — 1 new pull request message on pull request #61 (no linked issue)
+  PR #61 pr-orphan on dependabot/npm_and_yarn/lodash-4.17.21 — 1 new pull request message on pull request #61 (no linked issue), pull request not claimed (orphan pass)
   PR #62 nothing to do — no messages from authorized accounts on pull request #62
 ```
 

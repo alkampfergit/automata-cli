@@ -34,10 +34,16 @@ request, which nothing assigned before.
 - **Current-branch pull request (`src/config/githubService.ts`)**:
   `getCurrentBranchPr()` also returns `assignees` (normalised, absent → `[]`), which
   is what lets the post-run claim decide without a second lookup.
-- **Plan reporting**: the dry-run header's `Assign` line and the plan's per-item
-  suffix name both surfaces in every state (`issue already assigned · would assign
-  pull request #57 to automata-bot`), and `--dry-run --json` carries
-  `prNeedsAssignment` per entry. A dry run still writes nothing.
+- **Plan reporting**: both views read one pure helper, `claimStates()` in
+  `workDetection.ts`, which returns `would-claim` / `already-assigned` /
+  `rule-exempt` per surface. The dry-run header's `Assign` line names every surface
+  in whichever state it is in (`issue already assigned · would assign pull request
+  #57 to automata-bot`); a plan line names what the tick would *do* plus any surface
+  the rule exempts (`, will assign the issue to the agent`, `, pull request not
+  claimed (orphan pass)`) and leaves an already-owned surface unsaid, since the
+  absence of `will assign` is the answer and the plan is one line per candidate.
+  `--dry-run --json` carries `prNeedsAssignment` per entry. A dry run still writes
+  nothing.
 - **`implement-next` (`src/commands/getReady.ts`)**: claims the pull request it caused
   to be opened, for `config.agentUser` or `@me` when none is configured, through the
   existing best-effort `warnOnFailure()` wrapper.

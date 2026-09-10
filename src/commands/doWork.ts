@@ -31,6 +31,7 @@ import {
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
 import {
+  claimStates,
   decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
@@ -418,32 +419,51 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
 }
 
 /**
- * What the tick would do to the assignee lists, per surface.
+ * What the tick would do to the assignee lists, per surface: the `Assign` line
+ * of a dry run's per-item block.
  *
- * Both halves are always named: "already assigned" for a surface nobody would
- * touch is the answer an operator auditing an unattended tick needs, and
- * silence there would read as "the claim was forgotten".
+ * Every surface the item has is named, in whichever state it is in: "already
+ * assigned" for a surface nobody would touch is the answer an operator auditing
+ * an unattended tick needs, and silence there would read as "the claim was
+ * forgotten". The plan line is terser — see `describePlanClaim`.
  */
 function describeAssignment(item: WorkItem, agentUser: string): string {
+  return claimStates(item)
+    .map((claim) => {
+      // The issue needs no number here: it is the block's own heading.
+      const label = claim.surface === "issue" ? "issue" : `pull request #${String(claim.number)}`;
+      switch (claim.state) {
+        case "would-claim":
+          return `would assign ${label} to ${agentUser}`;
+        case "already-assigned":
+          return `${label} already assigned`;
+        case "rule-exempt":
+          // Never claimed, by design — see the `prNeedsAssignment` note on the
+          // orphan item in `workDetection.ts`.
+          return `${label} not claimed (orphan pass)`;
+      }
+    })
+    .join(" · ");
+}
+
+/**
+ * The claim suffix of a plan line.
+ *
+ * "Already assigned" stays unsaid: the plan is one line per candidate, and a
+ * state the tick does not act on does not earn the width — the absence of
+ * "will assign" is the answer. An **exemption** is said out loud, because it is
+ * a rule rather than a state: an operator auditing an unattended tick would
+ * otherwise read the silence on an orphan pull request as "somebody is already
+ * on it", when in fact nobody is and nobody ever will be.
+ */
+function describePlanClaim(item: WorkItem): string {
+  const claims = claimStates(item);
+  const would = claims.filter((claim) => claim.state === "would-claim").map((claim) => `the ${claim.surface}`);
+  const exempt = claims.filter((claim) => claim.state === "rule-exempt").map((claim) => claim.surface);
   const parts: string[] = [];
-  if (item.issue !== null) {
-    parts.push(item.needsAssignment ? `would assign issue to ${agentUser}` : "issue already assigned");
-  }
-  if (item.pr !== null) {
-    if (item.turn === "pr-orphan") {
-      // Never claimed, by design — see the `prNeedsAssignment` note on the
-      // orphan item in `workDetection.ts`. Named anyway so an operator reading
-      // a dry run does not take the silence for a forgotten claim.
-      parts.push(`pull request #${String(item.pr.number)} not claimed (orphan pass)`);
-    } else if (item.turn === "pr-work") {
-      parts.push(
-        item.prNeedsAssignment
-          ? `would assign pull request #${String(item.pr.number)} to ${agentUser}`
-          : `pull request #${String(item.pr.number)} already assigned`,
-      );
-    }
-  }
-  return parts.join(" · ");
+  if (would.length > 0) parts.push(`will assign ${would.join(" and ")} to the agent`);
+  if (exempt.length > 0) parts.push(`${exempt.join(" and ")} not claimed (orphan pass)`);
+  return parts.length === 0 ? "" : `, ${parts.join(", ")}`;
 }
 
 /** The per-item summary header printed above the command on a dry run. */
@@ -753,11 +773,7 @@ function describePlan(decisions: Decision[]): string {
       );
     }
     const item = decision.item;
-    const claims: string[] = [];
-    if (item.needsAssignment) claims.push("the issue");
-    if (item.prNeedsAssignment) claims.push("the pull request");
-    const claim = claims.length === 0 ? "" : `, will assign ${claims.join(" and ")} to the agent`;
-    return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${claim}`;
+    return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${describePlanClaim(item)}`;
   });
   return lines.length === 0 ? "  (nothing matched the discovery filter)\n" : lines.join("\n") + "\n";
 }
