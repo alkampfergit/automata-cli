@@ -180,7 +180,7 @@ automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 
 `do-work-effort` works the same way: the executor, then the level. It is keyed per executor for the same reason — the two CLIs accept different level names, so a level that is valid for one is not necessarily valid for the other. `--effort` on the command line overrides whichever default applies.
 
-The level is **not** validated by automata. The valid set is both executor- and model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it changes between executor releases, so an allow-list here would reject a level your installed executor accepts. Whatever you set is forwarded unchanged; only an empty value is refused.
+The level is **not** validated by automata. The valid set is both executor- and model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it changes between executor releases, so an allow-list here would reject a level your installed executor accepts. Whatever you set is forwarded unchanged apart from surrounding whitespace, which is trimmed off both the configured default and `--effort`; only an empty value is refused.
 
 **Neither executor errors on an unknown level**, so a typo is quiet rather than fatal: `claude` prints `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` and carries on, and `codex` forwards the value to the API and shows it as `reasoning effort: <x>` in its session header. Check that header, or Claude's warning, if a level does not seem to be taking effect.
 

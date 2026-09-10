@@ -186,9 +186,13 @@ function resolveSettings(options: DoWorkOptions): Settings {
     executor,
     // --model wins; otherwise take the default for the executor in use.
     model: options.model ?? doWork.models?.[executor],
-    // Same precedence for the reasoning effort. `resolveEffort` rejects a
-    // whitespace-only flag so an empty level can never reach the executor.
-    effort: resolveEffortOption(options.effort) ?? doWork.effort?.[executor],
+    // Same precedence for the reasoning effort, but both candidates go through
+    // the one normaliser: a config value is validated as non-empty when the
+    // file is read, yet nothing trims it, so `" high "` would otherwise reach
+    // the executor with its padding and be silently ignored as an unknown
+    // level. `??` keeps the flag winning — an empty `--effort` is not nullish,
+    // so it is still rejected rather than falling through to the default.
+    effort: resolveEffortOption(options.effort ?? doWork.effort?.[executor]),
     maxRuns:
       options.maxRuns !== undefined
         ? parsePositiveInt(options.maxRuns, "--max-runs")

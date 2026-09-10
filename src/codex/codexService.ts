@@ -11,6 +11,21 @@ export interface InvokeCodexOptions {
   effort?: string;
 }
 
+/**
+ * Encode a value as a TOML basic string.
+ *
+ * Levels are forwarded verbatim, so the value is whatever the user typed, and
+ * interpolating it raw into `key="..."` breaks on a quote or a backslash: the
+ * override either fails to parse or — with an embedded quote — parses as a
+ * different assignment than intended. `JSON.stringify` emits a double-quoted
+ * string escaping exactly `"`, `\\` and the control characters, all of which
+ * TOML basic strings accept with the same meaning, so the value round-trips
+ * unchanged.
+ */
+function toTomlBasicString(value: string): string {
+  return JSON.stringify(value);
+}
+
 /** The argv `invokeCodexCode` will spawn. See `buildClaudeArgs` for why. */
 export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {}): string[] {
   const args: string[] = ["exec"];
@@ -18,9 +33,9 @@ export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {})
   if (options.model) args.push("--model", options.model);
   // Codex has no effort flag: it reads `model_reasoning_effort` from its TOML
   // config, and `-c` is the documented per-invocation override. The value is
-  // quoted because `-c` parses that half as TOML, where a bare word is not a
+  // encoded because `-c` parses that half as TOML, where a bare word is not a
   // string.
-  if (options.effort) args.push("-c", `model_reasoning_effort="${options.effort}"`);
+  if (options.effort) args.push("-c", `model_reasoning_effort=${toTomlBasicString(options.effort)}`);
   args.push(prompt);
   return args;
 }

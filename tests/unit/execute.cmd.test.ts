@@ -11,8 +11,14 @@ function createFakeClaude() {
 
   writeFileSync(
     claudeBin,
+    // CommonJS on purpose. The stub is extensionless and lives under the OS
+    // temp dir, so its module type depends on whatever package.json happens to
+    // be above it: with no ancestor Node's syntax detection runs it as ESM, but
+    // under one declaring `"type": "commonjs"` detection is off and the stub
+    // becomes a silent no-op that exits 0 without recording anything. `require`
+    // is correct in both cases.
     `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+const { writeFileSync } = require("node:fs");
 
 const promptIndex = process.argv.indexOf("-p");
 if (promptIndex === -1 || promptIndex + 1 >= process.argv.length) {
@@ -72,8 +78,9 @@ function createArgvCapture(name: string) {
 
   writeFileSync(
     bin,
+    // CommonJS for the same reason as `createFakeClaude`'s stub.
     `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+const { writeFileSync } = require("node:fs");
 writeFileSync(process.env["AUTOMATA_ARGV_FILE"], JSON.stringify(process.argv.slice(2)));
 `,
   );

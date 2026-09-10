@@ -80,6 +80,28 @@ describe("codexService.invokeCodexCode (sync mode)", () => {
     expect(buildCodexArgs("p", { effort: "" })).toEqual(["exec", "p"]);
   });
 
+  it("encodes the effort as a TOML basic string so quotes cannot split the override", async () => {
+    const { buildCodexArgs } = await import("../../src/codex/codexService.js");
+
+    // Raw interpolation would end the string early and hand codex a second
+    // assignment: `model_reasoning_effort="high", sandbox_mode="danger"`.
+    expect(buildCodexArgs("p", { effort: 'high", sandbox_mode="danger' })).toEqual([
+      "exec",
+      "-c",
+      'model_reasoning_effort="high\\", sandbox_mode=\\"danger"',
+      "p",
+    ]);
+
+    // A backslash is an escape lead-in inside a TOML basic string, so it has to
+    // be doubled or the next character is reinterpreted.
+    expect(buildCodexArgs("p", { effort: "hi\\gh" })).toEqual([
+      "exec",
+      "-c",
+      'model_reasoning_effort="hi\\\\gh"',
+      "p",
+    ]);
+  });
+
   it("forwards --model to codex exec when model is specified", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
 

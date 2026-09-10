@@ -1318,6 +1318,15 @@ describe("do-work executor selection", () => {
     });
   });
 
+  it("trims a configured effort so padding cannot reach the executor", async () => {
+    // Config validation only rejects an empty level, so `" high "` is written
+    // through as-is. Untrimmed it is an unknown level, which claude ignores
+    // silently — the run would quietly use the default effort instead.
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { claude: "  high  " } } });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "high" });
+  });
+
   it("passes no effort when only the other executor has one configured", async () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { codex: "medium" } } });
     await runDoWork();

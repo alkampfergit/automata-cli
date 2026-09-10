@@ -62,9 +62,9 @@ The two executors express the level differently, and `do-work` handles the diffe
 | Executor | What is spawned |
 |---|---|
 | `claude` | `--effort <level>` |
-| `codex` | `-c model_reasoning_effort="<level>"` — codex has no effort flag, so the level goes through its config-override option |
+| `codex` | `-c model_reasoning_effort="<level>"` — codex has no effort flag, so the level goes through its config-override option. `-c` parses its argument as TOML, so the level is emitted as a TOML basic string: a quote or backslash in the value is escaped rather than ending the string early |
 
-automata does not validate the level. The valid set is executor- *and* model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it moves between executor releases, so an allow-list here would reject a level your installed executor accepts. The value is forwarded unchanged; only an empty `--effort` is refused, since it would emit a flag with no level.
+automata does not validate the level. The valid set is executor- *and* model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it moves between executor releases, so an allow-list here would reject a level your installed executor accepts. The value is forwarded unchanged apart from surrounding whitespace, which is trimmed off both `--effort` and `doWork.effort.<executor>` — an untrimmed `" high "` is an unknown level, and neither executor reports one (see below). Only an empty level is refused, since it would emit a flag with no operand.
 
 **Neither executor errors on an unknown level**, so a typo is quiet rather than fatal: `claude` prints `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` and carries on, and `codex` forwards the value to the API and shows it as `reasoning effort: <x>` in its session header. Check that header, or Claude's warning, if a level does not seem to be taking effect.
 
