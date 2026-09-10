@@ -5,6 +5,7 @@ import {
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
   type AutomataConfig,
+  type DoWorkModels,
   type Executor,
   type TurnKind,
 } from "../config/configStore.js";
@@ -33,6 +34,14 @@ import {
   type WorkItem,
 } from "../github/workDetection.js";
 import { composePrompt } from "../github/workPrompt.js";
+import {
+  describeExecution,
+  describeInvalidTool,
+  parseRunDirective,
+  resolveExecution,
+  triggeringMessage,
+  type ResolvedExecution,
+} from "../github/runDirective.js";
 import {
   analyseAnswer,
   messagesBetween,
@@ -71,8 +80,15 @@ interface DoWorkOptions {
 interface Settings {
   baseBranch: string;
   protectedBranches: string[];
-  executor: Executor;
-  model: string | undefined;
+  /**
+   * The inputs to the per-item executor/model resolution, not the answer: the
+   * newest message on each item can override both, so the effective values are
+   * resolved per work item rather than once per tick.
+   */
+  withOption: Executor | undefined;
+  modelOption: string | undefined;
+  configExecutor: Executor | undefined;
+  configModels: DoWorkModels | undefined;
   maxRuns: number;
   lockStaleMinutes: number;
   limit: number;
@@ -91,6 +107,8 @@ interface ItemReport {
   detail: string;
   /** True only when the executor was actually invoked — what the run cap counts. */
   ranExecutor?: boolean;
+  /** Present once the item got far enough for the executor and model to be resolved. */
+  execution?: ResolvedExecution;
 }
 
 /** stdout carries the plan and the summary; stderr carries progress and warnings. */
@@ -163,13 +181,13 @@ function resolveSettings(options: DoWorkOptions): Settings {
   validateDoWorkConfig((config as { doWork?: unknown }).doWork);
   const doWork = config.doWork ?? {};
 
-  let executor: Executor = doWork.executor ?? DEFAULT_DO_WORK.executor;
+  let withOption: Executor | undefined;
   if (options.with !== undefined) {
     const requested = options.with.toLowerCase();
     if (requested !== "claude" && requested !== "codex") {
       fail(`--with must be 'claude' or 'codex', got '${options.with}'.`);
     }
-    executor = requested;
+    withOption = requested;
   }
 
   // A dry run posts nothing, so the identity that would post is irrelevant; the
@@ -181,9 +199,10 @@ function resolveSettings(options: DoWorkOptions): Settings {
   return {
     baseBranch: doWork.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
     protectedBranches: doWork.protectedBranches ?? DEFAULT_DO_WORK.protectedBranches,
-    executor,
-    // --model wins; otherwise take the default for the executor in use.
-    model: options.model ?? doWork.models?.[executor],
+    withOption,
+    modelOption: options.model,
+    configExecutor: doWork.executor,
+    configModels: doWork.models,
     maxRuns:
       options.maxRuns !== undefined
         ? parsePositiveInt(options.maxRuns, "--max-runs")
@@ -260,10 +279,30 @@ interface PlannedRun {
 }
 
 /**
+ * The executor and model for one work item.
+ *
+ * Per item, not per tick: the newest authorized message the turn answers may
+ * carry `tool:` / `model:`, and a tick answers several issues with their own
+ * newest messages. `Settings` therefore holds the inputs and this holds the
+ * answer, so no item can leak its choice into the next one.
+ */
+function resolveItemExecution(item: WorkItem, settings: Settings): ReturnType<typeof resolveExecution> {
+  const trigger = triggeringMessage(item);
+  return resolveExecution({
+    directive: trigger === null ? { tool: undefined, model: undefined } : parseRunDirective(trigger.body),
+    withOption: settings.withOption,
+    modelOption: settings.modelOption,
+    configExecutor: settings.configExecutor,
+    configModels: settings.configModels,
+    defaultExecutor: DEFAULT_DO_WORK.executor,
+  });
+}
+
+/**
  * What would be executed for a work item, built with the same argv builders the
  * real invocation uses so `--dry-run` cannot drift from what actually happens.
  */
-function planRun(item: WorkItem, settings: Settings): PlannedRun {
+function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun {
   const prompt = composePrompt({
     item,
     repo: getRepoSlug(),
@@ -273,19 +312,24 @@ function planRun(item: WorkItem, settings: Settings): PlannedRun {
   });
 
   // The resolved path, not the bare name: this is literally what gets spawned.
-  const bin = resolveCommand(settings.executor === "codex" ? "codex" : "claude");
+  const bin = resolveCommand(execution.executor === "codex" ? "codex" : "claude");
   // `verbose: true` unconditionally, because `runClaude` always streams so the
   // child stays cancellable; `--silent` suppresses printing, not the flags.
   const args =
-    settings.executor === "codex"
-      ? buildCodexArgs(prompt, { yolo: true, model: settings.model })
-      : buildClaudeArgs(prompt, { yolo: true, verbose: true, model: settings.model });
+    execution.executor === "codex"
+      ? buildCodexArgs(prompt, { yolo: true, model: execution.model })
+      : buildClaudeArgs(prompt, { yolo: true, verbose: true, model: execution.model });
 
   return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
 }
 
 /** The per-item summary header printed above the command on a dry run. */
-function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun): string {
+function describePlannedRun(
+  item: WorkItem,
+  settings: Settings,
+  run: PlannedRun,
+  execution: ResolvedExecution,
+): string {
   const rule = "─".repeat(72);
   const branchAction = item.turn === "pr-work" ? " and fast-forward" : " and pull";
   const assignment = item.needsAssignment
@@ -295,7 +339,6 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
     item.turn === "pr-work" && item.pr
       ? `pull request #${String(item.pr.number)}`
       : `issue #${String(item.issue.number)}`;
-  const modelNote = settings.model === undefined ? " (no model override)" : ` · model ${settings.model}`;
   const lines = [
     rule,
     `Issue #${String(item.issue.number)} — ${item.issue.title}`,
@@ -305,7 +348,7 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
     `  Branch       ${item.branch} (would check out${branchAction})`,
     `  Assign       ${assignment}`,
     `  Marker       would post on ${markerTarget}`,
-    `  Executor     ${settings.executor}${modelNote}`,
+    `  Executor     ${describeExecution(execution)}`,
     "  Permissions  bypassed (do-work always runs unattended)",
     `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
     "",
@@ -320,6 +363,23 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
     "",
   ];
   return lines.join("\n") + "\n";
+}
+
+/** The dry-run header for an item a real tick would refuse without invoking anything. */
+function describeRefusedRun(item: WorkItem, refusal: string): string {
+  const rule = "─".repeat(72);
+  return (
+    [
+      rule,
+      `Issue #${String(item.issue.number)} — ${item.issue.title}`,
+      rule,
+      `  Turn         ${item.turn}`,
+      `  Why          ${item.reason}`,
+      `  Executor     refused — ${refusal}`,
+      "  Command      none; a real tick would post nothing but the refusal on the marker",
+      "",
+    ].join("\n") + "\n"
+  );
 }
 
 /**
@@ -732,15 +792,19 @@ function reportNoAnswer(item: WorkItem, marker: MarkerRef, runError: Error | nul
     : { outcome: "failed", detail: `run failed: ${runError.message}`, reason: "no-answer" };
 }
 
-async function invokeExecutor(prompt: string, settings: Settings, silent: boolean): Promise<void> {
+async function invokeExecutor(
+  prompt: string,
+  execution: ResolvedExecution,
+  silent: boolean,
+): Promise<void> {
   // Both runners spawn asynchronously, register the child for cancellation, and
   // throw instead of exiting, so a failed run reconciles its marker and the tick
   // continues with the next item.
-  if (settings.executor === "codex") {
-    await runCodex(prompt, { model: settings.model });
+  if (execution.executor === "codex") {
+    await runCodex(prompt, { model: execution.model });
     return;
   }
-  await runClaude(prompt, { model: settings.model, printSteps: !silent });
+  await runClaude(prompt, { model: execution.model, printSteps: !silent });
 }
 
 /**
@@ -891,9 +955,38 @@ async function processItem(
     return { ...base, outcome: "failed", detail };
   }
 
+  // Resolved here, beside the oversized-prompt refusal, because both are
+  // pre-flight refusals that need the marker to already exist: refusing before
+  // it would leave the offending message new forever and re-refuse it on every
+  // later tick instead of explaining itself once.
+  const resolved = resolveItemExecution(item, settings);
+  if (!resolved.ok) {
+    const detail = describeInvalidTool(resolved.invalidTool);
+    progress(`  failed: ${detail}\n`);
+    inFlightMarker = null;
+    try {
+      updateMarker(
+        marker,
+        `automata do-work: ${detail}. No run was started. ` +
+          "Reply here with a corrected directive, or none at all, to have another attempt made.",
+      );
+    } catch (err) {
+      progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
+    }
+    // No `ranExecutor`: nothing was invoked, so the item must not spend a slot
+    // from the run cap.
+    return { ...base, outcome: "failed", detail };
+  }
+  const execution: ResolvedExecution = {
+    executor: resolved.executor,
+    executorSource: resolved.executorSource,
+    model: resolved.model,
+    modelSource: resolved.modelSource,
+  };
+
   let runError: Error | null = null;
   try {
-    await invokeExecutor(prompt, settings, silent);
+    await invokeExecutor(prompt, execution, silent);
   } catch (err) {
     runError = err as Error;
   }
@@ -905,7 +998,7 @@ async function processItem(
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
 
-  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor };
+  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
 }
 
 // Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt is
@@ -965,8 +1058,28 @@ function summarize(reports: ItemReport[]): void {
     return;
   }
   for (const report of reports) {
-    out(`  #${String(report.issue)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}\n`);
+    // Named unconditionally rather than only when a directive was used: an
+    // absent field would be ambiguous between "no directive" and "an older
+    // automata" when read back out of a cron log.
+    const ran = report.execution === undefined ? "" : ` · ${describeExecution(report.execution)}`;
+    out(`  #${String(report.issue)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
   }
+}
+
+/** An item report as data, with the effective executor and model flattened. */
+function toItemJson(report: ItemReport): Record<string, unknown> {
+  return {
+    issue: report.issue,
+    title: report.title,
+    turn: report.turn,
+    outcome: report.outcome,
+    detail: report.detail,
+    ranExecutor: report.ranExecutor ?? false,
+    executor: report.execution?.executor ?? null,
+    model: report.execution?.model ?? null,
+    executorSource: report.execution?.executorSource ?? null,
+    modelSource: report.execution?.modelSource ?? null,
+  };
 }
 
 export const doWorkCommand = new Command("do-work")
@@ -1178,12 +1291,57 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
   const exitCode = degraded ? 2 : 0;
 
   if (options.json) {
-    out(JSON.stringify({ dryRun: false, plan: decisions.map(toPlanJson), items: reports, exitCode }, null, 2) + "\n");
+    out(
+      JSON.stringify(
+        { dryRun: false, plan: decisions.map(toPlanJson), items: reports.map(toItemJson), exitCode },
+        null,
+        2,
+      ) + "\n",
+    );
   } else {
     summarize(reports);
   }
 
   return exitCode;
+}
+
+/**
+ * One item of a dry run: either the command that would be launched, or the
+ * refusal that would replace it.
+ */
+type DryRunEntry =
+  | { kind: "run"; item: WorkItem; execution: ResolvedExecution; run: PlannedRun }
+  | { kind: "refused"; item: WorkItem; refusal: string };
+
+function toRunJson(entry: DryRunEntry): Record<string, unknown> {
+  if (entry.kind === "refused") {
+    return {
+      issue: entry.item.issue.number,
+      turn: entry.item.turn,
+      executor: null,
+      model: null,
+      executorSource: null,
+      modelSource: null,
+      refusal: entry.refusal,
+      bin: null,
+      args: null,
+      command: null,
+      prompt: null,
+    };
+  }
+  return {
+    issue: entry.item.issue.number,
+    turn: entry.item.turn,
+    executor: entry.execution.executor,
+    model: entry.execution.model ?? null,
+    executorSource: entry.execution.executorSource,
+    modelSource: entry.execution.modelSource,
+    refusal: null,
+    bin: entry.run.bin,
+    args: entry.run.args,
+    command: entry.run.command,
+    prompt: entry.run.prompt,
+  };
 }
 
 /** Print (or emit) what a real tick would do, without doing any of it. */
@@ -1194,7 +1352,22 @@ function reportDryRun(
   options: DoWorkOptions,
 ): void {
   const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-  const planned = describable.map((item) => planRun(item, settings));
+  // An unrecognised `tool:` is described as the refusal a real tick would
+  // perform, rather than as a command: a dry run must show the typo, not a
+  // plausible command line that would never be launched.
+  const planned: DryRunEntry[] = describable.map((item) => {
+    const resolved = resolveItemExecution(item, settings);
+    if (!resolved.ok) {
+      return { kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) };
+    }
+    const execution: ResolvedExecution = {
+      executor: resolved.executor,
+      executorSource: resolved.executorSource,
+      model: resolved.model,
+      modelSource: resolved.modelSource,
+    };
+    return { kind: "run", item, execution, run: planRun(item, settings, execution) };
+  });
 
   if (options.json) {
     out(
@@ -1202,16 +1375,7 @@ function reportDryRun(
         {
           dryRun: true,
           plan: decisions.map(toPlanJson),
-          runs: planned.map((run, index) => ({
-            issue: describable[index].issue.number,
-            turn: describable[index].turn,
-            executor: settings.executor,
-            model: settings.model ?? null,
-            bin: run.bin,
-            args: run.args,
-            command: run.command,
-            prompt: run.prompt,
-          })),
+          runs: planned.map(toRunJson),
         },
         null,
         2,
@@ -1220,8 +1384,13 @@ function reportDryRun(
     return;
   }
 
-  for (const [index, run] of planned.entries()) {
-    out("\n" + describePlannedRun(describable[index], settings, run));
+  for (const entry of planned) {
+    out(
+      "\n" +
+        (entry.kind === "refused"
+          ? describeRefusedRun(entry.item, entry.refusal)
+          : describePlannedRun(entry.item, settings, entry.run, entry.execution)),
+    );
   }
   const deferred = items.length - describable.length;
   if (deferred > 0) {
