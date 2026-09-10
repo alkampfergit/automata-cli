@@ -13,6 +13,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -38,8 +39,16 @@ const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
+const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Claude";
+const DO_WORK_CODEX_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Codex";
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
+const DO_WORK_PR_ORPHAN_SCREEN_TEXT = "Instructions for a pull request with no linked issue:";
+
+// ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
+// tell it apart from the start of a longer escape sequence, so advancing only
+// microtasks is not enough to observe an Esc keypress.
+const ESC_FLUSH_MS = 30;
 
 async function tick() {
   for (let i = 0; i < 3; i += 1) {
@@ -47,6 +56,9 @@ async function tick() {
       setImmediate(resolve);
     });
   }
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ESC_FLUSH_MS);
+  });
 }
 
 async function navigateToPromptsMenu(stdin: { write: (s: string) => void }) {
@@ -447,7 +459,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor, both models, run cap and lock staleness, then saves", async () => {
+  it("walks base branch, executor, both models, both efforts, run cap and lock staleness, then saves", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
@@ -469,12 +481,20 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
-    // Claude model, then Codex model.
+    // Claude model, Claude effort, Codex model, Codex effort.
     stdin.write("claude-opus-4-6");
     await tick();
     stdin.write(ENTER);
     await tick();
+    stdin.write("high");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
     stdin.write("o3");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write("medium");
     await tick();
     stdin.write(ENTER);
     await tick();
@@ -499,10 +519,26 @@ describe("ConfigWizard — Do Work section", () => {
         protectedBranches: ["main", "master"],
         executor: "codex",
         models: { claude: "claude-opus-4-6", codex: "o3" },
+        effort: { claude: "high", codex: "medium" },
         maxRunsPerTick: 2,
         lockStaleMinutes: 45,
       },
     });
+  });
+
+  it("reaches an effort screen for each executor, after that executor's model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CODEX_EFFORT_SCREEN_TEXT);
   });
 
   it("reaches the lock staleness screen after the run cap", async () => {
@@ -600,19 +636,28 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
   });
 
-  it("goes back from the run cap screen to the Codex model screen", async () => {
+  it("goes back from the run cap screen to the Codex effort screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
     await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
-    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_CODEX_EFFORT_SCREEN_TEXT);
   });
 
-  it("goes back from the Codex model screen to the Claude one", async () => {
+  it("goes back from the Codex model screen to the Claude effort screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
     await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
+  });
+
+  it("goes back from an effort screen to its own model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
     expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
@@ -682,6 +727,30 @@ describe("ConfigWizard — Do Work prompts", () => {
     await tick();
     expect(lastFrame()).toContain("Do Work — Discuss");
     expect(lastFrame()).toContain(PROMPTS_MENU_HINT);
+  });
+
+  it("reaches the orphan pull request prompt screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 5);
+    expect(lastFrame()).toContain(DO_WORK_PR_ORPHAN_SCREEN_TEXT);
+    expect(lastFrame()).toContain("default do-work orphan pr prompt");
+  });
+
+  it("writes the orphan pull request prompt file and stores the filename", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 5);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("do-work-pr-orphan.md"),
+      "default do-work orphan pr prompt",
+      "utf8",
+    );
+    expect(writeConfig).toHaveBeenCalledWith({
+      doWork: { prompts: { prOrphan: "do-work-pr-orphan.md" } },
+    });
   });
 
   it("leaves the existing prompt entries reachable at their original positions", async () => {

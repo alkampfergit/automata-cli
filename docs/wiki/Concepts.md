@@ -12,7 +12,7 @@ That third row is the important one. A public repository's issues can be comment
 
 ## The two surfaces
 
-An issue's conversation can happen in two places, and the agent watches both:
+An issue's conversation can happen in two places, and the agent watches both (an orphan pull request has only the second):
 
 - **The issue** — its description and its comments.
 - **Its pull request** — the conversation comments, review bodies with text, and the comments inside review threads.
@@ -34,14 +34,15 @@ Two details keep it from misbehaving:
 - The comparison is **strict**, so a timestamp tie is not new. The agent's own messages can therefore never trigger it.
 - The **issue description never acts as the boundary**, so an issue opened by the agent itself is still processed normally.
 
-## The two turns
+## The three turns
 
 | Turn | When | What the agent does |
 |---|---|---|
 | **Discussion** (`issue-discuss`) | The issue has no linked open pull request | Talks. Specification, plan, questions — no code. Unless a new message explicitly asks for implementation, in which case it creates the branch and opens the pull request. |
 | **Build** (`pr-work`) | The issue has a linked open pull request | Works on that pull request's branch: addresses the feedback, commits, pushes, replies. |
+| **Orphan** (`pr-orphan`) | An open pull request closes no issue of this repository, and an authorized account has asked something on it | Works on that pull request's branch with no issue in play: diagnoses the checks, brings the branch up to date, replies with a recommendation. |
 
-Which one applies is decided by a single observable fact — does an open pull request declare that it closes this issue? — so no intent classification and no extra model call is needed. The link is GitHub's own closing reference, the thing `Closes #42` in a pull request body produces. That is why **opening a pull request is what moves an issue from talking to building**: the state change is a side effect of the work itself, visible to everyone in the GitHub UI.
+Which of the first two applies is decided by a single observable fact — does an open pull request declare that it closes this issue? — so no intent classification and no extra model call is needed. The third exists because that same fact leaves a whole class of pull request unreachable: a dependency bump has no issue to start from, and without this pass nobody could ask the agent about one. The link is GitHub's own closing reference, the thing `Closes #42` in a pull request body produces. That is why **opening a pull request is what moves an issue from talking to building**: the state change is a side effect of the work itself, visible to everyone in the GitHub UI.
 
 ## Assignment and the marker: two different jobs
 

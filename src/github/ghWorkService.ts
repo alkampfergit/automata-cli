@@ -106,6 +106,8 @@ interface RawLinkMapResponse {
           isCrossRepository: boolean;
           isDraft: boolean;
           updatedAt: string;
+          labels: { nodes: { name?: string }[] } | null;
+          assignees: { nodes: { login?: string }[] } | null;
           closingIssuesReferences: {
             pageInfo: { hasNextPage: boolean };
             nodes: { number: number; repository: { nameWithOwner: string } }[];
@@ -293,6 +295,8 @@ query($owner:String!,$repo:String!,$cursor:String){
       pageInfo{ hasNextPage endCursor }
       nodes{
         number url title headRefName baseRefName isCrossRepository isDraft updatedAt
+        labels(first:50){ nodes{ name } }
+        assignees(first:50){ nodes{ login } }
         closingIssuesReferences(first:50){
           pageInfo{ hasNextPage }
           nodes{ number repository{ nameWithOwner } }
@@ -307,23 +311,32 @@ const MAX_LINK_MAP_PAGES = 50;
 
 type RawLinkMapNode = RawLinkMapResponse["data"]["repository"]["pullRequests"]["nodes"][number];
 
-/** Record one pull request against every issue *in this repository* it closes. */
+/**
+ * An open pull request that declares no closing reference to an issue *of this
+ * repository*, together with the two fields the discovery filter reads.
+ *
+ * `labels` and `assignees` are not on `PullRequestRef` because only discovery
+ * reads them: `getPrSurface` would then have to fetch data none of its callers
+ * want, or leave the fields empty and give one type two shapes.
+ */
+export interface OrphanPr {
+  pr: PullRequestRef;
+  labels: string[];
+  assignees: string[];
+}
+
+/**
+ * Record one pull request against every issue *in this repository* it closes.
+ *
+ * Returns true when it closed at least one, so the caller can collect the rest
+ * as orphans — the second `do-work` pass works on exactly those.
+ */
 function indexPullRequest(
   map: Map<number, PullRequestRef[]>,
   node: RawLinkMapNode,
   nameWithOwner: string,
-): void {
-  const ref: PullRequestRef = {
-    number: node.number,
-    url: node.url,
-    title: node.title,
-    headRefName: node.headRefName,
-    baseRefName: node.baseRefName,
-    isCrossRepository: node.isCrossRepository,
-    state: "OPEN",
-    isDraft: node.isDraft,
-    updatedAt: node.updatedAt,
-  };
+): boolean {
+  const ref = toPullRequestRef(node);
 
   if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
     // Callers treat absence from this map as proof that an issue has no pull
@@ -336,10 +349,21 @@ function indexPullRequest(
     );
   }
 
+  let closedAnyHere = false;
   for (const issue of node.closingIssuesReferences.nodes) {
     // `Closes other-org/lib#42` would otherwise be indexed as this repository's
-    // issue 42, linking an unrelated pull request to it.
-    if (issue.repository.nameWithOwner !== nameWithOwner) continue;
+    // issue 42, linking an unrelated pull request to it. The same line decides
+    // orphanhood: a pull request closing only another repository's issue closes
+    // nothing *here*, so it belongs to the orphan pass.
+    //
+    // Case-insensitively, because the two sides have different provenance:
+    // `nameWithOwner` is GitHub's canonical casing, while ours is whatever the
+    // `origin` URL happens to spell. Comparing them literally would discard
+    // *every* closing reference on a remote written `Alkampfer/Automata-CLI` —
+    // starting a competing implementation on issues that already have a pull
+    // request, and sending each of those pull requests through the orphan pass.
+    if (issue.repository.nameWithOwner.toLowerCase() !== nameWithOwner.toLowerCase()) continue;
+    closedAnyHere = true;
     const existing = map.get(issue.number);
     if (existing) {
       existing.push(ref);
@@ -347,6 +371,31 @@ function indexPullRequest(
       map.set(issue.number, [ref]);
     }
   }
+  return closedAnyHere;
+}
+
+function toPullRequestRef(node: RawLinkMapNode): PullRequestRef {
+  return {
+    number: node.number,
+    url: node.url,
+    title: node.title,
+    headRefName: node.headRefName,
+    baseRefName: node.baseRefName,
+    isCrossRepository: node.isCrossRepository,
+    state: "OPEN",
+    isDraft: node.isDraft,
+    updatedAt: node.updatedAt,
+  };
+}
+
+function toOrphanPr(node: RawLinkMapNode): OrphanPr {
+  return {
+    pr: toPullRequestRef(node),
+    labels: (node.labels?.nodes ?? []).map((label) => label.name ?? "").filter((name) => name.length > 0),
+    assignees: (node.assignees?.nodes ?? [])
+      .map((assignee) => assignee.login ?? "")
+      .filter((login) => login.length > 0),
+  };
 }
 
 /**
@@ -360,11 +409,18 @@ export interface OpenPrLinkMap {
   byIssue: Map<number, PullRequestRef[]>;
   /** The repository default branch, so a build turn can refuse to push to it. */
   defaultBranch: string | null;
+  /**
+   * Every open pull request that closes no issue of this repository, most
+   * recently updated first. Free of extra API cost: the same paged query that
+   * builds `byIssue` has to visit them anyway.
+   */
+  orphans: OrphanPr[];
 }
 
 export function getOpenPrLinkMap(): OpenPrLinkMap {
   const { owner, repo } = getRepoSlug();
   const map = new Map<number, PullRequestRef[]>();
+  const orphans: OrphanPr[] = [];
   let defaultBranch: string | null = null;
 
   // Every page is fetched: callers treat this map as authoritative, so a
@@ -380,11 +436,13 @@ export function getOpenPrLinkMap(): OpenPrLinkMap {
     const connection = response.data.repository.pullRequests;
 
     for (const node of connection.nodes) {
-      indexPullRequest(map, node, `${owner}/${repo}`);
+      if (!indexPullRequest(map, node, `${owner}/${repo}`)) {
+        orphans.push(toOrphanPr(node));
+      }
     }
 
     if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
-      return { byIssue: map, defaultBranch };
+      return { byIssue: map, defaultBranch, orphans };
     }
     cursor = connection.pageInfo.endCursor;
   }
@@ -623,4 +681,146 @@ export function deleteMarker(marker: MarkerRef): void {
     if (/not found/i.test(stderr) || /HTTP 404/i.test(stderr)) return;
     throw new Error(stderr.trim() || `Failed to delete comment ${marker.commentId}.`);
   }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Repository hygiene
+ *
+ * The two `gh` questions `do-work`'s pre-flight asks about a *named head
+ * branch*. Both use `--head`, so neither needs the branch checked out — which
+ * is what lets the prune step decide about a branch without moving the working
+ * tree.
+ * -------------------------------------------------------------------------- */
+
+/** A pull request seen from its head branch, in any state. */
+export interface PullRequestHeadRef {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  updatedAt: string;
+  /** The login that opened it, or "" when `gh` reported none (a deleted account). */
+  author: string;
+}
+
+interface RawHeadPr {
+  number: number;
+  url: string;
+  state: string;
+  updatedAt: string;
+  author?: { login?: string } | null;
+}
+
+function toHeadState(state: string): PullRequestHeadRef["state"] {
+  return state === "OPEN" || state === "MERGED" ? state : "CLOSED";
+}
+
+/**
+ * Every pull request for a head branch, in any state, newest update first.
+ *
+ * `gh pr list` rather than `gh pr view`: the prune decision needs *all* states
+ * for a named head, while `pr view` resolves only the default pull request and
+ * reports "none" by way of English stderr text.
+ */
+export function listPullRequestsForHead(branch: string): PullRequestHeadRef[] {
+  const raw = ghJson<RawHeadPr[]>(
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,updatedAt,author"],
+    `list pull requests for branch ${branch}`,
+  );
+  return raw
+    .map((pr) => ({
+      number: pr.number,
+      url: pr.url,
+      state: toHeadState(pr.state),
+      updatedAt: pr.updatedAt,
+      author: pr.author?.login ?? "",
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export interface DraftPullRequestInput {
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  /** Applied best-effort; a repository that has not defined it still gets the PR. */
+  label?: string;
+}
+
+/**
+ * Patterns `gh` uses when the *only* thing wrong with `pr create` is that the
+ * repository has not defined the label we asked for.
+ *
+ * Narrow on purpose. Testing the whole of stderr for `label` also swallowed
+ * failures that merely mention one — a 403 whose URL ends `/labels`, a rate
+ * limit hit while labelling — and retrying those without `--label` reported a
+ * label problem for something else entirely, or hid a real error behind a
+ * second identical failure. Anything not listed here is re-thrown as it is.
+ */
+const MISSING_LABEL_PATTERNS = [
+  // gh's own message: `could not add label: 'rescue' not found`.
+  /could not add label/i,
+  // The GraphQL error it wraps, seen directly on some gh versions.
+  /could not resolve to a label/i,
+  /\blabels?\b[^\n]*\b(?:not found|does not exist)\b/i,
+];
+
+/** True when stderr says the label is missing, and nothing else went wrong. */
+export function isMissingLabelError(stderr: string): boolean {
+  return MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr));
+}
+
+/**
+ * Open a draft pull request for a head branch.
+ *
+ * Draft on purpose: these are opened unattended to stop work being lost, not
+ * because anything is ready for review, so they must not enter a review queue.
+ *
+ * The label is cosmetic, so `--label` naming a label the repository has not
+ * defined must not cost us the pull request — hence the single retry without
+ * it, gated on {@link isMissingLabelError}. Creating the label instead would be
+ * a write to repository settings this command was never asked to make.
+ */
+export function createDraftPullRequest(input: DraftPullRequestInput): { number: number; url: string } {
+  const base = [
+    "pr",
+    "create",
+    "--draft",
+    "--head",
+    input.head,
+    "--base",
+    input.base,
+    "--title",
+    input.title,
+    "--body",
+    input.body,
+  ];
+
+  if (input.label !== undefined && input.label.length > 0) {
+    const labelled = run("gh", [...base, "--label", input.label]);
+    if (labelled.status === 0) return parseCreatedPrUrl(labelled.stdout, input.head);
+    if (!isMissingLabelError(labelled.stderr)) {
+      throw new Error(
+        labelled.stderr.trim() || `Failed to open a draft pull request for ${input.head}.`,
+      );
+    }
+  }
+
+  const { stdout, stderr, status } = run("gh", base);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to open a draft pull request for ${input.head}.`);
+  }
+  return parseCreatedPrUrl(stdout, input.head);
+}
+
+/**
+ * `gh pr create` prints the new pull request's URL, not JSON, so the number is
+ * read back off the URL rather than asked for in a second call.
+ */
+function parseCreatedPrUrl(stdout: string, head: string): { number: number; url: string } {
+  const url = stdout.trim().split("\n").pop()?.trim() ?? "";
+  const match = /\/pull\/(\d+)\s*$/.exec(url);
+  if (!match) {
+    throw new Error(`Opened a pull request for ${head} but could not read its number from: ${url}`);
+  }
+  return { number: Number(match[1]), url };
 }

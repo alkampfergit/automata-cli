@@ -12,6 +12,7 @@ import {
   DEFAULT_DO_WORK,
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
@@ -50,6 +51,7 @@ const PROMPTS_MENU_OPTIONS = [
   "Check-Issue",
   "Do Work — Discuss",
   "Do Work — PR",
+  "Do Work — Orphan PR",
 ] as const;
 
 function parseAllowedUsers(value: string): string[] {
@@ -75,11 +77,14 @@ type Screen =
   | "do-work-protected-branches"
   | "do-work-executor"
   | "do-work-claude-model"
+  | "do-work-claude-effort"
   | "do-work-codex-model"
+  | "do-work-codex-effort"
   | "do-work-max-runs"
   | "do-work-lock-stale"
   | "do-work-discuss-prompt"
-  | "do-work-pr-prompt";
+  | "do-work-pr-prompt"
+  | "do-work-pr-orphan-prompt";
 
 /** The subset of ink's key object this wizard reacts to. */
 interface InkKey {
@@ -221,6 +226,7 @@ const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Scr
   "Check-Issue": "check-issue-prompt",
   "Do Work — Discuss": "do-work-discuss-prompt",
   "Do Work — PR": "do-work-pr-prompt",
+  "Do Work — Orphan PR": "do-work-pr-orphan-prompt",
 };
 
 export function ConfigWizard() {
@@ -231,8 +237,8 @@ export function ConfigWizard() {
 
   const [screen, setScreen] = useState<Screen>("main");
   const [mainMenuIndex, setMainMenuIndex] = useState(0);
-  const [selectedRemoteIndex, setSelectedRemoteIndex] = useState(initialRemoteIndex >= 0 ? initialRemoteIndex : 0);
-  const [selectedTechIndex, setSelectedTechIndex] = useState(initialTechIndex >= 0 ? initialTechIndex : 0);
+  const [selectedRemoteIndex, setSelectedRemoteIndex] = useState(Math.max(initialRemoteIndex, 0));
+  const [selectedTechIndex, setSelectedTechIndex] = useState(Math.max(initialTechIndex, 0));
   const [discoveryValue, setDiscoveryValue] = useState(existing.issueDiscoveryValue ?? "");
   const [systemPrompt, setSystemPrompt] = useState(existing.claudeSystemPrompt ?? "");
   const [promptsMenuIndex, setPromptsMenuIndex] = useState(0);
@@ -253,6 +259,8 @@ export function ConfigWizard() {
   );
   const [doWorkClaudeModel, setDoWorkClaudeModel] = useState(existing.doWork?.models?.claude ?? "");
   const [doWorkCodexModel, setDoWorkCodexModel] = useState(existing.doWork?.models?.codex ?? "");
+  const [doWorkClaudeEffort, setDoWorkClaudeEffort] = useState(existing.doWork?.effort?.claude ?? "");
+  const [doWorkCodexEffort, setDoWorkCodexEffort] = useState(existing.doWork?.effort?.codex ?? "");
   const [doWorkLockStale, setDoWorkLockStale] = useState(
     String(existing.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes),
   );
@@ -265,6 +273,9 @@ export function ConfigWizard() {
   );
   const [doWorkPrPrompt, setDoWorkPrPrompt] = useState(
     existing.doWork?.prompts?.prWork ?? DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  );
+  const [doWorkPrOrphanPrompt, setDoWorkPrOrphanPrompt] = useState(
+    existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   );
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
@@ -377,13 +388,23 @@ export function ConfigWizard() {
     },
     "do-work-claude-model": {
       setValue: setDoWorkClaudeModel,
-      onSubmit: () => setScreen("do-work-codex-model"),
+      onSubmit: () => setScreen("do-work-claude-effort"),
       onBack: () => setScreen("do-work-executor"),
+    },
+    "do-work-claude-effort": {
+      setValue: setDoWorkClaudeEffort,
+      onSubmit: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-claude-model"),
     },
     "do-work-codex-model": {
       setValue: setDoWorkCodexModel,
+      onSubmit: () => setScreen("do-work-codex-effort"),
+      onBack: () => setScreen("do-work-claude-effort"),
+    },
+    "do-work-codex-effort": {
+      setValue: setDoWorkCodexEffort,
       onSubmit: () => setScreen("do-work-max-runs"),
-      onBack: () => setScreen("do-work-claude-model"),
+      onBack: () => setScreen("do-work-codex-model"),
     },
     "do-work-max-runs": {
       setValue: (update) => {
@@ -402,7 +423,7 @@ export function ConfigWizard() {
         setValidationError("");
         setScreen("do-work-lock-stale");
       },
-      onBack: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-codex-effort"),
     },
     "do-work-lock-stale": {
       setValue: (update) => {
@@ -427,6 +448,10 @@ export function ConfigWizard() {
             models: {
               claude: doWorkClaudeModel.trim() || undefined,
               codex: doWorkCodexModel.trim() || undefined,
+            },
+            effort: {
+              claude: doWorkClaudeEffort.trim() || undefined,
+              codex: doWorkCodexEffort.trim() || undefined,
             },
             maxRunsPerTick: maxRuns ?? undefined,
             lockStaleMinutes: parsed,
@@ -453,6 +478,17 @@ export function ConfigWizard() {
         savePrompt("do-work-pr-work.md", doWorkPrPrompt, (value, current) => ({
           ...current,
           doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, prWork: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "do-work-pr-orphan-prompt": {
+      setValue: setDoWorkPrOrphanPrompt,
+      onSubmit: () => {
+        savePrompt("do-work-pr-orphan.md", doWorkPrOrphanPrompt, (value, current) => ({
+          ...current,
+          doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, prOrphan: value } },
         }));
         setScreen("prompts-menu");
       },
@@ -592,11 +628,23 @@ export function ConfigWizard() {
       value: doWorkClaudeModel,
       hint: `Type model · Enter to continue · ${BACK}`,
     },
+    "do-work-claude-effort": {
+      title: "Do Work — Claude Effort",
+      label: "Default reasoning effort when the executor is Claude (blank = the executor's own default):",
+      value: doWorkClaudeEffort,
+      hint: `Type effort · Enter to continue · ${BACK}`,
+    },
     "do-work-codex-model": {
       title: "Do Work — Codex Model",
       label: "Default model when the executor is Codex (blank = the executor's own default):",
       value: doWorkCodexModel,
       hint: `Type model · Enter to continue · ${BACK}`,
+    },
+    "do-work-codex-effort": {
+      title: "Do Work — Codex Effort",
+      label: "Default reasoning effort when the executor is Codex (blank = the executor's own default):",
+      value: doWorkCodexEffort,
+      hint: `Type effort · Enter to continue · ${BACK}`,
     },
     "do-work-max-runs": {
       title: "Do Work — Max Runs Per Tick",
@@ -620,6 +668,12 @@ export function ConfigWizard() {
       title: "Prompts — Do Work — PR",
       label: "Pull request turn instructions:",
       value: doWorkPrPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "do-work-pr-orphan-prompt": {
+      title: "Prompts — Do Work — Orphan PR",
+      label: "Instructions for a pull request with no linked issue:",
+      value: doWorkPrOrphanPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
     },
   };

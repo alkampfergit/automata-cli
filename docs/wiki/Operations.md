@@ -46,7 +46,7 @@ Because a healthy idle loop stays at 0, cron mail stays meaningful: anything you
 | `answered` | The model posted its answer. The marker was deleted. |
 | `answered-no-reply` | The run finished but posted nothing. The marker was updated to say so; a human must reply. |
 | `failed` | The run errored before posting an answer. The marker was updated with the error. |
-| `skipped` | Nothing was attempted: dirty working tree, branch preparation failed, the marker or the issue pickup note could not be posted, the item stopped being actionable before it ran, or the pull request is unsafe to work on (it comes from a fork, or its head is the base or default branch). |
+| `skipped` | Nothing was attempted: branch preparation failed, the marker or the issue pickup note could not be posted, the item stopped being actionable before it ran, another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (it comes from a fork, or its head is the base or default branch). A dirty working tree reaches here when the pre-flight rescue failed, or when an executor earlier in the same tick left changes behind — the pre-flight runs once, before the first item. |
 | `deferred` | The run cap was reached; the item waits for the next tick. |
 
 `answered-no-reply` counts as degraded on purpose. A turn that produced nothing has stalled that issue until someone replies, and an unattended loop must surface that rather than report a healthy tick.
@@ -55,22 +55,24 @@ Because a healthy idle loop stays at 0, cron mail stays meaningful: anything you
 
 ```console
 $ automata do-work
-Work plan (2 of 5 issues need an answer):
+Work plan (3 of 6 candidates need an answer):
   #42 issue-discuss on develop — 1 new issue message, no open pull request, will assign to the agent
   #43 pr-work on feature/043-x — 2 unresolved review threads on pull request #58
   #44 nothing to do — nothing new since the agent's message at 2026-09-08T11:02:00Z
+  PR #61 pr-orphan on dependabot/npm_and_yarn/lodash-4.17.21 — 1 new pull request message on pull request #61 (no linked issue)
   ...
 
 Tick summary:
   #42 issue-discuss answered — answered
   #43 pr-work answered-no-reply — run finished but posted no answer
+  PR #61 pr-orphan answered — answered
 ```
 
 The plan goes to stdout and the progress to stderr, so `--json` can be piped while you still watch the run.
 
 ## Capping the spend
 
-`--max-runs <n>`, or `doWork.maxRunsPerTick`, bounds the model runs per tick. Items beyond the cap are reported as `deferred` and picked up next tick. Worth setting while you are still building trust: a label applied to twenty stale issues is otherwise twenty model runs.
+`--max-runs <n>`, or `doWork.maxRunsPerTick`, bounds the model runs per tick. The issue items and the orphan pull-request items share that one budget, and the issues are offered it first — so a batch of dependency bumps cannot starve the issues. Items beyond the cap are reported as `deferred` and picked up next tick. Worth setting while you are still building trust: a label applied to twenty stale issues is otherwise twenty model runs.
 
 ## What the harness never does
 
@@ -78,8 +80,9 @@ Stated in one place, because trusting an unattended writer requires knowing its 
 
 - **Never merges a pull request.** Landing is a human decision.
 - **Never closes an issue.** GitHub closes it when the linked pull request merges.
-- **Never pushes to the base branch.** Only to a pull request's own head branch.
-- **Never stashes, resets or discards uncommitted changes.** A dirty working tree skips the item, with a warning.
+- **Never pushes to or commits on the base branch.** Only to a pull request's own head branch, or to a rescue branch.
+- **Never stashes, resets, cleans or discards uncommitted changes.** The pre-flight commits and pushes them onto a branch with a draft pull request; only if that fails does the item skip, with a warning.
+- **Never deletes a local branch whose work it cannot prove landed** — proof is a merged pull request, or zero commits outside the base branch. Otherwise it pushes the branch and opens a draft pull request, and any branch whose state it could not read is kept.
 - **Never acts on a message from an account outside `allowedUsers`.** Such messages cannot trigger a turn and never reach the model.
 - **Never retries a failed run on its own.** The updated marker asks a human to reply instead; automatic retries would spend model calls forever on the same broken input.
 - **Never answers the same message twice** — the marker holds the boundary even when a run crashes.

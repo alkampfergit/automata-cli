@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
+import { resolveEffortOption } from "../cli/spawnUtils.js";
 
 type ExecuteOptions = {
   with: string;
@@ -9,6 +10,7 @@ type ExecuteOptions = {
   filePrompt?: string;
   silent?: boolean;
   model?: string;
+  effort?: string;
 };
 
 function readStdin(): Promise<string> {
@@ -63,6 +65,7 @@ export const executeCommand = new Command("execute")
   .option("--file-prompt <path>", "Path to a file whose content is used as the prompt")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .option("--model <string>", "Model identifier to pass to the executor")
+  .option("--effort <level>", "Reasoning effort to pass to the executor")
   .action(async (options: ExecuteOptions) => {
     const executor = options.with.toLowerCase();
     if (executor !== "claude" && executor !== "codex") {
@@ -72,9 +75,16 @@ export const executeCommand = new Command("execute")
 
     const prompt = await resolvePrompt(options);
 
+    const effort = resolveEffortOption(options.effort);
+
     if (executor === "codex") {
-      invokeCodexCode(prompt, { yolo: true, model: options.model });
+      invokeCodexCode(prompt, { yolo: true, model: options.model, effort });
     } else {
-      await invokeClaudeCode(prompt, { yolo: true, verbose: !options.silent, model: options.model });
+      await invokeClaudeCode(prompt, {
+        yolo: true,
+        verbose: !options.silent,
+        model: options.model,
+        effort,
+      });
     }
   });

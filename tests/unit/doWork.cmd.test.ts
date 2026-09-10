@@ -22,6 +22,7 @@ const mockAddClosesRefToPr = vi.fn();
 const mockPrepareBaseBranch = vi.fn();
 const mockPreparePrBranch = vi.fn();
 const mockAcquireRunLock = vi.fn();
+const mockRecordTick = vi.fn();
 const mockRelease = vi.fn();
 const mockInvokeClaude = vi.fn();
 const mockInvokeCodex = vi.fn();
@@ -60,8 +61,30 @@ vi.mock("../../src/git/workspaceService.js", () => ({
   preparePrBranch: (...a: unknown[]) => mockPreparePrBranch(...a),
 }));
 
+const mockRunRepoHygiene = vi.fn();
+
+// The pre-flight has its own suite (repoHygiene.test.ts); here it is mocked so
+// these tests assert only what the command does with its report.
+vi.mock("../../src/git/repoHygiene.js", () => ({
+  runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a),
+}));
+
+const CLEAN_HYGIENE = {
+  rescue: { kind: "clean" },
+  base: { ok: true },
+  prunes: [],
+  degraded: false,
+};
+
 vi.mock("../../src/run/runLock.js", () => ({
   acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
+}));
+
+// Stubbed rather than pointed at a temp directory: the real module writes to
+// the *parent* of the working directory, so an unmocked test run would litter
+// the directory above the checkout on any machine where it is writable.
+vi.mock("../../src/run/operationLog.js", () => ({
+  recordTick: (...a: unknown[]) => mockRecordTick(...a),
 }));
 
 vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
@@ -205,9 +228,10 @@ beforeEach(() => {
   mockAcquireRunLock.mockReturnValue({ ok: true, handle: { release: mockRelease } });
   gh.getRepoSlug.mockReturnValue({ owner: "acme", repo: "widget" });
   gh.getAuthenticatedLogin.mockReturnValue("automata-bot");
-  gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main" });
+  gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main", orphans: [] });
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
+  mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
   mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
   mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042" });
   mockGetCurrentBranchPr.mockReturnValue(null);
@@ -333,6 +357,9 @@ describe("do-work preconditions", () => {
     ["a string where prompts should be an object", { prompts: "custom.md" }, /doWork.prompts must be an object/],
     ["an unrecognised prompt key", { prompts: { discuss: "x.md" } }, /doWork.prompts.discuss is not a recognised setting/],
     ["a non-object models section", { models: [] }, /doWork.models must be an object/],
+    ["an empty effort", { effort: { claude: "" } }, /effort.claude must be a non-empty string/],
+    ["a non-object effort section", { effort: [] }, /doWork.effort must be an object/],
+    ["an unrecognised effort key", { effort: { gemini: "high" } }, /doWork.effort.gemini is not a recognised setting/],
   ])("refuses %s in the doWork section", async (_what, doWork, expected) => {
     // The types say these are well formed; the hand-edited file makes no such
     // promise, and an unattended loop is the worst place to misread it silently.
@@ -359,7 +386,7 @@ describe("do-work preconditions", () => {
     gh.getAuthenticatedLogin.mockReturnValue("alice");
     await runDoWork(["--dry-run"]);
     expect(exitCode).toBeUndefined();
-    expect(stdout).toMatch(/issues need an answer/);
+    expect(stdout).toMatch(/candidates need an answer/);
     expect(gh.postMarker).not.toHaveBeenCalled();
   });
 
@@ -455,7 +482,7 @@ describe("do-work with nothing to do", () => {
   it("exits 0, posts nothing and spawns nothing when no issue matches", async () => {
     await runDoWork();
     expect(exitCode).toBeUndefined();
-    expect(stdout).toMatch(/0 of 0 issues need an answer/);
+    expect(stdout).toMatch(/0 of 0 candidates need an answer/);
     expect(gh.postMarker).not.toHaveBeenCalled();
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
     expect(mockInvokeClaude).not.toHaveBeenCalled();
@@ -670,7 +697,7 @@ describe("do-work marker reconciliation", () => {
 
   it("counts a reply inside a review thread as an answer on a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockImplementation(() =>
       gh.postMarker.mock.calls.length > 0
         ? prSurface({
@@ -697,7 +724,7 @@ describe("do-work build turn", () => {
   beforeEach(() => {
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );
@@ -944,7 +971,7 @@ describe("do-work queue handling", () => {
     gh.getOpenPrLinkMap.mockImplementation(() => {
       mapReads++;
       // Empty for the plan and #42's refresh; #43 gains a linked PR afterwards.
-      return { byIssue: mapReads >= 3 ? new Map([[43, [PR]]]) : new Map(), defaultBranch: "main" };
+      return { byIssue: mapReads >= 3 ? new Map([[43, [PR]]]) : new Map(), defaultBranch: "main", orphans: [] };
     });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
@@ -972,6 +999,7 @@ describe("do-work queue handling", () => {
             ? new Map([[42, [PR]]])
             : new Map([[42, [{ ...PR, state: "MERGED" as const }]]]),
         defaultBranch: "main",
+        orphans: [],
       };
     });
     gh.getPrSurface.mockReturnValue(
@@ -1037,7 +1065,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run prints the plan and changes nothing at all", async () => {
     await runDoWork(["--dry-run"]);
-    expect(stdout).toMatch(/1 of 1 issues need an answer/);
+    expect(stdout).toMatch(/1 of 1 candidates need an answer/);
     expect(stdout).toMatch(/#42 issue-discuss on develop/);
     expect(stdout).toMatch(/will assign to the agent/);
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
@@ -1060,7 +1088,7 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("Executor     claude");
     expect(stdout).toContain("Permissions  bypassed");
     expect(stdout).toContain("Command that would be launched:");
-    expect(stdout).toContain("Dry run: nothing was assigned, posted, checked out or executed.");
+    expect(stdout).toContain("Dry run: nothing was rescued, pruned, pulled, assigned, posted, checked out or executed.");
   });
 
   it("--dry-run prints the same argv the real run would spawn", async () => {
@@ -1087,6 +1115,38 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("exec --dangerously-bypass-approvals-and-sandbox --model o3");
   });
 
+  it("--dry-run prints the effort argument as part of the claude command", async () => {
+    await runDoWork(["--dry-run", "--effort", "high"]);
+    expect(stdout).toContain("Executor     claude (no model override) · effort high");
+    expect(stdout).toContain("--effort high");
+  });
+
+  it("--dry-run prints the codex effort as the -c override that would be spawned", async () => {
+    // Codex has no effort flag, so the dry run must show the config override or
+    // it would be describing a command codex could not run.
+    await runDoWork(["--dry-run", "--with", "codex", "--effort", "high"]);
+    expect(stdout).toContain("Executor     codex (no model override) · effort high");
+    expect(stdout).toContain(String.raw`-c 'model_reasoning_effort="high"'`);
+  });
+
+  it("--dry-run prints no effort argument when none is in force", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).not.toContain("--effort");
+    expect(stdout).not.toContain("effort ");
+  });
+
+  it("--dry-run --json reports the resolved effort", async () => {
+    await runDoWork(["--dry-run", "--json", "--effort", "high"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({ effort: "high" });
+  });
+
+  it("--dry-run --json reports a null effort when none is in force", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({ effort: null });
+  });
+
   it("--dry-run shell-quotes the prompt so the command can be pasted", async () => {
     await runDoWork(["--dry-run"]);
     const command = stdout.slice(stdout.indexOf("-p "));
@@ -1108,7 +1168,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run reports the branch differently for a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );
@@ -1135,7 +1195,7 @@ describe("do-work output modes", () => {
     });
     await runDoWork(["--dry-run"]);
     expect(mockAcquireRunLock).not.toHaveBeenCalled();
-    expect(stdout).toMatch(/issues need an answer/);
+    expect(stdout).toMatch(/candidates need an answer/);
   });
 
   it("--dry-run honours the run cap and says how many were deferred", async () => {
@@ -1185,11 +1245,18 @@ describe("do-work output modes", () => {
     expect(payload.items).toEqual([
       {
         issue: 42,
+        pr: null,
         title: "Issue 42",
         turn: "issue-discuss",
         outcome: "answered-no-reply",
         detail: expect.any(String),
         ranExecutor: true,
+        executor: "claude",
+        model: null,
+        effort: null,
+        executorSource: "default",
+        modelSource: "none",
+        effortSource: "none",
       },
     ]);
     expect(payload.exitCode).toBe(2);
@@ -1270,6 +1337,59 @@ describe("do-work executor selection", () => {
     expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: undefined });
   });
 
+  it("uses the configured effort for the executor in use", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "codex", effort: { claude: "high", codex: "medium" } },
+    });
+    await runDoWork();
+    // The Claude default must not leak into a Codex run.
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: "medium",
+    });
+  });
+
+  it("trims a configured effort so padding cannot reach the executor", async () => {
+    // Config validation only rejects an empty level, so `" high "` is written
+    // through as-is. Untrimmed it is an unknown level, which claude ignores
+    // silently — the run would quietly use the default effort instead.
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { claude: "  high  " } } });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "high" });
+  });
+
+  it("passes no effort when only the other executor has one configured", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { codex: "medium" } } });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: undefined });
+  });
+
+  it("lets --effort override the configured default for the executor in use", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { claude: "medium" } } });
+    await runDoWork(["--effort", "high"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "high" });
+  });
+
+  it("forwards --effort when nothing is configured", async () => {
+    await runDoWork(["--effort", "xhigh"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "xhigh" });
+  });
+
+  it("forwards a level automata does not know, because the valid set is the executor's", async () => {
+    // Deliberately not allow-listed: the valid set is model-specific and moves
+    // between executor releases.
+    await runDoWork(["--with", "codex", "--effort", "ultra"]);
+    expect(mockInvokeCodex.mock.calls[0][1]).toMatchObject({ effort: "ultra" });
+  });
+
+  it("refuses an empty --effort rather than emitting a flag with no level", async () => {
+    await runDoWork(["--effort", "  "]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/--effort must be a non-empty level/);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
   it("lets the command line override the configured executor", async () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { executor: "codex" } });
     await runDoWork(["--with", "claude"]);
@@ -1291,5 +1411,931 @@ describe("do-work executor selection", () => {
     const prompt = mockInvokeClaude.mock.calls[0][0] as string;
     expect(prompt.startsWith("Use the `my-repo-discuss` skill.")).toBe(true);
     expect(prompt).not.toMatch(/Do not modify, create or delete any file/);
+  });
+});
+
+/* ── message directives ─────────────────────────────────────────────────── */
+
+/** An issue whose newest authorized message carries `body`. */
+function withDirective(number: number, body: string): IssueSurface {
+  return {
+    ...needsWork(number),
+    messages: [
+      { kind: "issue-body", author: "alice", body: "please", createdAt: "2026-01-01T00:00:00Z" },
+      { kind: "issue-comment", author: "alice", body, createdAt: "2026-01-02T00:00:00Z" },
+    ],
+  };
+}
+
+describe("do-work message directives", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    mockInvokeCodex.mockResolvedValue(undefined);
+  });
+
+  it("runs with Codex when the newest message says tool:codex", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "please do it — tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("beats --with, which beats the configuration", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { executor: "codex" } });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "TOOL:CLAUDE"));
+    await runDoWork(["--with", "codex"]);
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("passes a model: directive to the executor", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "model:claude-opus-4-6"));
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "claude-opus-4-6" });
+  });
+
+  it("beats --model", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "model:from-message"));
+    await runDoWork(["--model", "from-flag"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "from-message" });
+  });
+
+  it("uses the new executor's configured model when tool: switches executor", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: "o4-mini" });
+  });
+
+  it("drops a --model chosen for the other executor when tool: switches", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork(["--model", "claude-opus-4-6"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: undefined });
+  });
+
+  it("uses the new executor's configured effort when tool: switches executor", async () => {
+    // No `effort:` directive exists, but the level is keyed per executor, so a
+    // switch must re-pick it — `max` is a Claude level codex does not accept.
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", effort: { claude: "max", codex: "medium" } },
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: "medium",
+    });
+  });
+
+  it("drops an --effort chosen for the other executor when tool: switches", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: undefined,
+    });
+  });
+
+  it("keeps --effort when tool: names the executor that was going to run anyway", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:claude"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "max" });
+  });
+
+  it("ignores a directive in an older message", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => ({
+      ...needsWork(n),
+      messages: [
+        { kind: "issue-comment" as const, author: "alice", body: "tool:codex", createdAt: "2026-01-01T00:00:00Z" },
+        { kind: "issue-comment" as const, author: "alice", body: "carry on", createdAt: "2026-01-02T00:00:00Z" },
+      ],
+    }));
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("leaves the directive in the prompt handed to the executor", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "rework it — tool:claude"));
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("tool:claude");
+  });
+
+  it("names the effective executor and its origin in the tick summary", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork();
+    expect(stdout).toContain("codex · model o3 — from the message");
+  });
+
+  it("names the effective executor in --dry-run", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Executor     codex · model o3 — from the message");
+  });
+
+  it("reports the origin in --dry-run --json", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({
+      executor: "codex",
+      model: "o3",
+      executorSource: "message",
+      modelSource: "message",
+    });
+  });
+
+  it("reports the origin in --json for a completed item", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      gh.postMarker.mock.calls.length > 0 ? answered(n) : withDirective(n, "tool:codex"),
+    );
+    await runDoWork(["--json"]);
+    const payload = JSON.parse(stdout) as { items: Record<string, unknown>[] };
+    expect(payload.items[0]).toMatchObject({ executor: "codex", executorSource: "message" });
+  });
+});
+
+describe("do-work invalid tool directive", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codexx"));
+    mockInvokeCodex.mockResolvedValue(undefined);
+  });
+
+  it("invokes no executor", async () => {
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("explains the problem on the marker and names the valid values", async () => {
+    await runDoWork();
+    const text = gh.updateMarker.mock.calls[0][1] as string;
+    expect(text).toContain("`tool:codexx`");
+    expect(text).toContain("`claude`");
+    expect(text).toContain("`codex`");
+    expect(gh.deleteMarker).not.toHaveBeenCalled();
+  });
+
+  it("reports the item as failed and exits 2", async () => {
+    await runDoWork();
+    expect(stdout).toMatch(/#42 issue-discuss failed/);
+    expect(exitCode).toBe(2);
+  });
+
+  it("does not stop another issue in the same tick", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 42 ? withDirective(n, "tool:codexx") : needsWork(n),
+    );
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not consume a slot from the run cap", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 42 ? withDirective(n, "tool:codexx") : needsWork(n),
+    );
+    await runDoWork(["--max-runs", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(stdout).not.toMatch(/deferred/);
+  });
+
+  it("shows the refusal in --dry-run without a command", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Executor     refused —");
+    expect(stdout).not.toContain("--dangerously-skip-permissions");
+  });
+
+  // The marker is posted before the refusal is decided and then edited in
+  // place, which is what advances the answer boundary. Wording that implied a
+  // real tick posts nothing would contradict the rest of `docs/do-work.md`.
+  it("says a real tick still posts the marker and replaces it", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain(
+      "Command      none; a real tick would post the working marker and then replace it with this refusal",
+    );
+  });
+});
+
+/* ── pre-flight repository hygiene ──────────────────────────────────────── */
+
+describe("do-work pre-flight repository hygiene", () => {
+  it("runs the pre-flight exactly once per tick, before any issue is discovered", async () => {
+    const order: string[] = [];
+    mockRunRepoHygiene.mockImplementation(() => {
+      order.push("preflight");
+      return { ...CLEAN_HYGIENE };
+    });
+    gh.listCandidateIssues.mockImplementation(() => {
+      order.push("discover");
+      return [];
+    });
+
+    await runDoWork();
+
+    expect(order).toEqual(["preflight", "discover"]);
+    expect(mockRunRepoHygiene).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the configured base branch, protected branches and dry-run flag", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { baseBranch: "main", protectedBranches: ["main", "master"] },
+    });
+    await runDoWork();
+    expect(mockRunRepoHygiene).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseBranch: "main",
+        protectedBranches: ["main", "master"],
+        dryRun: false,
+      }),
+    );
+  });
+
+  it("reports the pre-flight in the human summary", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: {
+        kind: "rescued",
+        branch: "rescue/develop-20260910T054512Z",
+        createdBranch: true,
+        pr: 51,
+        prUrl: "https://gh/pr/51",
+        prCreated: true,
+      },
+      base: { ok: true },
+      prunes: [{ kind: "deleted", branch: "old/thing" }],
+      degraded: false,
+    });
+
+    await runDoWork();
+
+    expect(stdout).toContain("Pre-flight:");
+    expect(stdout).toContain("rescue/develop-20260910T054512Z");
+    expect(stdout).toContain("opened draft PR #51");
+    expect(stdout).toContain("deleted old/thing");
+  });
+
+  // Exit 1 stays reserved for "nothing was attempted", which is false by the
+  // time the pre-flight has run and items have been discovered.
+  it("turns an otherwise-healthy tick into exit 2 when the pre-flight degraded", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "push", detail: "rejected" },
+      base: { ok: true },
+      prunes: [],
+      degraded: true,
+    });
+
+    await runDoWork();
+
+    expect(exitCode).toBe(2);
+    expect(stdout).toContain("push failed");
+    expect(stdout).toContain("nothing was discarded");
+  });
+
+  it("stays at exit 0 when the pre-flight is healthy and there is nothing to do", async () => {
+    await runDoWork();
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toContain("nothing to do");
+  });
+
+  it("tells the pre-flight it is a dry run, and reports its plan", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "would-rescue", branch: "rescue/develop-20260910T054512Z", createdBranch: true },
+      base: { ok: true },
+      prunes: [
+        { kind: "would-delete", branch: "old/thing" },
+        { kind: "would-rescue", branch: "fix/wip", unmergedCommits: 4 },
+      ],
+      degraded: false,
+    });
+
+    await runDoWork(["--dry-run"]);
+
+    expect(mockRunRepoHygiene).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    expect(stdout).toContain("would rescue onto rescue/develop-20260910T054512Z");
+    expect(stdout).toContain("would delete old/thing");
+    expect(stdout).toContain("would rescue fix/wip (4 unmerged commit(s))");
+    expect(stdout).toContain("nothing was rescued, pruned, pulled");
+  });
+
+  it("carries the pre-flight report in the --json payload of a real tick", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "clean" },
+      base: { ok: false, step: "pull", detail: "not possible to fast-forward" },
+      prunes: [{ kind: "kept", branch: "x", reason: "lookup-failed", detail: "gh: HTTP 502" }],
+      degraded: true,
+    });
+
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as {
+      preflight: { base: { ok: boolean; step: string }; degraded: boolean; prunes: unknown[] };
+      exitCode: number;
+    };
+    expect(payload.preflight.base).toEqual({
+      ok: false,
+      step: "pull",
+      detail: "not possible to fast-forward",
+    });
+    expect(payload.preflight.degraded).toBe(true);
+    expect(payload.preflight.prunes).toHaveLength(1);
+    expect(payload.exitCode).toBe(2);
+  });
+
+  it("carries the pre-flight report in the --dry-run --json payload", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "would-rescue", branch: "rescue/develop-1", createdBranch: true },
+      base: { ok: true },
+      prunes: [{ kind: "would-delete", branch: "old/thing" }],
+      degraded: false,
+    });
+
+    await runDoWork(["--dry-run", "--json"]);
+
+    const payload = JSON.parse(stdout) as {
+      dryRun: boolean;
+      preflight: { rescue: { kind: string }; prunes: { kind: string }[] };
+    };
+    expect(payload.dryRun).toBe(true);
+    expect(payload.preflight.rescue.kind).toBe("would-rescue");
+    expect(payload.preflight.prunes[0].kind).toBe("would-delete");
+  });
+
+  it("does not run the pre-flight at all when the run lock is held", async () => {
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      suspect: false,
+      heldBy: { pid: 4242, host: "box", startedAt: "2026-09-10T05:00:00Z", command: "do-work" },
+    });
+
+    await runDoWork();
+
+    // Every step writes to this one checkout, so the lock has to gate it.
+    expect(mockRunRepoHygiene).not.toHaveBeenCalled();
+  });
+});
+
+/* ── operation log ──────────────────────────────────────────────────────── */
+
+describe("do-work operation log", () => {
+  interface RecordedTick {
+    command: string;
+    repo: string | null;
+    timestamp: Date;
+    durationMs: number;
+    exitCode: number;
+    note?: string;
+    items: {
+      subject: string;
+      turn: string | null;
+      outcome: string;
+      detail: string;
+      ranExecutor: boolean;
+      executor?: string;
+      model?: string;
+      effort?: string;
+    }[];
+  }
+
+  function recorded(): RecordedTick {
+    expect(mockRecordTick).toHaveBeenCalledTimes(1);
+    return mockRecordTick.mock.calls[0][0] as RecordedTick;
+  }
+
+  it("records a tick that answered an issue, with the resolved executor", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    const before = Date.now();
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.command).toBe("do-work");
+    expect(tick.repo).toBe("acme/widget");
+    // `>= 0` would be true by construction and would still pass if `startedAt`
+    // were captured in the wrong place; pin it to a real window instead.
+    expect(tick.timestamp.getTime()).toBeGreaterThanOrEqual(before);
+    expect(tick.timestamp.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tick.durationMs).toBeLessThanOrEqual(Date.now() - before);
+    expect(tick.note).toBeUndefined();
+    expect(tick.items).toHaveLength(1);
+    expect(tick.items[0]).toMatchObject({
+      subject: "#42",
+      turn: "issue-discuss",
+      ranExecutor: true,
+      executor: "claude",
+    });
+    expect(tick.exitCode).toBe(exitCode ?? 0);
+  });
+
+  it("records a tick that found nothing, so a silent loop is still visible", async () => {
+    gh.listCandidateIssues.mockReturnValue([]);
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.items).toEqual([]);
+    expect(tick.exitCode).toBe(0);
+  });
+
+  it("records a deferred item as not having run the executor", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "1"]);
+
+    const tick = recorded();
+    const deferred = tick.items.find((item) => item.outcome === "deferred");
+    expect(deferred).toBeDefined();
+    expect(deferred?.ranExecutor).toBe(false);
+    expect(tick.items.filter((item) => item.ranExecutor)).toHaveLength(1);
+  });
+
+  it("records a tick that threw, so an exploding loop leaves a trace", async () => {
+    gh.listCandidateIssues.mockImplementation(() => {
+      throw new Error("gh exploded");
+    });
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.exitCode).toBe(1);
+    expect(tick.items).toEqual([]);
+  });
+
+  it("marks a run blocked by the lock, which is otherwise indistinguishable from cron not firing", async () => {
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      heldBy: { pid: 4242, startedAt: "2026-01-10T00:00:00Z", host: "runner-1", command: "do-work", token: "t" },
+      suspect: false,
+    });
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.note).toBe("lock-held");
+    expect(tick.items).toEqual([]);
+    expect(tick.exitCode).toBe(0);
+  });
+
+  it("logs repo=null rather than failing when the slug cannot be resolved", async () => {
+    gh.getRepoSlug.mockImplementation(() => {
+      throw new Error("not a git repository");
+    });
+    gh.listCandidateIssues.mockReturnValue([]);
+    await runDoWork();
+
+    expect(recorded().repo).toBeNull();
+  });
+
+  // A misconfigured loop exits through `fail()` before the tick begins. Without
+  // a line here it is indistinguishable, in the log, from cron having stopped
+  // firing — which is the one confusion this file exists to remove.
+  it("records a configuration error that stops the tick before it starts", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork();
+
+    expect(exitCode).toBe(1);
+    const tick = recorded();
+    expect(tick.note).toBe("config-error");
+    expect(tick.exitCode).toBe(1);
+    expect(tick.items).toEqual([]);
+  });
+
+  it("writes nothing for a configuration error during a dry run", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork(["--dry-run"]);
+
+    expect(exitCode).toBe(1);
+    expect(mockRecordTick).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing for a dry run", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork(["--dry-run"]);
+
+    expect(mockRecordTick).not.toHaveBeenCalled();
+  });
+
+  it("leaves the --json payload untouched", async () => {
+    // The log is a side channel: the documented JSON contract must not gain a key.
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["dryRun", "exitCode", "items", "plan", "preflight"]);
+    expect(mockRecordTick).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ── the orphan pull-request pass ───────────────────────────────────────── */
+
+const ORPHAN_PR: PullRequestRef = {
+  number: 61,
+  url: "https://gh/pr/61",
+  title: "Bump lodash",
+  headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+  baseRefName: "develop",
+  isCrossRepository: false,
+  state: "OPEN",
+  isDraft: false,
+  updatedAt: "2026-01-08T00:00:00Z",
+};
+
+/** A matching orphan candidate, as the link map reports it. */
+function orphanCandidate(overrides: Partial<PullRequestRef> = {}, labels = ["automated"]) {
+  return { pr: { ...ORPHAN_PR, ...overrides }, labels, assignees: [] as string[] };
+}
+
+function orphanSurface(overrides: Partial<PrSurface> = {}): PrSurface {
+  return {
+    pr: ORPHAN_PR,
+    messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+    threads: [],
+    ...overrides,
+  };
+}
+
+describe("do-work orphan pull-request pass", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([]);
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface());
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+  });
+
+  it("runs one pr-orphan turn on the head branch and marks the pull request", async () => {
+    await runDoWork();
+    expect(mockPreparePrBranch).toHaveBeenCalledWith("dependabot/npm_and_yarn/lodash-4.17.21");
+    expect(mockPrepareBaseBranch).not.toHaveBeenCalled();
+    expect(gh.postMarker).toHaveBeenCalledWith("pr", 61, expect.stringContaining("working"));
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(stdout).toMatch(/PR #61 pr-orphan on dependabot/);
+  });
+
+  it("uses the orphan frame and carries no issue context", async () => {
+    await runDoWork();
+    const prompt = mockInvokeClaude.mock.calls[0][0] as string;
+    expect(prompt).toContain("Turn: pr-orphan");
+    expect(prompt).toMatch(/not linked to any issue/);
+    expect(prompt).not.toContain("Issue #");
+  });
+
+  it("neither assigns anything nor touches the issue link", async () => {
+    await runDoWork();
+    expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+    expect(gh.getIssueSurface).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no authorized account has posted", async () => {
+    // A freshly opened Dependabot pull request: the label alone is not work.
+    gh.getPrSurface.mockReturnValue(
+      orphanSurface({ messages: [message("dependabot[bot]", "2026-01-08T00:00:00Z", "pr-comment")] }),
+    );
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/PR #61 nothing to do/);
+  });
+
+  it("does not discover an orphan pull request that fails the discovery filter", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["dependencies"])],
+    });
+    await runDoWork();
+    expect(gh.getPrSurface).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  // `--limit` is `gh issue list --limit`: it bounds how many *issues* are
+  // fetched and says nothing about the orphan pass, which reads candidates out
+  // of a link map that is paged exhaustively for correctness anyway. Pinned
+  // because it is documented, and a later `.slice(0, limit)` would look tidy.
+  it("does not bound the orphan pass by --limit", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [
+        orphanCandidate({ number: 61, headRefName: "dependabot/a" }),
+        orphanCandidate({ number: 62, headRefName: "dependabot/b" }),
+        orphanCandidate({ number: 63, headRefName: "dependabot/c" }),
+      ],
+    });
+    gh.getPrSurface.mockImplementation((n: number) =>
+      orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: `dependabot/${String(n)}` } }),
+    );
+    mockPreparePrBranch.mockImplementation((branch: string) => ({ ok: true, branch }));
+    await runDoWork(["--limit", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(3);
+  });
+
+  // GitHub allows two open pull requests from one head branch to different
+  // bases. Running both in a tick would put two model sessions on the same
+  // checkout back to back, the second inheriting the first's leftovers.
+  it("works one pull request per head branch, keeping the issue pass's", async () => {
+    const shared = "fix/x";
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [{ ...ORPHAN_PR, number: 57, headRefName: shared }]]]),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({ number: 62, headRefName: shared })],
+    });
+    gh.getPrSurface.mockImplementation((n: number) =>
+      orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: shared } }),
+    );
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared });
+    await runDoWork();
+
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(gh.postMarker).toHaveBeenCalledWith("pr", 57, expect.stringContaining("working"));
+    expect(gh.postMarker).not.toHaveBeenCalledWith("pr", 62, expect.anything());
+    expect(stdout).toMatch(/PR #62 nothing to do/);
+    expect(stdout).toMatch(/shares its head branch \(fix\/x\) with pull request #57/);
+  });
+
+  it("matches the label case-insensitively", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["AUTOMATED"])],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches on assignees when that is the configured technique", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      issueDiscoveryTechnique: "assignee",
+      issueDiscoveryValue: "alice",
+    });
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [{ pr: ORPHAN_PR, labels: [], assignees: ["Alice"] }],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches on the title when that is the configured technique", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      issueDiscoveryTechnique: "title-contains",
+      issueDiscoveryValue: "lodash",
+    });
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [{ pr: ORPHAN_PR, labels: [], assignees: [] }],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a fork", { isCrossRepository: true }, /comes from a fork/],
+    ["the repository default branch as its head", { headRefName: "main" }, /protected branch \(main\)/],
+    ["the base branch as its head", { headRefName: "develop" }, /protected branch \(develop\)/],
+  ])("skips %s without invoking anything", async (_what, overrides, detail) => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate(overrides)],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface({ pr: { ...ORPHAN_PR, ...overrides } }));
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(mockPreparePrBranch).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/PR #61 nothing to do/);
+    expect(stdout).toMatch(detail);
+  });
+
+  it("skips an item that gained a closing reference before it ran", async () => {
+    // A maintainer added `Closes #42` while an earlier item was running: the
+    // issue pass owns it now, and running it here would use the wrong prompt.
+    let reads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      reads++;
+      return reads === 1
+        ? { byIssue: new Map(), defaultBranch: "main", orphans: [orphanCandidate()] }
+        : { byIssue: new Map([[42, [ORPHAN_PR]]]), defaultBranch: "main", orphans: [] };
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/no longer actionable: pull request #61 now closes #42/);
+    expect(exitCode).toBe(2);
+  });
+
+  it("skips an item that stopped being an open pull request before it ran", async () => {
+    let reads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      reads++;
+      return reads === 1
+        ? { byIssue: new Map(), defaultBranch: "main", orphans: [orphanCandidate()] }
+        : { byIssue: new Map(), defaultBranch: "main", orphans: [] };
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/no longer an open pull request/);
+  });
+
+  it("reconciles the marker on the pull request", async () => {
+    gh.getPrSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 0
+        ? orphanSurface({
+            messages: [
+              message("alice", "2026-01-08T00:00:00Z", "pr-comment"),
+              message("automata-bot", "2026-01-10T00:05:00Z", "pr-comment"),
+            ],
+          })
+        : orphanSurface(),
+    );
+    await runDoWork();
+    expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toMatch(/PR #61 pr-orphan answered/);
+  });
+
+  it("runs after the issues and shares the run cap with them", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+    expect(stdout).toMatch(/PR #61 pr-orphan deferred — run cap of 1 reached/);
+  });
+
+  it("runs both passes when the cap allows it, issues first", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "2"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(2);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+    expect(mockInvokeClaude.mock.calls[1][0]).toContain("Turn: pr-orphan");
+  });
+
+  it("reports the item with a null issue and its pull request number in --json", async () => {
+    await runDoWork(["--json"]);
+    const payload = JSON.parse(stdout) as { plan: Record<string, unknown>[]; items: Record<string, unknown>[] };
+    expect(payload.items[0]).toMatchObject({ issue: null, pr: 61, title: "Bump lodash", turn: "pr-orphan" });
+    expect(payload.plan[0]).toMatchObject({ issue: null, pr: 61, turn: "pr-orphan" });
+  });
+
+  it("describes the item in a dry run without touching anything", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toMatch(/Pull request #61 — Bump lodash/);
+    expect(stdout).toMatch(/Turn {9}pr-orphan/);
+    expect(stdout).toMatch(/Marker {7}would post on pull request #61/);
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("honours a tool directive in the triggering pull request message", async () => {
+    gh.getPrSurface.mockReturnValue(
+      orphanSurface({
+        messages: [
+          {
+            kind: "pr-comment",
+            author: "alice",
+            body: "rebase this tool:codex",
+            createdAt: "2026-01-08T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("uses a configured prOrphan prompt", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { prompts: { prOrphan: "CUSTOM ORPHAN FRAME" } },
+    });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][0] as string).toMatch(/^CUSTOM ORPHAN FRAME/);
+  });
+
+  it("rejects an unrecognised key under doWork.prompts", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { prompts: { prOrphaned: "x" } } });
+    await runDoWork();
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/doWork\.prompts\.prOrphaned is not a recognised setting/);
+    expect(stderr).toMatch(/prOrphan/);
+  });
+});
+
+describe("do-work --pr", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface());
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+  });
+
+  it("restricts the tick to that pull request and skips the issue pass", async () => {
+    await runDoWork(["--pr", "61"]);
+    expect(gh.listCandidateIssues).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Turn: pr-orphan");
+  });
+
+  it("processes it anyway with a note when it does not match the filter", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["dependencies"])],
+    });
+    await runDoWork(["--pr", "61"]);
+    expect(stderr).toMatch(/pull request #61 does not match the configured discovery filter/);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a pull request that closes an issue of this repository", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [ORPHAN_PR]]]),
+      defaultBranch: "main",
+      orphans: [],
+    });
+    await runDoWork(["--pr", "61"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/closes issue #42 of this repository/);
+    expect(stderr).toMatch(/--issue 42/);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("refuses a number that is not an open pull request here", async () => {
+    await runDoWork(["--pr", "999"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/#999 is not an open pull request of this repository/);
+  });
+
+  it("rejects a non-numeric value", async () => {
+    await runDoWork(["--pr", "61junk"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/--pr must be a positive integer/);
+  });
+
+  // Both refusals are resolved out of the link map, so they happen *inside* the
+  // run lock. Exiting the process there would skip the release and leave every
+  // tick on another host reporting "another instance is already running" until
+  // the lock went stale — up to two hours by default, for a typo.
+  it.each([
+    ["a number that is no pull request here", ["--pr", "999"]],
+    ["a number the issue pass owns", ["--pr", "57"]],
+  ])("releases the run lock when it refuses %s", async (_what, args) => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [{ ...ORPHAN_PR, number: 57 }]]]),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    await runDoWork(args);
+    expect(exitCode).toBe(1);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it("runs both passes restricted when --issue is given too", async () => {
+    await runDoWork(["--issue", "42", "--pr", "61"]);
+    expect(gh.listCandidateIssues).toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(2);
+  });
+
+  it("suppresses the orphan pass when only --issue is given", async () => {
+    await runDoWork(["--issue", "42"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+  });
+
+  // The work log identifies an item by number. An orphan turn has no issue, so
+  // a bare `#61` there would read as issue 61 to whoever greps the log — and in
+  // a tick that ran both passes the two kinds sit on adjacent lines.
+  it("names an orphan by its pull request in the operation log", async () => {
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as { items: { subject: string; turn: string }[] };
+    expect(tick.items.map((i) => [i.subject, i.turn])).toEqual([
+      ["#42", "issue-discuss"],
+      ["PR #61", "pr-orphan"],
+    ]);
   });
 });

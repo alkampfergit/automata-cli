@@ -248,6 +248,48 @@ describe("automata config set do-work-*", () => {
     );
   });
 
+  it("sets the default effort for one executor", () => {
+    const output = run(["config", "set", "do-work-effort", "claude", "high"]);
+    expect(output.trim()).toBe("do-work claude effort set to: high");
+    expect(readConfigFile().doWork).toEqual({ effort: { claude: "high" } });
+  });
+
+  it("keeps each executor's effort separate", () => {
+    run(["config", "set", "do-work-effort", "claude", "high"]);
+    run(["config", "set", "do-work-effort", "codex", "medium"]);
+    expect(readConfigFile().doWork).toEqual({
+      effort: { claude: "high", codex: "medium" },
+    });
+  });
+
+  it("leaves the configured models alone when setting the effort", () => {
+    run(["config", "set", "do-work-model", "claude", "claude-opus-5"]);
+    run(["config", "set", "do-work-effort", "claude", "high"]);
+    expect(readConfigFile().doWork).toEqual({
+      models: { claude: "claude-opus-5" },
+      effort: { claude: "high" },
+    });
+  });
+
+  it("accepts a level automata does not know, because the valid set is the executor's", () => {
+    // Deliberately not allow-listed: the valid set is model-specific and moves
+    // between executor releases.
+    run(["config", "set", "do-work-effort", "codex", "ultra"]);
+    expect(readConfigFile().doWork).toEqual({ effort: { codex: "ultra" } });
+  });
+
+  it("rejects an unknown executor for the effort", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-effort", "gemini", "high"])).toMatch(
+      /invalid executor "gemini"/,
+    );
+  });
+
+  it("rejects an empty effort", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-effort", "claude", "  "])).toMatch(
+      /non-empty effort level/,
+    );
+  });
+
   it("sets the per-tick run cap", () => {
     const output = run(["config", "set", "do-work-max-runs", "3"]);
     expect(output.trim()).toBe("do-work max runs per tick set to: 3");
@@ -294,10 +336,16 @@ describe("automata config set do-work-*", () => {
     expect(readConfigFile().doWork).toEqual({ prompts: { prWork: "Fix the comments" } });
   });
 
+  it("sets the pr-orphan prompt", () => {
+    const output = run(["config", "set", "do-work-prompt", "pr-orphan", "orphan.md"]);
+    expect(output.trim()).toBe("do-work pr-orphan prompt set.");
+    expect(readConfigFile().doWork).toEqual({ prompts: { prOrphan: "orphan.md" } });
+  });
+
   it("rejects an unknown turn kind", () => {
     const errorOutput = runExpectingFailure(["config", "set", "do-work-prompt", "implement", "x.md"]);
     expect(errorOutput).toMatch(/invalid turn kind "implement"/);
-    expect(errorOutput).toMatch(/issue-discuss, pr-work/);
+    expect(errorOutput).toMatch(/issue-discuss, pr-work, pr-orphan/);
   });
 
   it("rejects an empty prompt", () => {
@@ -312,11 +360,12 @@ describe("automata config set do-work-*", () => {
     run(["config", "set", "do-work-model", "codex", "o3"]);
     run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
     run(["config", "set", "do-work-prompt", "pr-work", "pr.md"]);
+    run(["config", "set", "do-work-prompt", "pr-orphan", "orphan.md"]);
     expect(readConfigFile().doWork).toEqual({
       baseBranch: "main",
       executor: "codex",
       models: { codex: "o3" },
-      prompts: { issueDiscuss: "discuss.md", prWork: "pr.md" },
+      prompts: { issueDiscuss: "discuss.md", prWork: "pr.md", prOrphan: "orphan.md" },
     });
   });
 

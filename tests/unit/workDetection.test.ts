@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
+  decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
   agentAnsweredAfter,
+  skipDuplicateHeadBranches,
+  type Decision,
   type IssueState,
+  type OrphanPrState,
 } from "../../src/github/workDetection.js";
 import type { Participants, RawMessage } from "../../src/github/conversation.js";
 import type { IssueSurface, PrSurface, PullRequestRef, ReviewThread } from "../../src/github/ghWorkService.js";
@@ -530,5 +534,247 @@ describe("agentAnsweredAfter", () => {
 
   it("is false for an empty surface", () => {
     expect(agentAnsweredAfter([], "automata-bot", marker)).toBe(false);
+  });
+});
+
+describe("decideOrphanPrWork — the orphan pull-request decision table", () => {
+  const ORPHAN_PR = pullRequest({ number: 61, headRefName: "dependabot/npm_and_yarn/lodash-4.17.21" });
+
+  function orphan(overrides: Partial<PrSurface> = {}): OrphanPrState {
+    return { prSurface: { pr: ORPHAN_PR, messages: [], threads: [], ...overrides } };
+  }
+
+  it("runs a pr-orphan turn on the head branch for a new authorized comment", () => {
+    const decision = decideOrphanPrWork(
+      orphan({ messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")] }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.turn).toBe("pr-orphan");
+    expect(decision.item.issue).toBeNull();
+    expect(decision.item.pr?.number).toBe(61);
+    expect(decision.item.branch).toBe("dependabot/npm_and_yarn/lodash-4.17.21");
+    expect(decision.item.needsAssignment).toBe(false);
+    expect(decision.item.ambiguousPrs).toEqual([]);
+    expect(decision.item.issueAnalysis.messages).toEqual([]);
+    expect(decision.item.reason).toMatch(/1 new pull request message on pull request #61 \(no linked issue\)/);
+  });
+
+  it("runs a pr-orphan turn for a non-empty authorized review body", () => {
+    const decision = decideOrphanPrWork(
+      orphan({ messages: [message("bob", "2026-01-08T00:00:00Z", "pr-review")] }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision.kind).toBe("work");
+  });
+
+  it("runs a pr-orphan turn for an unresolved authorized review thread", () => {
+    const decision = decideOrphanPrWork(orphan({ threads: [thread()] }), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.actionableThreads).toHaveLength(1);
+    expect(decision.item.reason).toMatch(/1 unresolved review thread/);
+  });
+
+  it("does nothing when the only messages are from an unauthorized account", () => {
+    // A freshly opened Dependabot pull request: the author is not authorized, so
+    // its body and its own comments never start a run.
+    const decision = decideOrphanPrWork(
+      orphan({ messages: [message("dependabot[bot]", "2026-01-08T00:00:00Z", "pr-comment")] }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+    if (decision.kind !== "skip") return;
+    expect(decision.issue).toBeNull();
+    expect(decision.pr?.number).toBe(61);
+    expect(decision.detail).toMatch(/no messages from authorized accounts on pull request #61/);
+  });
+
+  it("does nothing once the agent has answered", () => {
+    const decision = decideOrphanPrWork(
+      orphan({
+        messages: [
+          message("alice", "2026-01-08T00:00:00Z", "pr-comment"),
+          message("automata-bot", "2026-01-09T00:00:00Z", "pr-comment"),
+        ],
+      }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+    if (decision.kind !== "skip") return;
+    expect(decision.detail).toMatch(/nothing new on pull request #61 since the agent's message at/);
+  });
+
+  it("treats an agent reply anywhere on the pull request as answering a thread", () => {
+    const decision = decideOrphanPrWork(
+      orphan({
+        messages: [message("automata-bot", "2026-01-09T00:00:00Z", "pr-comment")],
+        threads: [thread({ comments: [message("alice", "2026-01-08T00:00:00Z", "thread-comment")] })],
+      }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+
+  it("refuses a pull request from a fork", () => {
+    const decision = decideOrphanPrWork(
+      {
+        prSurface: {
+          pr: { ...ORPHAN_PR, isCrossRepository: true },
+          messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+          threads: [],
+        },
+      },
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+    if (decision.kind !== "skip") return;
+    expect(decision.issue).toBeNull();
+    expect(decision.detail).toMatch(/comes from a fork/);
+  });
+
+  it("refuses a pull request whose head is a protected branch", () => {
+    const decision = decideOrphanPrWork(
+      {
+        prSurface: {
+          pr: { ...ORPHAN_PR, headRefName: "develop" },
+          messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+          threads: [],
+        },
+      },
+      P,
+      { baseBranch: BASE, defaultBranch: "main", protectedBranches: ["release"] },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+  });
+
+  it("refuses the repository default branch and the configured protected branches too", () => {
+    for (const head of ["main", "release"]) {
+      const decision = decideOrphanPrWork(
+        {
+          prSurface: {
+            pr: { ...ORPHAN_PR, headRefName: head },
+            messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+            threads: [],
+          },
+        },
+        P,
+        { baseBranch: BASE, defaultBranch: "main", protectedBranches: ["release"] },
+      );
+      expect(decision).toMatchObject({ kind: "skip", reason: "unsafe-pr-branch" });
+    }
+  });
+
+  it("skips a merged or closed pull request before anything else", () => {
+    for (const state of ["MERGED", "CLOSED"] as const) {
+      const decision = decideOrphanPrWork(
+        {
+          prSurface: {
+            pr: { ...ORPHAN_PR, state, isCrossRepository: true },
+            messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+            threads: [],
+          },
+        },
+        P,
+        { baseBranch: BASE },
+      );
+      expect(decision).toMatchObject({ kind: "skip", reason: "pr-closed" });
+      if (decision.kind !== "skip") return;
+      expect(decision.detail).toMatch(new RegExp(`is ${state.toLowerCase()}`));
+    }
+  });
+
+  it("does not count the agent's own thread replies as new messages", () => {
+    const decision = decideOrphanPrWork(
+      orphan({
+        threads: [
+          thread({
+            isResolved: true,
+            comments: [message("automata-bot", "2026-01-09T00:00:00Z", "thread-comment")],
+          }),
+        ],
+      }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+});
+
+// GitHub allows several open pull requests from one head branch to different
+// bases, so the two `do-work` passes — disjoint at pull-request granularity —
+// are *not* disjoint at branch granularity. Two build turns on one checkout
+// would have the second inherit whatever the first left behind.
+describe("skipDuplicateHeadBranches — one build turn per head branch per tick", () => {
+  function work(prNumber: number, branch: string, turn: "pr-work" | "pr-orphan"): Decision {
+    const pr = pullRequest({ number: prNumber, headRefName: branch });
+    return {
+      kind: "work",
+      item: {
+        issue: turn === "pr-work" ? ISSUE : null,
+        turn,
+        pr,
+        branch,
+        needsAssignment: false,
+        issueAnalysis: { messages: [], newMessages: [], newMessageCount: 0, hasNewMessage: false, lastAgentAt: null },
+        prAnalysis: null,
+        actionableThreads: [],
+        reason: "reason",
+        ambiguousPrs: [],
+      },
+    };
+  }
+
+  it("keeps the first build turn on a branch and skips the later one", () => {
+    const kept = work(61, "fix/x", "pr-work");
+    const [first, second] = skipDuplicateHeadBranches([kept, work(62, "fix/x", "pr-orphan")]);
+
+    expect(first).toBe(kept);
+    expect(second).toMatchObject({ kind: "skip", reason: "branch-busy" });
+    if (second.kind !== "skip") return;
+    expect(second.detail).toContain("fix/x");
+    // The skip has to name the pull request that took the branch, or the plan
+    // reads as an unexplained refusal.
+    expect(second.detail).toContain("#61");
+    expect(second.pr?.number).toBe(62);
+  });
+
+  it("skips a second orphan sharing a head with the first", () => {
+    const decisions = skipDuplicateHeadBranches([
+      work(70, "chore/bump", "pr-orphan"),
+      work(71, "chore/bump", "pr-orphan"),
+    ]);
+    expect(decisions.map((d) => d.kind)).toEqual(["work", "skip"]);
+  });
+
+  it("leaves build turns on distinct branches alone", () => {
+    const decisions = skipDuplicateHeadBranches([
+      work(61, "fix/x", "pr-work"),
+      work(62, "fix/y", "pr-orphan"),
+    ]);
+    expect(decisions.every((d) => d.kind === "work")).toBe(true);
+  });
+
+  // A discuss turn's `branch` is the base branch, which it reads and never
+  // writes — every issue without a pull request shares it, and always has.
+  it("never skips a discuss turn, however many share the base branch", () => {
+    const discuss = (n: number): Decision => ({
+      ...work(n, BASE, "pr-work"),
+      item: { ...work(n, BASE, "pr-work").item, turn: "issue-discuss", pr: null },
+    });
+    const decisions = skipDuplicateHeadBranches([discuss(1), discuss(2), discuss(3)]);
+    expect(decisions.every((d) => d.kind === "work")).toBe(true);
+  });
+
+  it("passes skips through untouched", () => {
+    const skip: Decision = { kind: "skip", issue: ISSUE, pr: null, reason: "issue-closed", detail: "closed" };
+    expect(skipDuplicateHeadBranches([skip])).toEqual([skip]);
   });
 });

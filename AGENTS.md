@@ -9,7 +9,10 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Key Technologies
 
 - TypeScript 5.x (strict mode)
-- Node.js LTS (18+)
+- Node.js 22.12+ to *run* the CLI (floor set by `commander` 15 and `ink` 7; declared in `package.json` `engines`,
+  which npm reports as an `EBADENGINE` warning rather than refusing the install)
+- Node.js `^22.13.0 || ^24.0.0 || >=26.0.0` to *develop* — the stricter intersection of `eslint@10` and `vitest@5`;
+  Node 24 LTS is what CI runs
 - commander.js for CLI framework
 - vitest for testing
 - tsup for bundling
@@ -17,6 +20,7 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Working Defaults
 
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
+- After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
 
 ## Documentation Convention
@@ -42,6 +46,9 @@ A command-line interface tool built with TypeScript and commander.js.
 - TypeScript 5.x (strict mode) + commander.js, ink + react (wizard), vitest (tests) (011-config-prompt-files)
 - `.automata/config.json` (existing), `.automata/*.md` (new prompt files) (011-config-prompt-files)
 - TypeScript 5.x (strict mode) + commander.js, node:child_process (022-unify-ai-options)
+- TypeScript 5.x (strict mode) + commander.js, `gh` CLI via `spawnSync` (033-orphan-pull-requests)
 
 ## Recent Changes
+- 033-orphan-pull-requests: `do-work` gained a second pass over open pull requests that close no issue of
+  this repository, a `pr-orphan` turn kind, `doWork.prompts.prOrphan` and `--pr <number>`
 - 001-config-wizard: Added TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector)

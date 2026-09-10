@@ -6,6 +6,7 @@ import type { PullRequestRef, ReviewThread } from "../../src/github/ghWorkServic
 import {
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
 } from "../../src/config/configStore.js";
 
 const P: Participants = { allowedUsers: ["alice"], agentUser: "automata-bot" };
@@ -21,6 +22,7 @@ const PR: PullRequestRef = {
   url: "https://gh/pr/57",
   title: "Add a flag",
   headRefName: "feature/042-flag",
+  baseRefName: "develop",
   state: "OPEN",
   isDraft: false,
   updatedAt: "2026-01-05T00:00:00Z",
@@ -111,6 +113,22 @@ describe("composePrompt — context", () => {
     expect(prompt).toContain("Branch: feature/042-flag (checked out and up to date)");
   });
 
+  // A turn on a pull request must be told the branch *that pull request*
+  // targets, not the configured one. They differ by construction on the orphan
+  // pass: a dependency bump targets the repository default branch, so naming
+  // `develop` here would have the turn merge `develop` into a branch whose pull
+  // request proposes it into `main`.
+  it("names the pull request's own base branch, not the configured one", () => {
+    const prompt = compose(prItem({ turn: "pr-orphan", pr: { ...PR, baseRefName: "main" } }));
+    expect(prompt).toContain("Base branch: main");
+    expect(prompt).not.toContain("Base branch: develop");
+  });
+
+  it("falls back to the configured base branch when the pull request's is unknown", () => {
+    const prompt = compose(prItem({ pr: { ...PR, baseRefName: "" } }));
+    expect(prompt).toContain("Base branch: develop");
+  });
+
   it("renders the new messages under their own heading", () => {
     const prompt = compose(discussItem());
     expect(prompt).toContain("New since your last message — this is what you must answer:");
@@ -190,5 +208,62 @@ describe("the shipped default frames", () => {
   it("name no skill, so do-work works with nothing installed", () => {
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).not.toMatch(/skill/i);
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).not.toMatch(/skill/i);
+  });
+});
+
+describe("composePrompt — an orphan pull request", () => {
+  const ORPHAN_PR: PullRequestRef = { ...PR, number: 61, title: "Bump lodash", headRefName: "dependabot/lodash" };
+
+  function orphanItem(overrides: Partial<WorkItem> = {}): WorkItem {
+    return {
+      issue: null,
+      turn: "pr-orphan",
+      pr: ORPHAN_PR,
+      branch: ORPHAN_PR.headRefName,
+      needsAssignment: false,
+      issueAnalysis: analyzeSurface([], P),
+      prAnalysis: analyzeSurface(
+        [
+          message("alice", "2026-01-08T00:00:00Z", "rebase this and check CI", "pr-comment"),
+          message("dependabot[bot]", "2026-01-07T00:00:00Z", "bot chatter", "pr-comment"),
+        ],
+        P,
+      ),
+      actionableThreads: [THREAD],
+      reason: "1 new pull request message on pull request #61 (no linked issue)",
+      ambiguousPrs: [],
+      ...overrides,
+    };
+  }
+
+  it("names the turn and the pull request", () => {
+    const prompt = compose(orphanItem(), DEFAULT_DO_WORK_PR_ORPHAN_PROMPT);
+    expect(prompt).toContain("Turn: pr-orphan");
+    expect(prompt).toContain("Pull request #61: Bump lodash");
+    expect(prompt).toContain("Branch: dependabot/lodash (checked out and up to date)");
+  });
+
+  it("omits every issue line, because there is no issue", () => {
+    const prompt = compose(orphanItem());
+    expect(prompt).not.toContain("Issue #");
+    expect(prompt).not.toContain("Issue URL:");
+    expect(prompt).not.toContain("Full conversation on the issue");
+  });
+
+  it("still carries the new pull request messages and the unresolved threads", () => {
+    const prompt = compose(orphanItem());
+    expect(prompt).toContain("New since your last message");
+    expect(prompt).toContain("rebase this and check CI");
+    expect(prompt).toContain("Unresolved review threads needing an answer:");
+    expect(prompt).toContain("rename this variable");
+  });
+
+  it("withholds messages from accounts that are neither authorized nor the agent", () => {
+    expect(compose(orphanItem())).not.toContain("bot chatter");
+  });
+
+  it("places the orphan frame first and verbatim", () => {
+    const prompt = compose(orphanItem(), DEFAULT_DO_WORK_PR_ORPHAN_PROMPT);
+    expect(prompt.startsWith(DEFAULT_DO_WORK_PR_ORPHAN_PROMPT)).toBe(true);
   });
 });

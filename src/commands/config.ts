@@ -13,7 +13,7 @@ import {
 const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
 const VALID_TECHNIQUES: IssueDiscoveryTechnique[] = ["label", "assignee", "title-contains"];
 const VALID_EXECUTORS: Executor[] = ["claude", "codex"];
-const VALID_TURN_KINDS: TurnKind[] = ["issue-discuss", "pr-work"];
+const VALID_TURN_KINDS: TurnKind[] = ["issue-discuss", "pr-work", "pr-orphan"];
 
 /** Merge one field into the `doWork` section, leaving the rest of the config alone. */
 function writeDoWork(patch: Partial<AutomataDoWorkConfig>): void {
@@ -172,6 +172,32 @@ const configSetDoWorkModel = new Command("do-work-model")
     process.stdout.write(`do-work ${executor} model set to: ${model}\n`);
   });
 
+const configSetDoWorkEffort = new Command("do-work-effort")
+  .description("Set the default reasoning effort `do-work` passes to one executor")
+  .argument("<executor>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
+  .argument("<value>", "Effort level, forwarded to the executor unchanged")
+  .action((executor: string, value: string) => {
+    if (!VALID_EXECUTORS.includes(executor as Executor)) {
+      process.stderr.write(
+        `Error: invalid executor "${executor}". Must be one of: ${VALID_EXECUTORS.join(", ")}\n`,
+      );
+      process.exit(1);
+    }
+    // No allow-list of levels on purpose: the valid set is model-specific and
+    // moves between executor releases, so an allow-list here would reject a
+    // level the installed executor accepts. Note neither executor errors on an
+    // unknown level — claude warns and falls back, codex forwards it — so this
+    // trades a typo being caught for not blocking a newly-shipped level.
+    const effort = value.trim();
+    if (effort.length === 0) {
+      process.stderr.write("Error: do-work-effort requires a non-empty effort level.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeDoWork({ effort: { ...current.doWork?.effort, [executor as Executor]: effort } });
+    process.stdout.write(`do-work ${executor} effort set to: ${effort}\n`);
+  });
+
 const configSetDoWorkMaxRuns = new Command("do-work-max-runs")
   .description("Set the maximum number of model runs `do-work` performs per tick (0 = unlimited)")
   .argument("<value>", "Non-negative integer")
@@ -214,10 +240,18 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     }
     const current = readRawConfig();
     const prompts = { ...current.doWork?.prompts };
-    if ((turnKind as TurnKind) === "issue-discuss") {
-      prompts.issueDiscuss = prompt;
-    } else {
-      prompts.prWork = prompt;
+    // An exhaustive switch rather than an if/else: a fourth turn kind added to
+    // `TurnKind` must not fall through into whichever branch happened to be last.
+    switch (turnKind as TurnKind) {
+      case "issue-discuss":
+        prompts.issueDiscuss = prompt;
+        break;
+      case "pr-work":
+        prompts.prWork = prompt;
+        break;
+      case "pr-orphan":
+        prompts.prOrphan = prompt;
+        break;
     }
     writeDoWork({ prompts });
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);
@@ -235,6 +269,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkProtectedBranches)
   .addCommand(configSetDoWorkExecutor)
   .addCommand(configSetDoWorkModel)
+  .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
   .addCommand(configSetDoWorkPrompt);

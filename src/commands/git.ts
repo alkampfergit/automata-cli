@@ -226,7 +226,6 @@ See docs/git.md for full output reference.`,
   )
   .action(async (options: { json?: boolean; waitFinishChecks?: boolean }) => {
     let branch: string;
-    let pr: PrInfo | null = null;
     try {
       branch = getCurrentBranch();
     } catch (err) {
@@ -234,30 +233,7 @@ See docs/git.md for full output reference.`,
       process.exit(1);
     }
 
-    if (options.waitFinishChecks) {
-      while (true) {
-        try {
-          pr = await getPrInfo(branch);
-        } catch (err) {
-          process.stderr.write(`Error: ${(err as Error).message}\n`);
-          process.exit(1);
-        }
-        if (pr === null) {
-          break;
-        }
-        const running = pr.checks.filter((c) => c.status !== "COMPLETED");
-        if (running.length === 0) break;
-        process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
-        await sleep(POLL_INTERVAL_MS);
-      }
-    } else {
-      try {
-        pr = await getPrInfo(branch);
-      } catch (err) {
-        process.stderr.write(`Error: ${(err as Error).message}\n`);
-        process.exit(1);
-      }
-    }
+    const pr = options.waitFinishChecks ? await pollUntilChecksComplete(branch) : await readPrInfoOrExit(branch);
 
     if (pr === null) {
       process.stdout.write(`No pull request found for branch: ${branch}\n`);
@@ -267,36 +243,62 @@ See docs/git.md for full output reference.`,
     if (options.json) {
       process.stdout.write(JSON.stringify(pr, null, 2) + "\n");
     } else {
-      const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
-      process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
-      if (pr.sonarcloudUrl !== undefined) {
-        process.stdout.write(`Sonar: ${pr.sonarcloudUrl}\n`);
-        const issueStr = pr.sonarNewIssues === null || pr.sonarNewIssues === undefined
-          ? "unavailable"
-          : String(pr.sonarNewIssues);
-        process.stdout.write(`Sonar New Issues: ${issueStr}\n`);
-        const failureNote = sonarFailureNote(pr.sonarFailures);
-        if (pr.sonarNewIssuesNote && pr.sonarNewIssuesNote !== failureNote) {
-          process.stdout.write(`Sonar Note: ${sanitizeText(pr.sonarNewIssuesNote)}\n`);
-        }
-      }
-      process.stdout.write(formatCheckSummary(pr.checks));
-      process.stdout.write(formatChecks(pr.checks));
-      if (failed.length > 0) {
-        process.stdout.write(formatFailedChecks(failed));
-      }
-      if (pr.sonarFailures !== undefined) {
-        process.stdout.write(formatSonarFailures(pr.sonarFailures, pr.sonarcloudUrl));
-      }
+      printPrStatus(pr);
     }
   });
+
+async function readPrInfoOrExit(branch: string): Promise<PrInfo | null> {
+  try {
+    return await getPrInfo(branch);
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    process.exit(1);
+  }
+}
+
+async function pollUntilChecksComplete(branch: string): Promise<PrInfo | null> {
+  for (;;) {
+    const pr = await readPrInfoOrExit(branch);
+    if (pr === null) return null;
+    const running = pr.checks.filter((c) => c.status !== "COMPLETED");
+    if (running.length === 0) return pr;
+    process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+function printSonarStatus(pr: PrInfo): void {
+  if (pr.sonarcloudUrl === undefined) return;
+  process.stdout.write(`Sonar: ${pr.sonarcloudUrl}\n`);
+  const issueStr =
+    pr.sonarNewIssues === null || pr.sonarNewIssues === undefined ? "unavailable" : String(pr.sonarNewIssues);
+  process.stdout.write(`Sonar New Issues: ${issueStr}\n`);
+  const failureNote = sonarFailureNote(pr.sonarFailures);
+  if (pr.sonarNewIssuesNote && pr.sonarNewIssuesNote !== failureNote) {
+    process.stdout.write(`Sonar Note: ${sanitizeText(pr.sonarNewIssuesNote)}\n`);
+  }
+}
+
+function printPrStatus(pr: PrInfo): void {
+  const failed = pr.checks.filter((c) => c.conclusion !== null && FAIL_CONCLUSIONS.has(c.conclusion));
+  process.stdout.write(`PR:    #${pr.number}\nTitle: ${pr.title}\nState: ${pr.state}\nURL:   ${pr.url}\n`);
+  printSonarStatus(pr);
+  process.stdout.write(formatCheckSummary(pr.checks));
+  process.stdout.write(formatChecks(pr.checks));
+  if (failed.length > 0) {
+    process.stdout.write(formatFailedChecks(failed));
+  }
+  if (pr.sonarFailures !== undefined) {
+    process.stdout.write(formatSonarFailures(pr.sonarFailures, pr.sonarcloudUrl));
+  }
+}
 
 // Strip ANSI/CSI escape sequences and non-printable control characters from
 // untrusted text before writing to the terminal.
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE_RE = new RegExp("\x1b(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])", "g");
+const ANSI_ESCAPE_RE = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS_RE = new RegExp("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "g");
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
 function sanitizeText(text: string): string {
   return text.replace(ANSI_ESCAPE_RE, "").replace(CONTROL_CHARS_RE, "");

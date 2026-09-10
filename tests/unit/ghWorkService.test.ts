@@ -249,6 +249,31 @@ describe("getOpenPrLinkMap", () => {
     expect([...getOpenPrLinkMap().byIssue.keys()]).toEqual([]);
   });
 
+  // The two sides have different provenance: GitHub answers with the canonical
+  // casing, ours is whatever the `origin` URL spells. A literal comparison
+  // discards *every* closing reference on such a remote — which both starts a
+  // competing implementation on issues that already have one and pushes those
+  // very pull requests into the orphan pass.
+  it("matches this repository whatever case the origin remote is written in", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("git@github.com:Acme/Widget.git\n")).mockReturnValueOnce(
+      json({
+        data: {
+          repository: {
+            defaultBranchRef: { name: "main" },
+            pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [prNode(57, "2026-01-05T00:00:00Z", 42, "acme/widget")],
+            },
+          },
+        },
+      }),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect(byIssue.get(42)?.map((pr) => pr.number)).toEqual([57]);
+    expect(orphans).toEqual([]);
+  });
+
   it("follows every page, because callers treat the map as authoritative", async () => {
     // A truncated map makes do-work start a competing implementation on an issue
     // that already has a pull request.
@@ -308,6 +333,131 @@ describe("getOpenPrLinkMap", () => {
     );
     const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
     expect(() => getOpenPrLinkMap()).toThrow(/closes more than 50 issues/);
+  });
+});
+
+describe("getOpenPrLinkMap — orphan pull requests", () => {
+  function page(nodes: unknown[]) {
+    return json({
+      data: {
+        repository: {
+          defaultBranchRef: { name: "main" },
+          pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes },
+        },
+      },
+    });
+  }
+
+  it("collects a pull request that closes nothing, with its labels and assignees", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      page([
+        {
+          ...prNode(61, "2026-01-08T00:00:00Z"),
+          title: "Bump lodash",
+          headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+          closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          labels: { nodes: [{ name: "dependencies" }, { name: "automated" }] },
+          assignees: { nodes: [{ login: "alice" }] },
+        },
+      ]),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect([...byIssue.keys()]).toEqual([]);
+    expect(orphans).toEqual([
+      {
+        pr: {
+          number: 61,
+          url: "https://gh/pr/61",
+          title: "Bump lodash",
+          headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+          baseRefName: "develop",
+          isCrossRepository: false,
+          state: "OPEN",
+          isDraft: false,
+          updatedAt: "2026-01-08T00:00:00Z",
+        },
+        labels: ["dependencies", "automated"],
+        assignees: ["alice"],
+      },
+    ]);
+  });
+
+  it("does not collect a pull request that closes an issue of this repository", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(page([prNode(57, "2026-01-05T00:00:00Z")]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans).toEqual([]);
+  });
+
+  it("collects a pull request that only closes another repository's issue", async () => {
+    // It closes nothing *here*, so the orphan pass owns it — the same
+    // nameWithOwner line that keeps the issue map correct draws this one.
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(page([prNode(61, "2026-01-08T00:00:00Z", 42, "other-org/lib")]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect([...byIssue.keys()]).toEqual([]);
+    expect(orphans.map((candidate) => candidate.pr.number)).toEqual([61]);
+  });
+
+  it("treats a missing labels or assignees connection as empty", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      page([
+        {
+          ...prNode(61, "2026-01-08T00:00:00Z"),
+          closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          labels: { nodes: [{}] },
+          assignees: null,
+        },
+      ]),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans[0]).toMatchObject({ labels: [], assignees: [] });
+  });
+
+  it("asks the query for labels and assignees", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(page([]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    getOpenPrLinkMap();
+    const query = calls()[1].args.find((arg) => arg.startsWith("query=")) ?? "";
+    expect(query).toContain("labels(first:50)");
+    expect(query).toContain("assignees(first:50)");
+  });
+
+  it("collects orphans across pages", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              defaultBranchRef: { name: "main" },
+              pullRequests: {
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+                nodes: [
+                  {
+                    ...prNode(61, "2026-01-08T00:00:00Z"),
+                    closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        page([
+          {
+            ...prNode(62, "2026-01-07T00:00:00Z"),
+            closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          },
+        ]),
+      );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans.map((candidate) => candidate.pr.number)).toEqual([61, 62]);
   });
 });
 
@@ -638,6 +788,167 @@ describe("marker comments", () => {
     const { deleteMarker } = await import("../../src/github/ghWorkService.js");
     expect(() => deleteMarker({ commentId: "998877", createdAt: "2026-01-10T00:00:00Z" })).toThrow(
       /forbidden/,
+    );
+  });
+});
+
+describe("listPullRequestsForHead", () => {
+  it("asks for every state for the named head and sorts newest update first", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json([
+        {
+          number: 7,
+          url: "https://gh/pr/7",
+          state: "CLOSED",
+          updatedAt: "2026-09-01T00:00:00Z",
+          author: { login: "dependabot[bot]" },
+        },
+        // No `author` at all: `gh` reports null for a deleted account, and the
+        // rescue's ownership check must read that as "not the agent" rather
+        // than crash on it.
+        { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z" },
+      ]),
+    );
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")).toEqual([
+      { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z", author: "" },
+      {
+        number: 7,
+        url: "https://gh/pr/7",
+        state: "CLOSED",
+        updatedAt: "2026-09-01T00:00:00Z",
+        author: "dependabot[bot]",
+      },
+    ]);
+    expect(calls()[0]).toEqual({
+      cmd: "gh",
+      args: ["pr", "list", "--head", "fix/wip", "--state", "all", "--json", "number,state,url,updatedAt,author"],
+    });
+  });
+
+  it("returns an empty list for a head with no pull request", async () => {
+    mockSpawnSync.mockReturnValueOnce(json([]));
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")).toEqual([]);
+  });
+
+  // The prune step keeps a branch when the lookup fails, so the failure has to
+  // reach it as a throw rather than as "no pull requests".
+  it("throws when gh fails", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "gh: HTTP 502\n", status: 1 });
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(() => listPullRequestsForHead("fix/wip")).toThrow("gh: HTTP 502");
+  });
+
+  it("maps an unexpected state onto CLOSED rather than widening the union", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json([{ number: 1, url: "https://gh/pr/1", state: "LOCKED", updatedAt: "2026-09-01T00:00:00Z" }]),
+    );
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")[0].state).toBe("CLOSED");
+  });
+});
+
+describe("isMissingLabelError", () => {
+  it.each([
+    "could not add label: 'rescue' not found",
+    "Could not resolve to a Label with the name 'rescue'.",
+    "the label rescue does not exist in this repository",
+    "GraphQL: labels not found",
+  ])("recognises a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(true);
+  });
+
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+    "pull request already exists",
+    "",
+  ])("does not treat an unrelated failure as a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(false);
+  });
+});
+
+describe("createDraftPullRequest", () => {
+  const input = {
+    head: "rescue/develop-20260910T054512Z",
+    base: "develop",
+    title: "rescue: uncommitted work from develop",
+    body: "body",
+    label: "rescue",
+  };
+
+  it("creates a draft against the named head and base, and reads the number off the URL", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("https://github.com/acme/widget/pull/51\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(createDraftPullRequest(input)).toEqual({
+      number: 51,
+      url: "https://github.com/acme/widget/pull/51",
+    });
+    expect(calls()[0]).toEqual({
+      cmd: "gh",
+      args: [
+        "pr", "create", "--draft",
+        "--head", input.head,
+        "--base", "develop",
+        "--title", input.title,
+        "--body", "body",
+        "--label", "rescue",
+      ],
+    });
+  });
+
+  // The label is cosmetic; a repository that has not defined it must still get
+  // the pull request, which is the whole reason the rescue exists.
+  it("retries exactly once without --label when the label does not exist", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "could not add label: 'rescue' not found\n", status: 1 })
+      .mockReturnValueOnce(ok("https://github.com/acme/widget/pull/52\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(createDraftPullRequest(input).number).toBe(52);
+    const attempts = calls();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].args).not.toContain("--label");
+    expect(attempts[1].args).not.toContain("rescue");
+  });
+
+  it("does not retry a failure unrelated to the label", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "pull request already exists\n", status: 1 });
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest(input)).toThrow("pull request already exists");
+    expect(calls()).toHaveLength(1);
+  });
+
+  // Merely mentioning a label is not a missing label. Retrying these dropped
+  // `--label` for a reason that had nothing to do with it, and reported the
+  // second, identical failure in place of the real one.
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+  ])("does not retry a non-label failure that mentions labels: %s", async (stderr) => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: `${stderr}\n`, status: 1 });
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest(input)).toThrow(stderr);
+    expect(calls()).toHaveLength(1);
+  });
+
+  it("skips the labelled attempt entirely when no label is asked for", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("https://github.com/acme/widget/pull/53\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    createDraftPullRequest({ ...input, label: undefined });
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0].args).not.toContain("--label");
+  });
+
+  it("throws when the created pull request's number cannot be read back", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("Warning: something\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest({ ...input, label: undefined })).toThrow(
+      "could not read its number",
     );
   });
 });

@@ -251,16 +251,16 @@ function parseOwnerRepo(): string | null {
   const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
   if (status !== 0) return null;
   const url = stdout.trim();
-  const https = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  const https = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
   if (https) return https[1];
-  const ssh = url.match(/github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  const ssh = /github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
   if (ssh) return ssh[1];
   return null;
 }
 
 function extractLastMarkdownUrl(markdown: string): string | null {
   const matches = [...markdown.matchAll(/\]\((https?:\/\/[^)]+)\)/g)];
-  return matches.length > 0 ? (matches[matches.length - 1][1] ?? null) : null;
+  return matches.at(-1)?.[1] ?? null;
 }
 
 function fetchCheckRunOutputs(ownerRepo: string, sha: string): Map<string, { title: string; detailsUrl: string }> {
@@ -354,18 +354,18 @@ function resolveSonarPath(componentKey: string | undefined, components: Map<stri
   return path || undefined;
 }
 
-function mapSonarIssuesPage(
-  data: SonarIssuesSearchResponse,
-  targetIssues: SonarIssue[],
+function collectSonarComponents(
+  data: { components?: { key?: string; path?: string }[] },
   components: Map<string, string>,
-  rules: Map<string, string>,
 ): void {
   for (const component of data.components ?? []) {
     if (component.key && component.path) {
       components.set(component.key, component.path);
     }
   }
+}
 
+function collectSonarRules(data: SonarIssuesSearchResponse, rules: Map<string, string>): void {
   for (const rule of data.rules ?? []) {
     if (!rule.key) continue;
     const explanation = normalizeText(rule.htmlDesc) ?? normalizeText(rule.htmlNote) ?? normalizeText(rule.name);
@@ -373,6 +373,16 @@ function mapSonarIssuesPage(
       rules.set(rule.key, explanation);
     }
   }
+}
+
+function mapSonarIssuesPage(
+  data: SonarIssuesSearchResponse,
+  targetIssues: SonarIssue[],
+  components: Map<string, string>,
+  rules: Map<string, string>,
+): void {
+  collectSonarComponents(data, components);
+  collectSonarRules(data, rules);
 
   for (const issue of data.issues ?? []) {
     if (!issue.key || !issue.message) continue;
@@ -397,12 +407,7 @@ function mapSonarHotspotsPage(
   targetHotspots: RawSonarHotspot[],
   components: Map<string, string>,
 ): void {
-  for (const component of data.components ?? []) {
-    if (component.key && component.path) {
-      components.set(component.key, component.path);
-    }
-  }
-
+  collectSonarComponents(data, components);
   targetHotspots.push(...(data.hotspots ?? []));
 }
 
@@ -686,6 +691,43 @@ async function fetchSonarFailureSummary(
   };
 }
 
+interface SonarCheckSummary {
+  sonarcloudUrl: string;
+  sonarNewIssues: number | null | undefined;
+  sonarNewIssuesNote: string | undefined;
+  sonarFailures?: SonarFailureSummary;
+}
+
+async function describeSonarCheck(sonarCheck: PrCheck, prNumber: number): Promise<SonarCheckSummary> {
+  const sonarcloudUrl = resolveSonarPullRequestUrl(sonarCheck.detailsUrl, prNumber);
+  const projectKey = extractSonarProjectKey(sonarcloudUrl);
+
+  if (!projectKey) {
+    return {
+      sonarcloudUrl,
+      sonarNewIssues: null,
+      sonarNewIssuesNote: "Could not determine the SonarCloud project key from the check URL.",
+    };
+  }
+
+  if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
+    const sonarSummary = await fetchSonarFailureSummary(projectKey, prNumber, sonarcloudUrl);
+    return {
+      sonarcloudUrl,
+      sonarNewIssues: sonarSummary.issueTotal,
+      sonarNewIssuesNote: sonarSummary.issueNote,
+      sonarFailures: sonarSummary.summary,
+    };
+  }
+
+  const sonarNewIssuesResult = await fetchSonarNewIssues(projectKey, prNumber, sonarcloudUrl);
+  return {
+    sonarcloudUrl,
+    sonarNewIssues: sonarNewIssuesResult.total,
+    sonarNewIssuesNote: sonarNewIssuesResult.note,
+  };
+}
+
 async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
   const { stdout, stderr, status } = run("gh", [
     "pr",
@@ -725,29 +767,7 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
 
   // SonarCloud detection
   const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
-  let sonarcloudUrl: string | undefined;
-  let sonarNewIssues: number | null | undefined;
-  let sonarNewIssuesNote: string | undefined;
-  let sonarFailures: SonarFailureSummary | undefined;
-  if (sonarCheck) {
-    sonarcloudUrl = resolveSonarPullRequestUrl(sonarCheck.detailsUrl, raw.number);
-    const projectKey = extractSonarProjectKey(sonarcloudUrl);
-    if (projectKey) {
-      if (sonarCheck.conclusion !== null && SONAR_FAIL_CONCLUSIONS.has(sonarCheck.conclusion)) {
-        const sonarSummary = await fetchSonarFailureSummary(projectKey, raw.number, sonarcloudUrl);
-        sonarFailures = sonarSummary.summary;
-        sonarNewIssues = sonarSummary.issueTotal;
-        sonarNewIssuesNote = sonarSummary.issueNote;
-      } else {
-        const sonarNewIssuesResult = await fetchSonarNewIssues(projectKey, raw.number, sonarcloudUrl);
-        sonarNewIssues = sonarNewIssuesResult.total;
-        sonarNewIssuesNote = sonarNewIssuesResult.note;
-      }
-    } else {
-      sonarNewIssues = null;
-      sonarNewIssuesNote = "Could not determine the SonarCloud project key from the check URL.";
-    }
-  }
+  const sonar = sonarCheck === undefined ? undefined : await describeSonarCheck(sonarCheck, raw.number);
 
   return {
     number: raw.number,
@@ -755,8 +775,14 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     state: raw.state,
     url: raw.url,
     checks,
-    ...(sonarcloudUrl === undefined ? {} : { sonarcloudUrl, sonarNewIssues, sonarNewIssuesNote }),
-    ...(sonarFailures === undefined ? {} : { sonarFailures }),
+    ...(sonar === undefined
+      ? {}
+      : {
+          sonarcloudUrl: sonar.sonarcloudUrl,
+          sonarNewIssues: sonar.sonarNewIssues,
+          sonarNewIssuesNote: sonar.sonarNewIssuesNote,
+        }),
+    ...(sonar?.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
   };
 }
 
@@ -838,6 +864,28 @@ export function pullFastForwardOnly(branch?: string): GitCommandResult {
   return gitCommand(branch === undefined ? ["pull", "--ff-only"] : ["pull", "--ff-only", "origin", branch]);
 }
 
+/** `git rev-parse --verify <ref>` — the commit sha, or null when the ref does not exist. */
+export function revParse(ref: string): string | null {
+  const { stdout, status } = run("git", ["rev-parse", "--verify", "--quiet", ref]);
+  if (status !== 0) return null;
+  const sha = stdout.trim();
+  return sha.length === 0 ? null : sha;
+}
+
+/**
+ * `git merge-base --is-ancestor` — is the first commit reachable from the second?
+ *
+ * A commit is its own ancestor, so an equal pair answers true.
+ */
+export function isAncestorCommit(maybeAncestor: string, descendant: string): boolean {
+  return run("git", ["merge-base", "--is-ancestor", maybeAncestor, descendant]).status === 0;
+}
+
+/** `git reset --hard <ref>` — moves the current branch, discarding local commits past `ref`. */
+export function resetHardTo(ref: string): GitCommandResult {
+  return gitCommand(["reset", "--hard", ref]);
+}
+
 export function fetchPrune(): void {
   const result = run("git", ["fetch", "--prune"]);
   if (result.status !== 0) {
@@ -850,6 +898,105 @@ export function deleteLocalBranch(branch: string): void {
   if (result.status !== 0) {
     throw new Error(`Failed to delete branch ${branch}: ${result.stderr.trim()}`);
   }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Repository hygiene primitives
+ *
+ * `do-work`'s once-per-tick pre-flight (`git/repoHygiene.ts`) sequences these.
+ * They live here because this module owns the process runner; the policy —
+ * which branch to keep, delete or rescue — deliberately does not.
+ * -------------------------------------------------------------------------- */
+
+/** Every local branch, short name, in `git`'s own (refname) order. */
+export function listLocalBranches(): string[] {
+  const { stdout, status } = run("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (status !== 0) return [];
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * The branch names that exist on `origin`, or null when the remote could not be
+ * asked.
+ *
+ * Null and `[]` must stay distinguishable: the caller treats "absent from this
+ * list" as proof that a branch has no remote and may be deletable, so an
+ * unreachable remote has to read as "unknown", never as "no branches exist".
+ */
+export function listRemoteBranches(): string[] | null {
+  const { stdout, status } = run("git", ["ls-remote", "--heads", "origin"]);
+  if (status !== 0) return null;
+  const names: string[] = [];
+  for (const line of stdout.split("\n")) {
+    // `<sha>\trefs/heads/<name>`; a branch name may itself contain slashes.
+    const match = /^[0-9a-f]+\s+refs\/heads\/(.+)$/.exec(line.trim());
+    if (match) names.push(match[1]);
+  }
+  return names;
+}
+
+/** `git checkout -b <branch>` — create and switch to a branch at the current HEAD. */
+export function createBranchAtHead(branch: string): GitCommandResult {
+  return gitCommand(["checkout", "-b", branch]);
+}
+
+/**
+ * Stage everything except the given paths.
+ *
+ * `-A` is the only form that stages untracked files, deletions and
+ * modifications together, which is exactly the set `hasUncommittedChanges`
+ * counts — anything it counts and this misses would leave the tree dirty. The
+ * exclusion mirrors that function's, so automata's own run lock is not committed
+ * by the rescue that the lock's own run performs.
+ */
+export function stageAllExcept(excludePaths: string[]): GitCommandResult {
+  const args = ["add", "-A"];
+  if (excludePaths.length > 0) {
+    args.push("--", ".", ...excludePaths.map((path) => `:(exclude)${path}`));
+  }
+  return gitCommand(args);
+}
+
+/** `git commit -m <message>` — commits what is already staged, nothing more. */
+export function commitStaged(message: string): GitCommandResult {
+  return gitCommand(["commit", "-m", message]);
+}
+
+/**
+ * `git push -u origin <branch>` — pushes the *named* branch, so it works
+ * without checking it out.
+ */
+export function pushSetUpstream(branch: string): GitCommandResult {
+  return gitCommand(["push", "-u", "origin", branch]);
+}
+
+/**
+ * How many commits `branch` has that `baseBranch` does not, or null when the
+ * question could not be answered.
+ *
+ * Null is the answer that matters: the caller only deletes a branch on a
+ * confirmed zero, so a missing ref or unparseable output must never look like
+ * "nothing would be lost".
+ */
+export function countCommitsNotIn(baseBranch: string, branch: string): number | null {
+  const { stdout, status } = run("git", ["rev-list", "--count", `${baseBranch}..${branch}`]);
+  if (status !== 0) return null;
+  const trimmed = stdout.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+/**
+ * `git branch -D <branch>` — the non-throwing sibling of `deleteLocalBranch`.
+ *
+ * The pre-flight reports a failed deletion as one branch it kept, rather than
+ * letting it abort a tick that has other work to do.
+ */
+export function forceDeleteLocalBranch(branch: string): GitCommandResult {
+  return gitCommand(["branch", "-D", branch]);
 }
 
 interface RawReviewThreadComment {

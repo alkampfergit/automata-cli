@@ -25,16 +25,32 @@ export interface IssueState {
   prSurface: PrSurface | null;
 }
 
-export type SkipReason = "issue-closed" | "no-new-messages" | "unsafe-pr-branch";
+/** Everything the orphan pull-request decision needs. */
+export interface OrphanPrState {
+  prSurface: PrSurface;
+}
+
+export type SkipReason =
+  | "issue-closed"
+  | "no-new-messages"
+  | "unsafe-pr-branch"
+  /** The pull request was closed or merged since the plan was built. */
+  | "pr-closed"
+  /** It gained a closing reference, so the issue pass owns it now. */
+  | "pr-linked"
+  /** Another pull request in the same tick already works on this head branch. */
+  | "branch-busy";
 
 export interface WorkItem {
-  issue: GitHubIssue;
+  /** Null only on a `pr-orphan` turn: such a pull request has no issue. */
+  issue: GitHubIssue | null;
   turn: TurnKind;
   pr: PullRequestRef | null;
-  /** Base branch for a discuss turn, the pull request's head branch for a build turn. */
+  /** Base branch for a discuss turn, the pull request's head branch otherwise. */
   branch: string;
-  /** True when the agent is not yet among the issue's assignees. */
+  /** True when the agent is not yet among the issue's assignees. Always false without an issue. */
   needsAssignment: boolean;
+  /** The empty analysis on a `pr-orphan` turn — there is no issue surface to read. */
   issueAnalysis: SurfaceAnalysis;
   prAnalysis: SurfaceAnalysis | null;
   actionableThreads: ReviewThread[];
@@ -46,7 +62,27 @@ export interface WorkItem {
 
 export type Decision =
   | { kind: "work"; item: WorkItem }
-  | { kind: "skip"; issue: GitHubIssue; reason: SkipReason; detail: string };
+  | {
+      kind: "skip";
+      issue: GitHubIssue | null;
+      /** What to name when there is no issue, so a skip is always attributable. */
+      pr: PullRequestRef | null;
+      reason: SkipReason;
+      detail: string;
+    };
+
+/**
+ * "No issue messages, none new, the agent never spoke there" — the accurate
+ * analysis of a surface that does not exist, so the field can stay non-optional
+ * and the prompt, watermark and directive paths need no extra guards.
+ */
+const NO_ISSUE_MESSAGES: SurfaceAnalysis = {
+  messages: [],
+  newMessages: [],
+  newMessageCount: 0,
+  hasNewMessage: false,
+  lastAgentAt: null,
+};
 
 function isAssignedToAgent(assignees: string[], agentUser: string): boolean {
   const agent = agentUser.toLowerCase();
@@ -137,11 +173,16 @@ function protectedHeads(policy: BranchPolicy): string[] {
  * the head means the turn would commit to it: a release pull request
  * `develop -> main`, or a back-merge `main -> develop`, both carrying `Closes #N`.
  */
-function unsafeBranchSkip(pr: PullRequestRef, issue: GitHubIssue, policy: BranchPolicy): Decision | null {
+function unsafeBranchSkip(
+  pr: PullRequestRef,
+  issue: GitHubIssue | null,
+  policy: BranchPolicy,
+): Decision | null {
   if (pr.isCrossRepository) {
     return {
       kind: "skip",
       issue,
+      pr,
       reason: "unsafe-pr-branch",
       detail: `pull request #${String(pr.number)} comes from a fork; its head branch is not in this repository`,
     };
@@ -150,6 +191,7 @@ function unsafeBranchSkip(pr: PullRequestRef, issue: GitHubIssue, policy: Branch
     return {
       kind: "skip",
       issue,
+      pr,
       reason: "unsafe-pr-branch",
       detail:
         `pull request #${String(pr.number)} has a protected branch (${pr.headRefName}) ` +
@@ -159,13 +201,45 @@ function unsafeBranchSkip(pr: PullRequestRef, issue: GitHubIssue, policy: Branch
   return null;
 }
 
+/**
+ * Read a pull request as a conversation: what is new on it, and which of its
+ * review threads still need an answer.
+ *
+ * The agent's own replies *inside review threads* count towards the pull
+ * request boundary. They are stored separately from `messages`, and the answer
+ * check (`agentAnsweredAfter`) already treats such a reply as an answer — so
+ * omitting them here made the boundary move backwards relative to the answer
+ * check: the marker was deleted, the older review body read as new again, and
+ * the same message started a build turn on every tick. The default build
+ * prompt explicitly invites replying in the thread, so this was the likely
+ * path, not a corner case.
+ *
+ * Only *agent* thread comments are folded in. Authorized ones already drive
+ * the turn through `actionableThreads`, and adding them here would double
+ * count them as new messages and duplicate them in the prompt.
+ *
+ * Shared by the build turn and the orphan turn: the rule must not be able to
+ * differ between them, or the same feedback would be new on one and answered on
+ * the other.
+ */
+function analysePrSurface(
+  surface: PrSurface,
+  p: Participants,
+): { prAnalysis: SurfaceAnalysis; actionableThreads: ReviewThread[] } {
+  const agentThreadMessages = surface.threads
+    .flatMap((thread) => thread.comments)
+    .filter((comment) => comment.author.toLowerCase() === p.agentUser.toLowerCase());
+  const prAnalysis = analyzeSurface([...surface.messages, ...agentThreadMessages], p);
+  return { prAnalysis, actionableThreads: findActionableThreads(surface.threads, p, prAnalysis.lastAgentAt) };
+}
+
 export function decideWork(state: IssueState, p: Participants, policy: BranchPolicy): Decision {
   const baseBranch = policy.baseBranch;
   const { issueSurface, prSurface } = state;
   const issue = issueSurface.issue;
 
   if (issueSurface.state === "CLOSED") {
-    return { kind: "skip", issue, reason: "issue-closed", detail: "the issue is closed" };
+    return { kind: "skip", issue, pr: null, reason: "issue-closed", detail: "the issue is closed" };
   }
 
   const issueAnalysis = analyzeSurface(issueSurface.messages, p);
@@ -182,6 +256,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
       return {
         kind: "skip",
         issue,
+        pr: null,
         reason: "no-new-messages",
         detail:
           issueAnalysis.lastAgentAt === null
@@ -211,29 +286,14 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
   const unsafe = unsafeBranchSkip(surface.pr, issue, policy);
   if (unsafe !== null) return unsafe;
 
-  // The agent's own replies *inside review threads* count towards the pull
-  // request boundary. They are stored separately from `messages`, and the answer
-  // check (`agentAnsweredAfter`) already treats such a reply as an answer — so
-  // omitting them here made the boundary move backwards relative to the answer
-  // check: the marker was deleted, the older review body read as new again, and
-  // the same message started a build turn on every tick. The default build
-  // prompt explicitly invites replying in the thread, so this was the likely
-  // path, not a corner case.
-  //
-  // Only *agent* thread comments are folded in. Authorized ones already drive
-  // the turn through `actionableThreads`, and adding them here would double
-  // count them as new messages and duplicate them in the prompt.
-  const agentThreadMessages = surface.threads
-    .flatMap((thread) => thread.comments)
-    .filter((comment) => comment.author.toLowerCase() === p.agentUser.toLowerCase());
-  const prAnalysis = analyzeSurface([...surface.messages, ...agentThreadMessages], p);
-  const actionableThreads = findActionableThreads(surface.threads, p, prAnalysis.lastAgentAt);
+  const { prAnalysis, actionableThreads } = analysePrSurface(surface, p);
   const hasPrWork = prAnalysis.hasNewMessage || actionableThreads.length > 0;
 
   if (!hasPrWork && !issueAnalysis.hasNewMessage) {
     return {
       kind: "skip",
       issue,
+      pr: surface.pr,
       reason: "no-new-messages",
       detail: `nothing new on issue or pull request #${String(surface.pr.number)}`,
     };
@@ -267,6 +327,122 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
       ambiguousPrs: openPrs.length > 1 ? openPrs.filter((pr) => pr.number !== surface.pr.number) : [],
     },
   };
+}
+
+/**
+ * The turn decision for a pull request that closes no issue of this repository.
+ *
+ * Same rule as a build turn, minus the issue: the agent owes an answer when the
+ * newest message from an authorized account has none from the agent after it.
+ * Nothing else triggers it — not a first sighting, not a force-push, and not the
+ * pull request's own body or commits, which are usually a bot's. That keeps one
+ * idempotence argument for all three turn kinds: a run happens only because a
+ * human asked for it, and the marker or the reply is what stops it happening
+ * again.
+ */
+export function decideOrphanPrWork(
+  state: OrphanPrState,
+  p: Participants,
+  policy: BranchPolicy,
+): Decision {
+  const surface = state.prSurface;
+  const pr = surface.pr;
+
+  if (pr.state !== "OPEN") {
+    return {
+      kind: "skip",
+      issue: null,
+      pr,
+      reason: "pr-closed",
+      detail: `pull request #${String(pr.number)} is ${pr.state.toLowerCase()}`,
+    };
+  }
+
+  const unsafe = unsafeBranchSkip(pr, null, policy);
+  if (unsafe !== null) return unsafe;
+
+  const { prAnalysis, actionableThreads } = analysePrSurface(surface, p);
+
+  if (!prAnalysis.hasNewMessage && actionableThreads.length === 0) {
+    return {
+      kind: "skip",
+      issue: null,
+      pr,
+      reason: "no-new-messages",
+      detail:
+        prAnalysis.lastAgentAt === null
+          ? `no messages from authorized accounts on pull request #${String(pr.number)}`
+          : `nothing new on pull request #${String(pr.number)} since the agent's message at ${prAnalysis.lastAgentAt}`,
+    };
+  }
+
+  const reasons: string[] = [];
+  if (prAnalysis.hasNewMessage) {
+    reasons.push(plural(prAnalysis.newMessageCount, "new pull request message"));
+  }
+  if (actionableThreads.length > 0) {
+    reasons.push(plural(actionableThreads.length, "unresolved review thread"));
+  }
+
+  return {
+    kind: "work",
+    item: {
+      issue: null,
+      turn: "pr-orphan",
+      pr,
+      branch: pr.headRefName,
+      // Assignment is an issue mechanism: it makes the claim visible in the
+      // issue list, and with `issueDiscoveryTechnique: assignee` assigning the
+      // agent here would change what the discovery filter matches next tick.
+      // The `working…` marker on the pull request is the claim.
+      needsAssignment: false,
+      issueAnalysis: NO_ISSUE_MESSAGES,
+      prAnalysis,
+      actionableThreads,
+      reason: `${reasons.join(", ")} on pull request #${String(pr.number)} (no linked issue)`,
+      ambiguousPrs: [],
+    },
+  };
+}
+
+/**
+ * Let at most one build turn per tick own a head branch.
+ *
+ * `decideWork` already refuses to run two turns for one issue whose pull
+ * requests would write to the same branch, but that guard cannot see across
+ * items — and nothing stops two *different* subjects sharing a head. GitHub
+ * allows several open pull requests from one branch to different bases, which
+ * GitFlow makes routine: `fix/x -> main` carrying `Closes #42` is an issue-pass
+ * item, `fix/x -> develop` closing nothing is an orphan, and both can have a new
+ * message on the same tick. Running both would put two model sessions on one
+ * checkout back to back, the second inheriting whatever the first left there.
+ *
+ * The first item in tick order keeps the branch — issues before orphans, so a
+ * dependency bump never displaces an issue. A discuss turn is left alone: its
+ * `branch` is the base branch, which it reads and never writes.
+ */
+export function skipDuplicateHeadBranches(decisions: Decision[]): Decision[] {
+  const owners = new Map<string, PullRequestRef>();
+  return decisions.map((decision) => {
+    if (decision.kind !== "work") return decision;
+    const { item } = decision;
+    if (item.turn === "issue-discuss" || item.pr === null) return decision;
+
+    const owner = owners.get(item.branch);
+    if (owner === undefined) {
+      owners.set(item.branch, item.pr);
+      return decision;
+    }
+    return {
+      kind: "skip",
+      issue: item.issue,
+      pr: item.pr,
+      reason: "branch-busy",
+      detail:
+        `pull request #${String(item.pr.number)} shares its head branch (${item.branch}) with ` +
+        `pull request #${String(owner.number)}, which this tick works on first`,
+    };
+  });
 }
 
 /** Pick the pull request to work on when an issue has several open linked ones. */

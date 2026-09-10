@@ -92,6 +92,9 @@ TEMPLATE_FILE="$REPO_ROOT/.specify/templates/agent-file-template.md"
 
 # Global variables for parsed plan data
 NEW_LANG=""
+NEEDS_CLARIFICATION="NEEDS CLARIFICATION"
+readonly NEEDS_CLARIFICATION
+
 NEW_FRAMEWORK=""
 NEW_DB=""
 NEW_PROJECT_TYPE=""
@@ -101,19 +104,23 @@ NEW_PROJECT_TYPE=""
 #==============================================================================
 
 log_info() {
-    echo "INFO: $1"
+    local message="$1"
+    echo "INFO: $message"
 }
 
 log_success() {
-    echo "✓ $1"
+    local message="$1"
+    echo "✓ $message"
 }
 
 log_error() {
-    echo "ERROR: $1" >&2
+    local message="$1"
+    echo "ERROR: $message" >&2
 }
 
 log_warning() {
-    echo "WARNING: $1" >&2
+    local message="$1"
+    echo "WARNING: $message" >&2
 }
 
 # Cleanup function for temporary files
@@ -174,7 +181,7 @@ extract_plan_field() {
         head -1 | \
         sed "s|^\*\*${field_pattern}\*\*: ||" | \
         sed 's/^[ \t]*//;s/[ \t]*$//' | \
-        grep -v "NEEDS CLARIFICATION" | \
+        grep -v "$NEEDS_CLARIFICATION" | \
         grep -v "^N/A$" || echo ""
 }
 
@@ -224,8 +231,8 @@ format_technology_stack() {
     local parts=()
     
     # Add non-empty parts
-    [[ -n "$lang" && "$lang" != "NEEDS CLARIFICATION" ]] && parts+=("$lang")
-    [[ -n "$framework" && "$framework" != "NEEDS CLARIFICATION" && "$framework" != "N/A" ]] && parts+=("$framework")
+    [[ -n "$lang" && "$lang" != "$NEEDS_CLARIFICATION" ]] && parts+=("$lang")
+    [[ -n "$framework" && "$framework" != "$NEEDS_CLARIFICATION" && "$framework" != "N/A" ]] && parts+=("$framework")
     
     # Join with proper formatting
     if [[ ${#parts[@]} -eq 0 ]]; then
@@ -405,14 +412,14 @@ update_existing_agent_file() {
         new_tech_entries+=("- $tech_stack ($CURRENT_BRANCH)")
     fi
     
-    if [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]] && ! grep -q "$NEW_DB" "$target_file"; then
+    if [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "$NEEDS_CLARIFICATION" ]] && ! grep -q "$NEW_DB" "$target_file"; then
         new_tech_entries+=("- $NEW_DB ($CURRENT_BRANCH)")
     fi
     
     # Prepare new change entry
     if [[ -n "$tech_stack" ]]; then
         new_change_entry="- $CURRENT_BRANCH: Added $tech_stack"
-    elif [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "NEEDS CLARIFICATION" ]]; then
+    elif [[ -n "$NEW_DB" ]] && [[ "$NEW_DB" != "N/A" ]] && [[ "$NEW_DB" != "$NEEDS_CLARIFICATION" ]]; then
         new_change_entry="- $CURRENT_BRANCH: Added $NEW_DB"
     fi
     
@@ -434,7 +441,6 @@ update_existing_agent_file() {
     local tech_entries_added=false
     local changes_entries_added=false
     local existing_changes_count=0
-    local file_ended=false
     
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Handle Active Technologies section
@@ -514,14 +520,12 @@ update_existing_agent_file() {
     fi
     
     # Ensure Cursor .mdc files have YAML frontmatter for auto-inclusion
-    if [[ "$target_file" == *.mdc ]]; then
-        if ! head -1 "$temp_file" | grep -q '^---'; then
-            local frontmatter_file
-            frontmatter_file=$(mktemp) || { rm -f "$temp_file"; return 1; }
-            printf '%s\n' "---" "description: Project Development Guidelines" "globs: [\"**/*\"]" "alwaysApply: true" "---" "" > "$frontmatter_file"
-            cat "$temp_file" >> "$frontmatter_file"
-            mv "$frontmatter_file" "$temp_file"
-        fi
+    if [[ "$target_file" == *.mdc ]] && ! head -1 "$temp_file" | grep -q '^---'; then
+        local frontmatter_file
+        frontmatter_file=$(mktemp) || { rm -f "$temp_file"; return 1; }
+        printf '%s\n' "---" "description: Project Development Guidelines" "globs: [\"**/*\"]" "alwaysApply: true" "---" "" > "$frontmatter_file"
+        cat "$temp_file" >> "$frontmatter_file"
+        mv "$frontmatter_file" "$temp_file"
     fi
 
     # Move temp file to target atomically
@@ -556,11 +560,9 @@ update_agent_file() {
     # Create directory if it doesn't exist
     local target_dir
     target_dir=$(dirname "$target_file")
-    if [[ ! -d "$target_dir" ]]; then
-        if ! mkdir -p "$target_dir"; then
-            log_error "Failed to create directory: $target_dir"
-            return 1
-        fi
+    if [[ ! -d "$target_dir" ]] && ! mkdir -p "$target_dir"; then
+        log_error "Failed to create directory: $target_dir"
+        return 1
     fi
     
     if [[ ! -f "$target_file" ]]; then

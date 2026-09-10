@@ -18,6 +18,13 @@ export interface InvokeClaudeOptions {
   yolo?: boolean;
   verbose?: boolean;
   model?: string;
+  /**
+   * Reasoning effort, forwarded verbatim. Deliberately not validated against a
+   * list of levels: the valid set is model-specific and changes between Claude
+   * Code releases, so an allow-list here would reject a level the installed
+   * binary accepts until automata cut a release of its own.
+   */
+  effort?: string;
 }
 
 export const MODEL_IDS: Record<string, string> = {
@@ -46,6 +53,9 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
   const args: string[] = [];
   if (options.yolo) args.push("--dangerously-skip-permissions");
   if (options.model) args.push("--model", options.model);
+  // Truthiness, not `!== undefined`: an empty level must emit nothing rather
+  // than a bare `--effort` that would swallow the next argument.
+  if (options.effort) args.push("--effort", options.effort);
   if (options.verbose) args.push("--verbose", "--output-format", "stream-json");
   args.push("-p", prompt);
   return args;
@@ -66,11 +76,16 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; printSteps?: boolean } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
-    const args = buildClaudeArgs(prompt, { yolo: true, model: options.model, verbose: true });
+    const args = buildClaudeArgs(prompt, {
+      yolo: true,
+      model: options.model,
+      effort: options.effort,
+      verbose: true,
+    });
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     trackChild(child);
 
@@ -116,23 +131,33 @@ export function runClaude(
 
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
-    return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model);
+    return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model, options.effort);
   }
-  invokeClaudeCodeSync(prompt, options.yolo ?? false, options.model);
+  invokeClaudeCodeSync(prompt, options.yolo ?? false, options.model, options.effort);
 }
 
-function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | undefined): void {
+function invokeClaudeCodeSync(
+  prompt: string,
+  yolo: boolean,
+  model: string | undefined,
+  effort: string | undefined,
+): void {
   const claudeBin = resolveCommand("claude");
-  const args = buildClaudeArgs(prompt, { yolo, model, verbose: false });
+  const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: false });
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "claude");
   handleExitCode(result.status, "Claude Code");
 }
 
-function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | undefined): Promise<void> {
+function invokeClaudeCodeVerbose(
+  prompt: string,
+  yolo: boolean,
+  model: string | undefined,
+  effort: string | undefined,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     const claudeBin = resolveCommand("claude");
-    const args = buildClaudeArgs(prompt, { yolo, model, verbose: true });
+    const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     const rl = createInterface({ input: child.stdout });
@@ -159,47 +184,71 @@ function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | 
   });
 }
 
+function formatAssistantEvent(event: Record<string, unknown>, turnCount: number): void {
+  const message = event["message"] as Record<string, unknown> | undefined;
+  const content = message?.["content"] as Array<Record<string, unknown>> | undefined;
+  if (!content) return;
+
+  for (const block of content) {
+    const line = formatContentBlock(block);
+    if (line !== null) {
+      process.stderr.write(`  [step ${turnCount + 1}] ${line}\n`);
+    }
+  }
+}
+
+function formatContentBlock(block: Record<string, unknown>): string | null {
+  if (block["type"] === "tool_use") {
+    const toolName = block["name"] as string;
+    const input = block["input"] as Record<string, unknown> | undefined;
+    return summarizeTool(toolName, input);
+  }
+
+  if (block["type"] === "text") {
+    const text = (block["text"] as string) ?? "";
+    if (text.length === 0) return null;
+    const preview = text.length > 120 ? text.slice(0, 120) + "..." : text;
+    return preview.split("\n")[0] ?? null;
+  }
+
+  return null;
+}
+
+function formatResultEvent(event: Record<string, unknown>): void {
+  const result = event["result"] as string | undefined;
+  const cost = event["cost_usd"] as number | undefined;
+  const duration = event["duration_ms"] as number | undefined;
+  const turns = event["num_turns"] as number | undefined;
+
+  process.stderr.write("\n--- Result ---\n");
+
+  const parts: string[] = [];
+  if (turns !== undefined) parts.push(`${turns} turns`);
+  if (duration !== undefined) parts.push(`${(duration / 1000).toFixed(1)}s`);
+  if (cost !== undefined) parts.push(`$${cost.toFixed(4)}`);
+  if (parts.length > 0) {
+    process.stderr.write(`  [info] ${parts.join(" | ")}\n`);
+  }
+
+  if (result) {
+    process.stdout.write(result + "\n");
+  }
+}
+
 function formatEvent(event: Record<string, unknown>, turnCount: number): void {
   const type = event["type"] as string | undefined;
 
   if (type === "assistant") {
-    const message = event["message"] as Record<string, unknown> | undefined;
-    const content = message?.["content"] as Array<Record<string, unknown>> | undefined;
-    if (!content) return;
-
-    for (const block of content) {
-      if (block["type"] === "tool_use") {
-        const toolName = block["name"] as string;
-        const input = block["input"] as Record<string, unknown> | undefined;
-        const summary = summarizeTool(toolName, input);
-        process.stderr.write(`  [step ${turnCount + 1}] ${summary}\n`);
-      } else if (block["type"] === "text") {
-        const text = (block["text"] as string) ?? "";
-        if (text.length > 0) {
-          const preview = text.length > 120 ? text.slice(0, 120) + "..." : text;
-          const firstLine = preview.split("\n")[0];
-          process.stderr.write(`  [step ${turnCount + 1}] ${firstLine}\n`);
-        }
-      }
-    }
+    formatAssistantEvent(event, turnCount);
   } else if (type === "result") {
-    const result = event["result"] as string | undefined;
-    const cost = event["cost_usd"] as number | undefined;
-    const duration = event["duration_ms"] as number | undefined;
-    const turns = event["num_turns"] as number | undefined;
-
-    process.stderr.write("\n--- Result ---\n");
-    if (cost !== undefined || duration !== undefined || turns !== undefined) {
-      const parts: string[] = [];
-      if (turns !== undefined) parts.push(`${turns} turns`);
-      if (duration !== undefined) parts.push(`${(duration / 1000).toFixed(1)}s`);
-      if (cost !== undefined) parts.push(`$${cost.toFixed(4)}`);
-      process.stderr.write(`  [info] ${parts.join(" | ")}\n`);
-    }
-    if (result) {
-      process.stdout.write(result + "\n");
-    }
+    formatResultEvent(event);
   }
+}
+
+// Tool inputs come from an untyped JSON stream, so a field can be any shape.
+// Only strings are meaningful here; anything else falls back to the default.
+function asText(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
 }
 
 function summarizeTool(name: string, input: Record<string, unknown> | undefined): string {
@@ -207,19 +256,19 @@ function summarizeTool(name: string, input: Record<string, unknown> | undefined)
 
   switch (name) {
     case "Read":
-      return `reading ${input["file_path"] ?? "file"}`;
+      return `reading ${asText(input["file_path"], "file")}`;
     case "Write":
-      return `writing ${input["file_path"] ?? "file"}`;
+      return `writing ${asText(input["file_path"], "file")}`;
     case "Edit":
-      return `editing ${input["file_path"] ?? "file"}`;
+      return `editing ${asText(input["file_path"], "file")}`;
     case "Bash":
-      return `running: ${truncate(String(input["command"] ?? ""), 80)}`;
+      return `running: ${truncate(asText(input["command"], ""), 80)}`;
     case "Glob":
-      return `searching files: ${input["pattern"] ?? ""}`;
+      return `searching files: ${asText(input["pattern"], "")}`;
     case "Grep":
-      return `searching content: ${truncate(String(input["pattern"] ?? ""), 60)}`;
+      return `searching content: ${truncate(asText(input["pattern"], ""), 60)}`;
     case "Agent":
-      return `spawning agent: ${input["description"] ?? name}`;
+      return `spawning agent: ${asText(input["description"], name)}`;
     default:
       return `tool: ${name}`;
   }

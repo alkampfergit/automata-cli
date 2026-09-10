@@ -11,8 +11,14 @@ function createFakeClaude() {
 
   writeFileSync(
     claudeBin,
+    // CommonJS on purpose. The stub is extensionless and lives under the OS
+    // temp dir, so its module type depends on whatever package.json happens to
+    // be above it: with no ancestor Node's syntax detection runs it as ESM, but
+    // under one declaring `"type": "commonjs"` detection is off and the stub
+    // becomes a silent no-op that exits 0 without recording anything. `require`
+    // is correct in both cases.
     `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+const { writeFileSync } = require("node:fs");
 
 const promptIndex = process.argv.indexOf("-p");
 if (promptIndex === -1 || promptIndex + 1 >= process.argv.length) {
@@ -63,6 +69,33 @@ function hasHelpEntry(output: string, commandName: string): boolean {
     .some((line) => line === commandName || line.startsWith(`${commandName} `));
 }
 
+
+/** A fake executor on PATH that records the argv it was handed. */
+function createArgvCapture(name: string) {
+  const dir = mkdtempSync(join(tmpdir(), `automata-argv-${name}-`));
+  const argvFile = join(dir, "argv.json");
+  const bin = join(dir, name);
+
+  writeFileSync(
+    bin,
+    // CommonJS for the same reason as `createFakeClaude`'s stub.
+    `#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+writeFileSync(process.env["AUTOMATA_ARGV_FILE"], JSON.stringify(process.argv.slice(2)));
+`,
+  );
+  chmodSync(bin, 0o755);
+
+  return {
+    env: {
+      ...process.env,
+      PATH: `${dir}${delimiter}${process.env["PATH"] ?? ""}`,
+      AUTOMATA_ARGV_FILE: argvFile,
+    },
+    readArgv: (): string[] => JSON.parse(readFileSync(argvFile, "utf8")) as string[],
+  };
+}
+
 describe("automata execute (CLI smoke)", () => {
   it("is listed in the top-level help", () => {
     const output = runCli(["--help"]);
@@ -81,6 +114,7 @@ describe("automata execute (CLI smoke)", () => {
     expect(output).toContain("--file-prompt");
     expect(output).toContain("--silent");
     expect(output).toContain("--model");
+    expect(output).toContain("--effort");
   });
 
   it("execute --help shows --with as required", () => {
@@ -149,5 +183,50 @@ describe("automata execute (CLI smoke)", () => {
     });
 
     expect(readFileSync(promptFile, "utf8")).toBe("prompt from file\n");
+  });
+  it("forwards --effort to claude as --effort", () => {
+    const { env, readArgv } = createArgvCapture("claude");
+
+    runCli(["execute", "--with", "claude", "--silent", "--effort", "high", "--prompt", "hi"], {
+      encoding: "utf8",
+      env,
+      input: "",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    expect(readArgv()).toContain("--effort");
+    expect(readArgv()).toContain("high");
+  });
+
+  it("forwards --effort to codex as a -c model_reasoning_effort override", () => {
+    const { env, readArgv } = createArgvCapture("codex");
+
+    runCli(["execute", "--with", "codex", "--effort", "high", "--prompt", "hi"], {
+      encoding: "utf8",
+      env,
+      input: "",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    expect(readArgv()).toContain('model_reasoning_effort="high"');
+  });
+
+  it("passes no effort argument when --effort is absent", () => {
+    const { env, readArgv } = createArgvCapture("claude");
+
+    runCli(["execute", "--with", "claude", "--silent", "--prompt", "hi"], {
+      encoding: "utf8",
+      env,
+      input: "",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    expect(readArgv()).not.toContain("--effort");
+  });
+
+  it("exits non-zero when --effort is empty", () => {
+    expectCliFailure(["execute", "--with", "claude", "--effort", "  ", "--prompt", "hi"], {
+      input: "",
+    });
   });
 });

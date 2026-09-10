@@ -15,9 +15,26 @@ export interface PromptInput {
   item: WorkItem;
   repo: { owner: string; repo: string };
   agentUser: string;
+  /** The configured base branch, used only when the item has no pull request. */
   baseBranch: string;
   /** The resolved configured prompt for this turn kind. */
   frame: string;
+}
+
+/**
+ * The branch this turn must integrate with and must not push to.
+ *
+ * A pull request's own `baseRefName` wins over the configured `doWork.baseBranch`
+ * whenever it is known. For a turn on a pull request automata opened the two
+ * agree, but an orphan pull request targets whatever its author chose — a
+ * dependency bump goes to the repository default branch, which under the shipped
+ * defaults (`baseBranch: develop`) is *not* the configured one. Naming the
+ * configured branch there tells the turn to merge `develop` into a branch whose
+ * pull request proposes it into `main`.
+ */
+export function promptBaseBranch(item: WorkItem, configuredBaseBranch: string): string {
+  const prBase = item.pr?.baseRefName ?? "";
+  return prBase.length > 0 ? prBase : configuredBaseBranch;
 }
 
 function formatThreads(threads: ReviewThread[]): string {
@@ -45,10 +62,15 @@ export function composePrompt(input: PromptInput): string {
     `Repository: ${repo.owner}/${repo.repo}`,
     `You are: ${agentUser}`,
     `Turn: ${item.turn}`,
-    `Base branch: ${baseBranch}`,
-    `Issue #${String(item.issue.number)}: ${item.issue.title}`,
-    `Issue URL: ${item.issue.url}`,
+    `Base branch: ${promptBaseBranch(item, baseBranch)}`,
   ];
+
+  // A `pr-orphan` turn has no issue, so every issue line is omitted rather than
+  // rendered empty: an "Issue #0" line, or an empty issue conversation, would
+  // read to the model as an issue it should go and look at.
+  if (item.issue) {
+    lines.push(`Issue #${String(item.issue.number)}: ${item.issue.title}`, `Issue URL: ${item.issue.url}`);
+  }
 
   if (item.pr) {
     lines.push(
@@ -67,12 +89,14 @@ export function composePrompt(input: PromptInput): string {
     lines.push("", "New since your last message — this is what you must answer:", "", formatMessages(newMessages));
   }
 
-  lines.push(
-    "",
-    "Full conversation on the issue (authorized accounts and you only, oldest first):",
-    "",
-    formatMessages(item.issueAnalysis.messages),
-  );
+  if (item.issue) {
+    lines.push(
+      "",
+      "Full conversation on the issue (authorized accounts and you only, oldest first):",
+      "",
+      formatMessages(item.issueAnalysis.messages),
+    );
+  }
 
   if (item.prAnalysis && item.prAnalysis.messages.length > 0) {
     lines.push(
