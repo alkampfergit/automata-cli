@@ -164,6 +164,29 @@ phase so the original run's record stays intact.
 
 ---
 
+## Phase 8: Review round (Copilot findings + a closed pull request settles the branch)
+
+Two Copilot findings on the second review pass, plus a decision on issue #47: *"if the pull
+request is closed, then we can assume that the branch is not needed anymore"* — which reverses
+T025's "a closed pull request counts as no pull request".
+
+- [X] T030 `src/git/repoHygiene.ts`: a candidate whose pull request is `CLOSED` without merging is
+  deleted without consulting the commit count, ranked after `MERGED` and after the `OPEN` keep.
+  Update the module header, which claimed deletion needs a confirmed zero commit count
+- [X] T031 `src/git/repoHygiene.ts`: add `push-failed` to `PruneKeptReason` and use it when
+  `pushSetUpstream` fails, instead of reporting a push failure as `lookup-failed`
+- [X] T032 `src/github/ghWorkService.ts`: replace the `/label/i` test that gated the retry without
+  `--label` with `isMissingLabelError`, an exported predicate matching only the missing-label
+  messages, so a 403 or a rate limit that mentions labels surfaces instead of being retried
+- [X] T033 Tests: the closed-pull-request branch is deleted and `countCommitsNotIn` is never
+  called; a closed plus an open pull request still keeps the branch; a failed push reports
+  `push-failed`; `isMissingLabelError` accepts the four gh phrasings and rejects the three
+  label-mentioning failures
+- [X] T034 Update `spec.md` (US3 scenario 2b, FR-009a/FR-009b, edge cases) and the prune table,
+  reasoning and "never does" list in `docs/do-work.md`
+
+---
+
 ## Dependencies
 
 ```text
@@ -173,6 +196,7 @@ Phase 1 (T001–T004) ─┬─> Phase 2 (US1, T005–T013)
 Phase 2/3/4 ────────────> Phase 5 (US4, T020–T021)
 All ────────────────────> Phase 6 (T022–T024)
 Phase 6 ────────────────> Phase 7 (converge, T025–T029)
+Phase 7 ────────────────> Phase 8 (review round, T030–T034)
 ```
 
 `[P]` tasks within a phase touch different files and can be done in any order.

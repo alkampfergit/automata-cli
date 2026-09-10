@@ -182,14 +182,18 @@ For each candidate:
 |---|---|
 | Has an `OPEN` pull request | Kept. |
 | Has a `MERGED` pull request | Deleted (`git branch -D`). The merge is proof the work landed; the commit count is not consulted. |
-| No pull request, or only ones closed without merging, **and** no commit outside the base branch | Deleted. |
-| No pull request, or only ones closed without merging, **but** commits the base branch does not have | Pushed, given a draft pull request, and **kept**. |
+| Has a pull request closed *without* merging | Deleted. Closing it is a decision that the branch is not wanted, so the commit count is not consulted either. |
+| No pull request **and** no commit outside the base branch | Deleted. |
+| No pull request **but** commits the base branch does not have | Pushed, given a draft pull request, and **kept**. |
 | Its pull requests, or its commit count, could not be read | Kept, and the tick is reported as degraded. |
+| Its commits could not be pushed | Kept, and the tick is reported as degraded. |
 | Pushed, but the draft pull request could not be opened | Kept. The commits are safe on `origin`, but the tick is reported as degraded so the missing pull request is not silently forgotten. |
 
-**A branch is deleted only on proof that its work landed** — either a merged pull request, or a confirmed zero unmerged commits from `git rev-list --count <base>..<branch>`.
+**A branch is deleted only on positive evidence that it is finished** — a merged pull request, a pull request closed unmerged, or a confirmed zero unmerged commits from `git rev-list --count <base>..<branch>`.
 
-The merged-pull-request rule comes first because this repository squash-merges: the change is in the base branch while *none* of the branch's own commits are, so reachability is highest for exactly the branches that are safest to delete. `git branch -d` is not used for the same reason — it refuses a squash-merged branch. A pull request closed *without* merging is not evidence of anything, so those branches fall through to the commit count.
+The pull-request rules come before the commit count because this repository squash-merges: the change is in the base branch while *none* of the branch's own commits are, so reachability is highest for exactly the branches that are safest to delete. `git branch -d` is not used for the same reason — it refuses a squash-merged branch.
+
+A **closed** pull request is treated the same way, on the same reasoning as a merge: somebody looked at this branch and decided it was not going in. Re-pushing it and opening a draft would re-open work that was deliberately dropped. Nothing is discarded by the deletion — GitHub keeps a pull request's head commits at `refs/pull/<number>/head` after the branch is gone, so `git fetch origin refs/pull/<number>/head` still brings them back.
 
 Every uncertainty keeps the branch: an unreachable `origin` means no branch can be shown to have no remote, so the whole step does nothing.
 
@@ -206,6 +210,7 @@ Pre-flight:
   rescue committed and pushed feature/031-update-all-npm, PR #44 already open
   base   ready
   prune  deleted feature/old-thing
+  prune  deleted spike/dead-end (PR #7 was closed unmerged)
   prune  kept fix/wip (open-pr: PR #12 is open)
   prune  rescued wip/scratch (pushed, draft PR #52)
 ```
@@ -369,7 +374,7 @@ Pick an interval comfortably shorter than how long you are willing to wait for a
 - Close an issue.
 - Push to the base branch, or commit to it.
 - Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped.
-- Delete a local branch whose work it cannot prove landed — it pushes the branch and opens a draft pull request instead. Proof is a merged pull request, or zero commits outside the base branch; a branch whose state it could not read is kept.
+- Delete a local branch whose work it cannot prove is finished — it pushes the branch and opens a draft pull request instead. Evidence is a merged pull request, a pull request closed unmerged, or zero commits outside the base branch; a branch whose state it could not read is kept.
 - Merge, rebase or reset the base branch to make a pull succeed.
 - Act on a message from an account that is not in `allowedUsers`.
 - Read a `tool:` or `model:` directive from anything but the newest message a turn is answering.

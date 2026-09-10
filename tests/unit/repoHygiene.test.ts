@@ -380,9 +380,10 @@ describe("prune", () => {
     expect(report.prunes).toEqual([{ kind: "deleted", branch: "old/thing" }]);
   });
 
-  // A pull request closed without merging is not evidence of anything, so the
-  // commit count still decides — and here it says the work is not in develop.
-  it("rescues a branch whose only pull request was closed without merging", async () => {
+  // Closing a pull request without merging is a human decision that the branch
+  // is not wanted, so it settles the branch just as a merge does. The commit
+  // count must not be consulted: it would re-open work deliberately dropped.
+  it("deletes a branch whose pull request was closed unmerged, whatever its commit count", async () => {
     localAndRemote(["develop", "abandoned/thing"], ["develop"]);
     mockListPullRequestsForHead.mockReturnValue([
       { number: 6, url: "https://gh/pr/6", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
@@ -390,8 +391,36 @@ describe("prune", () => {
     mockCountCommitsNotIn.mockReturnValue(2);
     const { runRepoHygiene } = await hygiene();
     const report = runRepoHygiene(options(), NOW);
+    expect(mockCountCommitsNotIn).not.toHaveBeenCalled();
+    expect(mockCreateDraftPullRequest).not.toHaveBeenCalled();
+    expect(mockForceDeleteLocalBranch).toHaveBeenCalledWith("abandoned/thing");
+    expect(report.prunes).toEqual([{ kind: "deleted", branch: "abandoned/thing" }]);
+    expect(report.degraded).toBe(false);
+  });
+
+  it("reports which closed pull request settled the branch", async () => {
+    localAndRemote(["develop", "abandoned/thing"], ["develop"]);
+    mockListPullRequestsForHead.mockReturnValue([
+      { number: 6, url: "https://gh/pr/6", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+    ]);
+    const lines: string[] = [];
+    const { runRepoHygiene } = await hygiene();
+    runRepoHygiene({ ...options(), log: (m) => lines.push(m) }, NOW);
+    expect(lines.join("")).toContain("deleted abandoned/thing (PR #6 was closed unmerged)");
+  });
+
+  // An open pull request still wins: a branch can carry a stale closed attempt
+  // and a live one, and the live one is the only outcome that keeps it.
+  it("keeps a branch with both a closed and an open pull request", async () => {
+    localAndRemote(["develop", "fix/second-try"], ["develop"]);
+    mockListPullRequestsForHead.mockReturnValue([
+      { number: 20, url: "https://gh/pr/20", state: "OPEN", updatedAt: "2026-09-10T00:00:00Z" },
+      { number: 6, url: "https://gh/pr/6", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+    ]);
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
     expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
-    expect(report.prunes).toMatchObject([{ kind: "rescued", branch: "abandoned/thing" }]);
+    expect(report.prunes).toMatchObject([{ kind: "kept", reason: "open-pr" }]);
   });
 
   it("keeps a branch with an open pull request, and does not count its commits", async () => {
@@ -467,6 +496,26 @@ describe("prune", () => {
     const report = runRepoHygiene(options(), NOW);
     expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
     expect(report.prunes).toMatchObject([{ kind: "kept", reason: "lookup-failed" }]);
+    expect(report.degraded).toBe(true);
+  });
+
+  it("keeps a branch whose rescue push failed, and says so as push-failed", async () => {
+    localAndRemote(["develop", "fix/wip"], ["develop"]);
+    mockListPullRequestsForHead.mockReturnValue([]);
+    mockCountCommitsNotIn.mockReturnValue(4);
+    mockPushSetUpstream.mockReturnValue(bad("error: failed to push some refs"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+    expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
+    expect(mockCreateDraftPullRequest).not.toHaveBeenCalled();
+    expect(report.prunes).toEqual([
+      {
+        kind: "kept",
+        branch: "fix/wip",
+        reason: "push-failed",
+        detail: "error: failed to push some refs",
+      },
+    ]);
     expect(report.degraded).toBe(true);
   });
 

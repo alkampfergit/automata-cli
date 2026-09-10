@@ -31,8 +31,11 @@ import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
  *
  * The one hard rule is inherited unchanged: nothing here may discard work. No
  * step stashes, resets, cleans, force-checkouts or merges, and a branch is
- * deleted only on a *confirmed* zero unmerged commits — every uncertainty
- * (unreachable remote, failed lookup, unparseable count) keeps the branch.
+ * deleted only on positive evidence that it is finished — a merged pull
+ * request, a pull request closed unmerged (whose commits GitHub keeps at
+ * `refs/pull/<n>/head`), or a *confirmed* zero unmerged commits. Every
+ * uncertainty (unreachable remote, failed lookup, unparseable count, failed
+ * push) keeps the branch.
  *
  * The git and `gh` invocations live in `gitService` and `ghWorkService`, which
  * own the process runners; this module only sequences them and decides.
@@ -71,7 +74,7 @@ export type RescueOutcome =
 
 export type BaseOutcome = { ok: true } | { ok: false; step: "checkout" | "pull"; detail: string };
 
-export type PruneKeptReason = "open-pr" | "lookup-failed" | "delete-failed";
+export type PruneKeptReason = "open-pr" | "lookup-failed" | "push-failed" | "delete-failed";
 
 export type PruneOutcome =
   | { kind: "deleted"; branch: string }
@@ -347,8 +350,21 @@ function pruneCandidate(branch: string, options: HygieneOptions): PruneOutcome {
     return deleteOrReport(branch, options, `PR #${String(merged.number)} was merged`);
   }
 
-  // No pull request, or only ones closed without merging: nothing external
-  // proves the work landed, so only the commit count can.
+  // Closing a pull request without merging is a decision a human made about
+  // this branch: the work is not wanted on the base branch. That settles the
+  // branch as finished just as a merge does, so the commit count is not
+  // consulted — it would only ever re-open work that was deliberately dropped.
+  //
+  // It does not discard anything: the head commits of a pull request stay
+  // fetchable from GitHub as `refs/pull/<number>/head` after the branch is
+  // gone, so the closed pull request is itself the durable copy.
+  const closed = prs.find((pr) => pr.state === "CLOSED") ?? null;
+  if (closed !== null) {
+    return deleteOrReport(branch, options, `PR #${String(closed.number)} was closed unmerged`);
+  }
+
+  // No pull request at all: nothing external says anything about this branch,
+  // so only the commit count can prove the work is already in the base branch.
   const unmerged = countCommitsNotIn(options.baseBranch, branch);
   if (unmerged === null) {
     const detail = `could not count commits outside ${options.baseBranch}`;
@@ -372,7 +388,7 @@ function pruneCandidate(branch: string, options: HygieneOptions): PruneOutcome {
     options.log(
       `  prune     kept ${branch}: has ${String(unmerged)} commit(s) outside ${options.baseBranch} and could not be pushed — ${pushed.stderr}\n`,
     );
-    return { kind: "kept", branch, reason: "lookup-failed", detail: pushed.stderr };
+    return { kind: "kept", branch, reason: "push-failed", detail: pushed.stderr };
   }
 
   try {

@@ -685,6 +685,29 @@ export interface DraftPullRequestInput {
 }
 
 /**
+ * Patterns `gh` uses when the *only* thing wrong with `pr create` is that the
+ * repository has not defined the label we asked for.
+ *
+ * Narrow on purpose. Testing the whole of stderr for `label` also swallowed
+ * failures that merely mention one — a 403 whose URL ends `/labels`, a rate
+ * limit hit while labelling — and retrying those without `--label` reported a
+ * label problem for something else entirely, or hid a real error behind a
+ * second identical failure. Anything not listed here is re-thrown as it is.
+ */
+const MISSING_LABEL_PATTERNS = [
+  // gh's own message: `could not add label: 'rescue' not found`.
+  /could not add label/i,
+  // The GraphQL error it wraps, seen directly on some gh versions.
+  /could not resolve to a label/i,
+  /\blabels?\b[^\n]*\b(?:not found|does not exist)\b/i,
+];
+
+/** True when stderr says the label is missing, and nothing else went wrong. */
+export function isMissingLabelError(stderr: string): boolean {
+  return MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr));
+}
+
+/**
  * Open a draft pull request for a head branch.
  *
  * Draft on purpose: these are opened unattended to stop work being lost, not
@@ -692,8 +715,8 @@ export interface DraftPullRequestInput {
  *
  * The label is cosmetic, so `--label` naming a label the repository has not
  * defined must not cost us the pull request — hence the single retry without
- * it. Creating the label instead would be a write to repository settings this
- * command was never asked to make.
+ * it, gated on {@link isMissingLabelError}. Creating the label instead would be
+ * a write to repository settings this command was never asked to make.
  */
 export function createDraftPullRequest(input: DraftPullRequestInput): { number: number; url: string } {
   const base = [
@@ -713,7 +736,7 @@ export function createDraftPullRequest(input: DraftPullRequestInput): { number: 
   if (input.label !== undefined && input.label.length > 0) {
     const labelled = run("gh", [...base, "--label", input.label]);
     if (labelled.status === 0) return parseCreatedPrUrl(labelled.stdout, input.head);
-    if (!/label/i.test(labelled.stderr)) {
+    if (!isMissingLabelError(labelled.stderr)) {
       throw new Error(
         labelled.stderr.trim() || `Failed to open a draft pull request for ${input.head}.`,
       );

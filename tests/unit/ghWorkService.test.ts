@@ -684,6 +684,29 @@ describe("listPullRequestsForHead", () => {
   });
 });
 
+describe("isMissingLabelError", () => {
+  it.each([
+    "could not add label: 'rescue' not found",
+    "Could not resolve to a Label with the name 'rescue'.",
+    "the label rescue does not exist in this repository",
+    "GraphQL: labels not found",
+  ])("recognises a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(true);
+  });
+
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+    "pull request already exists",
+    "",
+  ])("does not treat an unrelated failure as a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(false);
+  });
+});
+
 describe("createDraftPullRequest", () => {
   const input = {
     head: "rescue/develop-20260910T054512Z",
@@ -731,6 +754,20 @@ describe("createDraftPullRequest", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "pull request already exists\n", status: 1 });
     const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
     expect(() => createDraftPullRequest(input)).toThrow("pull request already exists");
+    expect(calls()).toHaveLength(1);
+  });
+
+  // Merely mentioning a label is not a missing label. Retrying these dropped
+  // `--label` for a reason that had nothing to do with it, and reported the
+  // second, identical failure in place of the real one.
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+  ])("does not retry a non-label failure that mentions labels: %s", async (stderr) => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: `${stderr}\n`, status: 1 });
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest(input)).toThrow(stderr);
     expect(calls()).toHaveLength(1);
   });
 

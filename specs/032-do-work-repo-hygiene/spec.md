@@ -93,8 +93,9 @@ absent from the base branch is pushed with a draft pull request instead of being
    a tick runs, **Then** the branch is deleted regardless of how many of its commits are
    unreachable from the base branch — a squash merge lands the change without the commits.
 2b. **Given** a local branch that does not exist on `origin` whose only pull request is `CLOSED`
-   without merging, **When** a tick runs, **Then** it is treated as having no pull request: deleted
-   only if its commits are all reachable from the base branch.
+   without merging, **When** a tick runs, **Then** the branch is deleted regardless of its commit
+   reachability — closing the pull request is a decision that the branch is not needed, and its
+   commits stay fetchable from GitHub at `refs/pull/<number>/head`.
 3. **Given** a local branch that does not exist on `origin` and has an `OPEN` pull request,
    **When** a tick runs, **Then** the branch is kept.
 4. **Given** a local branch that does not exist on `origin`, has no open pull request, but
@@ -150,8 +151,10 @@ neither happened.
 - **A squash-merged branch**: its own commits are never in the base branch, so the reachability
   count is highest for exactly the branches that are safest to delete. The `MERGED` pull request
   is checked first, and the count is not consulted at all.
-- **A branch with both a `CLOSED` and a `MERGED` pull request**: the merge wins; the branch is
-  deleted.
+- **A branch with both a `CLOSED` and a `MERGED` pull request**: both point the same way; the
+  branch is deleted, and the log names the merge.
+- **A branch with both a `CLOSED` and an `OPEN` pull request** (a second attempt after the first
+  was closed): the open pull request wins and the branch is kept.
 - **Zero actionable issues**: the pre-flight still runs in full; it is not gated on there
   being work.
 - **`--issue <n>` restricting the tick**: the pre-flight is not per-item, so it runs unchanged.
@@ -209,9 +212,12 @@ neither happened.
 - **FR-009**: A candidate with a `MERGED` pull request MUST be deleted, whatever its commit
   reachability — the merge is authoritative proof the work landed, and a squash merge puts the
   change in the base branch without any of the branch's commits.
-- **FR-009a**: A candidate with no pull request, or only ones closed without merging, MUST be
-  deleted only when it carries no commit that is unreachable from the base branch; otherwise it
-  MUST be pushed, given a draft pull request, and kept.
+- **FR-009a**: A candidate whose newest non-open pull request is `CLOSED` without merging MUST be
+  deleted, whatever its commit reachability — the close is a human decision that the branch is not
+  wanted, and GitHub keeps the pull request's head commits at `refs/pull/<number>/head`.
+- **FR-009b**: A candidate with no pull request at all MUST be deleted only when it carries no
+  commit that is unreachable from the base branch; otherwise it MUST be pushed, given a draft pull
+  request, and kept.
 - **FR-010**: Any failure inside the pre-flight (rescue, pull, pull-request lookup, deletion)
   MUST be reported and MUST NOT delete a branch, discard changes or abort the tick; the tick
   continues with its existing behaviour.
