@@ -228,7 +228,7 @@ beforeEach(() => {
   mockAcquireRunLock.mockReturnValue({ ok: true, handle: { release: mockRelease } });
   gh.getRepoSlug.mockReturnValue({ owner: "acme", repo: "widget" });
   gh.getAuthenticatedLogin.mockReturnValue("automata-bot");
-  gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main" });
+  gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main", orphans: [] });
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
   mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
@@ -386,7 +386,7 @@ describe("do-work preconditions", () => {
     gh.getAuthenticatedLogin.mockReturnValue("alice");
     await runDoWork(["--dry-run"]);
     expect(exitCode).toBeUndefined();
-    expect(stdout).toMatch(/issues need an answer/);
+    expect(stdout).toMatch(/candidates need an answer/);
     expect(gh.postMarker).not.toHaveBeenCalled();
   });
 
@@ -482,7 +482,7 @@ describe("do-work with nothing to do", () => {
   it("exits 0, posts nothing and spawns nothing when no issue matches", async () => {
     await runDoWork();
     expect(exitCode).toBeUndefined();
-    expect(stdout).toMatch(/0 of 0 issues need an answer/);
+    expect(stdout).toMatch(/0 of 0 candidates need an answer/);
     expect(gh.postMarker).not.toHaveBeenCalled();
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
     expect(mockInvokeClaude).not.toHaveBeenCalled();
@@ -697,7 +697,7 @@ describe("do-work marker reconciliation", () => {
 
   it("counts a reply inside a review thread as an answer on a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockImplementation(() =>
       gh.postMarker.mock.calls.length > 0
         ? prSurface({
@@ -724,7 +724,7 @@ describe("do-work build turn", () => {
   beforeEach(() => {
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );
@@ -971,7 +971,7 @@ describe("do-work queue handling", () => {
     gh.getOpenPrLinkMap.mockImplementation(() => {
       mapReads++;
       // Empty for the plan and #42's refresh; #43 gains a linked PR afterwards.
-      return { byIssue: mapReads >= 3 ? new Map([[43, [PR]]]) : new Map(), defaultBranch: "main" };
+      return { byIssue: mapReads >= 3 ? new Map([[43, [PR]]]) : new Map(), defaultBranch: "main", orphans: [] };
     });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
@@ -999,6 +999,7 @@ describe("do-work queue handling", () => {
             ? new Map([[42, [PR]]])
             : new Map([[42, [{ ...PR, state: "MERGED" as const }]]]),
         defaultBranch: "main",
+        orphans: [],
       };
     });
     gh.getPrSurface.mockReturnValue(
@@ -1064,7 +1065,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run prints the plan and changes nothing at all", async () => {
     await runDoWork(["--dry-run"]);
-    expect(stdout).toMatch(/1 of 1 issues need an answer/);
+    expect(stdout).toMatch(/1 of 1 candidates need an answer/);
     expect(stdout).toMatch(/#42 issue-discuss on develop/);
     expect(stdout).toMatch(/will assign to the agent/);
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
@@ -1167,7 +1168,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run reports the branch differently for a build turn", async () => {
     gh.getIssueSurface.mockReturnValue(settled(42));
-    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main" });
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
     gh.getPrSurface.mockReturnValue(
       prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
     );
@@ -1194,7 +1195,7 @@ describe("do-work output modes", () => {
     });
     await runDoWork(["--dry-run"]);
     expect(mockAcquireRunLock).not.toHaveBeenCalled();
-    expect(stdout).toMatch(/issues need an answer/);
+    expect(stdout).toMatch(/candidates need an answer/);
   });
 
   it("--dry-run honours the run cap and says how many were deferred", async () => {
@@ -1244,6 +1245,7 @@ describe("do-work output modes", () => {
     expect(payload.items).toEqual([
       {
         issue: 42,
+        pr: null,
         title: "Issue 42",
         turn: "issue-discuss",
         outcome: "answered-no-reply",
@@ -1928,5 +1930,336 @@ describe("do-work operation log", () => {
     const payload = JSON.parse(stdout) as Record<string, unknown>;
     expect(Object.keys(payload).sort()).toEqual(["dryRun", "exitCode", "items", "plan", "preflight"]);
     expect(mockRecordTick).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ── the orphan pull-request pass ───────────────────────────────────────── */
+
+const ORPHAN_PR: PullRequestRef = {
+  number: 61,
+  url: "https://gh/pr/61",
+  title: "Bump lodash",
+  headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+  baseRefName: "develop",
+  isCrossRepository: false,
+  state: "OPEN",
+  isDraft: false,
+  updatedAt: "2026-01-08T00:00:00Z",
+};
+
+/** A matching orphan candidate, as the link map reports it. */
+function orphanCandidate(overrides: Partial<PullRequestRef> = {}, labels = ["automated"]) {
+  return { pr: { ...ORPHAN_PR, ...overrides }, labels, assignees: [] as string[] };
+}
+
+function orphanSurface(overrides: Partial<PrSurface> = {}): PrSurface {
+  return {
+    pr: ORPHAN_PR,
+    messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
+    threads: [],
+    ...overrides,
+  };
+}
+
+describe("do-work orphan pull-request pass", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([]);
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface());
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+  });
+
+  it("runs one pr-orphan turn on the head branch and marks the pull request", async () => {
+    await runDoWork();
+    expect(mockPreparePrBranch).toHaveBeenCalledWith("dependabot/npm_and_yarn/lodash-4.17.21");
+    expect(mockPrepareBaseBranch).not.toHaveBeenCalled();
+    expect(gh.postMarker).toHaveBeenCalledWith("pr", 61, expect.stringContaining("working"));
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(stdout).toMatch(/PR #61 pr-orphan on dependabot/);
+  });
+
+  it("uses the orphan frame and carries no issue context", async () => {
+    await runDoWork();
+    const prompt = mockInvokeClaude.mock.calls[0][0] as string;
+    expect(prompt).toContain("Turn: pr-orphan");
+    expect(prompt).toMatch(/not linked to any issue/);
+    expect(prompt).not.toContain("Issue #");
+  });
+
+  it("neither assigns anything nor touches the issue link", async () => {
+    await runDoWork();
+    expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+    expect(gh.getIssueSurface).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no authorized account has posted", async () => {
+    // A freshly opened Dependabot pull request: the label alone is not work.
+    gh.getPrSurface.mockReturnValue(
+      orphanSurface({ messages: [message("dependabot[bot]", "2026-01-08T00:00:00Z", "pr-comment")] }),
+    );
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/PR #61 nothing to do/);
+  });
+
+  it("does not discover an orphan pull request that fails the discovery filter", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["dependencies"])],
+    });
+    await runDoWork();
+    expect(gh.getPrSurface).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("matches the label case-insensitively", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["AUTOMATED"])],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches on assignees when that is the configured technique", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      issueDiscoveryTechnique: "assignee",
+      issueDiscoveryValue: "alice",
+    });
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [{ pr: ORPHAN_PR, labels: [], assignees: ["Alice"] }],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches on the title when that is the configured technique", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      issueDiscoveryTechnique: "title-contains",
+      issueDiscoveryValue: "lodash",
+    });
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [{ pr: ORPHAN_PR, labels: [], assignees: [] }],
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a fork", { isCrossRepository: true }, /comes from a fork/],
+    ["the repository default branch as its head", { headRefName: "main" }, /protected branch \(main\)/],
+    ["the base branch as its head", { headRefName: "develop" }, /protected branch \(develop\)/],
+  ])("skips %s without invoking anything", async (_what, overrides, detail) => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate(overrides)],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface({ pr: { ...ORPHAN_PR, ...overrides } }));
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(mockPreparePrBranch).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/PR #61 nothing to do/);
+    expect(stdout).toMatch(detail);
+  });
+
+  it("skips an item that gained a closing reference before it ran", async () => {
+    // A maintainer added `Closes #42` while an earlier item was running: the
+    // issue pass owns it now, and running it here would use the wrong prompt.
+    let reads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      reads++;
+      return reads === 1
+        ? { byIssue: new Map(), defaultBranch: "main", orphans: [orphanCandidate()] }
+        : { byIssue: new Map([[42, [ORPHAN_PR]]]), defaultBranch: "main", orphans: [] };
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/no longer actionable: pull request #61 now closes #42/);
+    expect(exitCode).toBe(2);
+  });
+
+  it("skips an item that stopped being an open pull request before it ran", async () => {
+    let reads = 0;
+    gh.getOpenPrLinkMap.mockImplementation(() => {
+      reads++;
+      return reads === 1
+        ? { byIssue: new Map(), defaultBranch: "main", orphans: [orphanCandidate()] }
+        : { byIssue: new Map(), defaultBranch: "main", orphans: [] };
+    });
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/no longer an open pull request/);
+  });
+
+  it("reconciles the marker on the pull request", async () => {
+    gh.getPrSurface.mockImplementation(() =>
+      gh.postMarker.mock.calls.length > 0
+        ? orphanSurface({
+            messages: [
+              message("alice", "2026-01-08T00:00:00Z", "pr-comment"),
+              message("automata-bot", "2026-01-10T00:05:00Z", "pr-comment"),
+            ],
+          })
+        : orphanSurface(),
+    );
+    await runDoWork();
+    expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
+    expect(exitCode).toBeUndefined();
+    expect(stdout).toMatch(/PR #61 pr-orphan answered/);
+  });
+
+  it("runs after the issues and shares the run cap with them", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+    expect(stdout).toMatch(/PR #61 pr-orphan deferred — run cap of 1 reached/);
+  });
+
+  it("runs both passes when the cap allows it, issues first", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "2"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(2);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+    expect(mockInvokeClaude.mock.calls[1][0]).toContain("Turn: pr-orphan");
+  });
+
+  it("reports the item with a null issue and its pull request number in --json", async () => {
+    await runDoWork(["--json"]);
+    const payload = JSON.parse(stdout) as { plan: Record<string, unknown>[]; items: Record<string, unknown>[] };
+    expect(payload.items[0]).toMatchObject({ issue: null, pr: 61, title: "Bump lodash", turn: "pr-orphan" });
+    expect(payload.plan[0]).toMatchObject({ issue: null, pr: 61, turn: "pr-orphan" });
+  });
+
+  it("describes the item in a dry run without touching anything", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toMatch(/Pull request #61 — Bump lodash/);
+    expect(stdout).toMatch(/Turn {9}pr-orphan/);
+    expect(stdout).toMatch(/Marker {7}would post on pull request #61/);
+    expect(gh.postMarker).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("honours a tool directive in the triggering pull request message", async () => {
+    gh.getPrSurface.mockReturnValue(
+      orphanSurface({
+        messages: [
+          {
+            kind: "pr-comment",
+            author: "alice",
+            body: "rebase this tool:codex",
+            createdAt: "2026-01-08T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("uses a configured prOrphan prompt", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { prompts: { prOrphan: "CUSTOM ORPHAN FRAME" } },
+    });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][0] as string).toMatch(/^CUSTOM ORPHAN FRAME/);
+  });
+
+  it("rejects an unrecognised key under doWork.prompts", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { prompts: { prOrphaned: "x" } } });
+    await runDoWork();
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/doWork\.prompts\.prOrphaned is not a recognised setting/);
+    expect(stderr).toMatch(/prOrphan/);
+  });
+});
+
+describe("do-work --pr", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    gh.getPrSurface.mockReturnValue(orphanSurface());
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+  });
+
+  it("restricts the tick to that pull request and skips the issue pass", async () => {
+    await runDoWork(["--pr", "61"]);
+    expect(gh.listCandidateIssues).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Turn: pr-orphan");
+  });
+
+  it("processes it anyway with a note when it does not match the filter", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({}, ["dependencies"])],
+    });
+    await runDoWork(["--pr", "61"]);
+    expect(stderr).toMatch(/pull request #61 does not match the configured discovery filter/);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a pull request that closes an issue of this repository", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [ORPHAN_PR]]]),
+      defaultBranch: "main",
+      orphans: [],
+    });
+    await runDoWork(["--pr", "61"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/closes issue #42 of this repository/);
+    expect(stderr).toMatch(/--issue 42/);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("refuses a number that is not an open pull request here", async () => {
+    await runDoWork(["--pr", "999"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/#999 is not an open pull request of this repository/);
+  });
+
+  it("rejects a non-numeric value", async () => {
+    await runDoWork(["--pr", "61junk"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/--pr must be a positive integer/);
+  });
+
+  it("runs both passes restricted when --issue is given too", async () => {
+    await runDoWork(["--issue", "42", "--pr", "61"]);
+    expect(gh.listCandidateIssues).toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(2);
+  });
+
+  it("suppresses the orphan pass when only --issue is given", async () => {
+    await runDoWork(["--issue", "42"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
   });
 });

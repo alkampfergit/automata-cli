@@ -56,7 +56,20 @@ The link is GitHub's `closingIssuesReferences`, which is what a `Closes #N` / `F
 
 A linked pull request that is **merged or closed** is treated as **no pull request**. The branch has landed or been abandoned, so the model must not push to it; a discussion turn lets the humans decide what comes next.
 
-## Rule 6 — One turn per issue
+## Rule 6 — The orphan pull-request rule
+
+An **open pull request that declares no closing reference to an issue of this repository** is not reachable through Rules 4 and 5 at all — those start from an issue. It is handled by a second pass, and the rule there is Rules 1–3 with the pull request as the only surface:
+
+- it must match the same `issueDiscoveryTechnique` / `issueDiscoveryValue`, read off the pull request (its labels, its assignees, or its title);
+- an authorized account must have left a message on it that the agent has not answered.
+
+Nothing else triggers it. There is no "first sighting" turn and no re-trigger on a head-SHA change, so a bot's own pull request body and commits — the author is not in `allowedUsers` — never start a run. The label is therefore not what starts work; it only bounds how many pull-request conversations a tick fetches.
+
+A pull request closing only *another* repository's issue closes nothing here, so it is an orphan here. A pull request that gains a closing reference stops being one, and this pass hands it back to the issue pass rather than answering with the wrong prompt.
+
+The two passes are disjoint by construction: a pull request is either in the issue-keyed map or in the orphan list, never both.
+
+## Rule 7 — One turn per issue
 
 If both the issue **and** its open pull request have new messages, that is **one** build turn whose prompt carries both sets. Two turns would mean two model runs writing to the same branch.
 
@@ -74,6 +87,17 @@ If both the issue **and** its open pull request have new messages, that is **one
 | open | open PR | 0 | 0 | skip `no-new-messages` |
 | open | only merged/closed PRs | ≥ 1 | — | **`issue-discuss`** on the base branch |
 
+For a pull request that closes no issue of this repository:
+
+| PR state | Matches the discovery filter | New PR messages / actionable threads | Result |
+|---|---|---|---|
+| open | no | — | not a candidate; nothing is fetched for it |
+| open | yes | ≥ 1 | **`pr-orphan`** on the PR's head branch |
+| open | yes | 0 | skip `no-new-messages` |
+| open, fork or protected head | yes | ≥ 1 | skip `unsafe-pr-branch` |
+| merged / closed | — | — | skip `pr-closed` |
+| linked since the plan was built | — | — | skip `pr-linked` |
+
 When several open pull requests close the same issue, the most recently updated one is used and the others are named in the prompt and the work plan.
 
 ---
@@ -84,11 +108,13 @@ When several open pull requests close the same issue, the most recently updated 
 
 ```console
 $ automata do-work --dry-run
-Work plan (2 of 4 issues need an answer):
+Work plan (3 of 6 candidates need an answer):
   #42 issue-discuss on develop — 1 new issue message, no open pull request, will assign to the agent
   #43 pr-work on feature/043-x — 1 unresolved review thread on pull request #58
   #44 nothing to do — nothing new since the agent's message at 2026-09-08T11:02:00Z
   #45 nothing to do — no messages from authorized accounts
+  PR #61 pr-orphan on dependabot/npm_and_yarn/lodash-4.17.21 — 1 new pull request message on pull request #61 (no linked issue)
+  PR #62 nothing to do — no messages from authorized accounts on pull request #62
 ```
 
-After the plan, `--dry-run` prints a summary and the exact command it would launch for each item — including the fully assembled prompt — so you can see precisely what the model would receive before spending anything. `--json` gives the same information as data, including each item's `turn`, `branch`, `pr`, `needsAssignment` and `skipReason`, plus the argv and prompt under `runs`.
+After the plan, `--dry-run` prints a summary and the exact command it would launch for each item — including the fully assembled prompt — so you can see precisely what the model would receive before spending anything. `--json` gives the same information as data, including each item's `turn`, `branch`, `issue`, `pr`, `needsAssignment` and `skipReason`, plus the argv and prompt under `runs`. An orphan pull-request entry has `issue: null`.

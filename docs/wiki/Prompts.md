@@ -14,10 +14,10 @@ Each turn's prompt is built from two parts, in this order:
 │  --- Context assembled by automata ---       │  ← automata's, guaranteed
 │  Repository: acme/widget                     │
 │  You are: automata-bot                       │
-│  Turn: issue-discuss | pr-work               │
+│  Turn: issue-discuss | pr-work | pr-orphan   │
 │  Base branch: develop                        │
-│  Issue #42: <title>                          │
-│  Issue URL: …                                │
+│  [Issue #42: <title>]                        │
+│  [Issue URL: …]                              │
 │  [Pull request #57: <title>]                 │
 │  [Pull request URL: …]                       │
 │  [Branch: feature/042 (checked out, current)]│
@@ -26,7 +26,7 @@ Each turn's prompt is built from two parts, in this order:
 │  you must answer:                            │
 │    <the new messages, marked NEW>            │
 │                                              │
-│  Full conversation on the issue …            │
+│  [Full conversation on the issue …]          │
 │  [Conversation on the pull request …]        │
 │  [Unresolved review threads needing an       │
 │   answer, with file and line]                │
@@ -37,7 +37,7 @@ Each turn's prompt is built from two parts, in this order:
 └──────────────────────────────────────────────┘
 ```
 
-**automata guarantees** the context block: the identities, the branch state (the branch named is already checked out and up to date), the new messages, the filtered conversation, and the review threads. It also guarantees what is *absent* — nothing from an unauthorized account is ever included.
+**automata guarantees** the context block: the identities, the branch state (the branch named is already checked out and up to date), the new messages, the filtered conversation, and the review threads. It also guarantees what is *absent* — nothing from an unauthorized account is ever included. On a `pr-orphan` turn there is no issue, so every issue line is omitted rather than left empty.
 
 **Your frame is responsible for** everything else: what to do, what not to touch, where to reply, and which skill to use.
 
@@ -65,6 +65,12 @@ That last exception is what moves an issue from talking to building. Removing it
 - reply on the pull request, or in the review thread when the answer belongs to a specific comment;
 - always post a reply.
 
+**An orphan turn (`pr-orphan`)** — a pull request that closes no issue of this repository — should tell the model the same things as a build turn, plus:
+
+- there is no issue, so everything it needs is on the pull request;
+- what "done" means for a pull request nobody filed an issue for: usually diagnosing the failing checks and bringing the branch up to date;
+- that it must **not** merge or close the pull request, and should put a recommendation in its reply instead. `do-work` never merges or closes anything, so a frame that asks the model to would be asking for something the command does not do — but this is your frame, so a repository that wants a superseded bump closed automatically can say so here.
+
 ## Setting a prompt
 
 Inline, or as a `.md` file in `.automata/`:
@@ -72,9 +78,10 @@ Inline, or as a `.md` file in `.automata/`:
 ```bash
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
 automata config set do-work-prompt pr-work do-work-pr-work.md
+automata config set do-work-prompt pr-orphan do-work-pr-orphan.md
 ```
 
-The wizard (`automata config` → Prompts → *Do Work — Discuss* / *Do Work — PR*) pre-fills the built-in default so you can edit rather than start from scratch, and writes `.automata/do-work-issue-discuss.md` / `.automata/do-work-pr-work.md`.
+The wizard (`automata config` → Prompts → *Do Work — Discuss* / *Do Work — PR* / *Do Work — Orphan PR*) pre-fills the built-in default so you can edit rather than start from scratch, and writes `.automata/do-work-issue-discuss.md`, `.automata/do-work-pr-work.md` or `.automata/do-work-pr-orphan.md`.
 
 File references follow the usual rules: a plain filename, no subdirectories, resolved inside `.automata/`.
 

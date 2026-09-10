@@ -6,6 +6,7 @@ import type { PullRequestRef, ReviewThread } from "../../src/github/ghWorkServic
 import {
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
 } from "../../src/config/configStore.js";
 
 const P: Participants = { allowedUsers: ["alice"], agentUser: "automata-bot" };
@@ -190,5 +191,62 @@ describe("the shipped default frames", () => {
   it("name no skill, so do-work works with nothing installed", () => {
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).not.toMatch(/skill/i);
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).not.toMatch(/skill/i);
+  });
+});
+
+describe("composePrompt — an orphan pull request", () => {
+  const ORPHAN_PR: PullRequestRef = { ...PR, number: 61, title: "Bump lodash", headRefName: "dependabot/lodash" };
+
+  function orphanItem(overrides: Partial<WorkItem> = {}): WorkItem {
+    return {
+      issue: null,
+      turn: "pr-orphan",
+      pr: ORPHAN_PR,
+      branch: ORPHAN_PR.headRefName,
+      needsAssignment: false,
+      issueAnalysis: analyzeSurface([], P),
+      prAnalysis: analyzeSurface(
+        [
+          message("alice", "2026-01-08T00:00:00Z", "rebase this and check CI", "pr-comment"),
+          message("dependabot[bot]", "2026-01-07T00:00:00Z", "bot chatter", "pr-comment"),
+        ],
+        P,
+      ),
+      actionableThreads: [THREAD],
+      reason: "1 new pull request message on pull request #61 (no linked issue)",
+      ambiguousPrs: [],
+      ...overrides,
+    };
+  }
+
+  it("names the turn and the pull request", () => {
+    const prompt = compose(orphanItem(), DEFAULT_DO_WORK_PR_ORPHAN_PROMPT);
+    expect(prompt).toContain("Turn: pr-orphan");
+    expect(prompt).toContain("Pull request #61: Bump lodash");
+    expect(prompt).toContain("Branch: dependabot/lodash (checked out and up to date)");
+  });
+
+  it("omits every issue line, because there is no issue", () => {
+    const prompt = compose(orphanItem());
+    expect(prompt).not.toContain("Issue #");
+    expect(prompt).not.toContain("Issue URL:");
+    expect(prompt).not.toContain("Full conversation on the issue");
+  });
+
+  it("still carries the new pull request messages and the unresolved threads", () => {
+    const prompt = compose(orphanItem());
+    expect(prompt).toContain("New since your last message");
+    expect(prompt).toContain("rebase this and check CI");
+    expect(prompt).toContain("Unresolved review threads needing an answer:");
+    expect(prompt).toContain("rename this variable");
+  });
+
+  it("withholds messages from accounts that are neither authorized nor the agent", () => {
+    expect(compose(orphanItem())).not.toContain("bot chatter");
+  });
+
+  it("places the orphan frame first and verbatim", () => {
+    const prompt = compose(orphanItem(), DEFAULT_DO_WORK_PR_ORPHAN_PROMPT);
+    expect(prompt.startsWith(DEFAULT_DO_WORK_PR_ORPHAN_PROMPT)).toBe(true);
   });
 });

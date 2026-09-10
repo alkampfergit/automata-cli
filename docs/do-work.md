@@ -2,7 +2,7 @@
 
 Run one tick of the autonomous loop over the repository in the current directory.
 
-A tick finds the open issues whose newest message from an **authorized account** the agent has not answered — on the issue or on its pull request — and answers them, one model run each. It is designed to be run from cron in a disposable VM or container.
+A tick finds the open issues whose newest message from an **authorized account** the agent has not answered — on the issue or on its pull request — and answers them, one model run each. A second pass then does the same for the open pull requests that close **no** issue of this repository, so a dependency bump can be rebased, diagnosed or reported on without an issue existing for it. It is designed to be run from cron in a disposable VM or container.
 
 For the process itself — the trust model, how an issue travels from a description to a merged pull request, how to set the harness up and operate it — read the [wiki](wiki/Home.md). This page is the command reference.
 
@@ -12,6 +12,7 @@ For the process itself — the trust model, how an issue travels from a descript
 automata do-work                    # one tick
 automata do-work --dry-run          # show the work plan, change nothing
 automata do-work --issue 42         # restrict the tick to one issue
+automata do-work --pr 61            # restrict the tick to one orphan pull request
 automata do-work --json             # machine-readable plan and outcomes
 ```
 
@@ -24,9 +25,10 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--with <executor>` | Executor to use: `claude` or `codex`. Default: `doWork.executor`, else `claude`. |
 | `--model <string>` | Model identifier passed to the executor, overriding the configured default for it. Default: `doWork.models.<executor>`, else the executor's own default. |
 | `--effort <level>` | Reasoning effort passed to the executor, overriding the configured default for it. Default: `doWork.effort.<executor>`, else the executor's own default. |
-| `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
-| `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
-| `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
+| `--issue <number>` | Process only this issue, and skip the orphan-pull-request pass. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
+| `--pr <number>` | Process only this pull request, and skip the issue pass. It must be an open pull request that closes no issue of this repository, otherwise the tick exits 1. A warning is printed if it does not match the discovery filter. Given together with `--issue`, both passes run, each restricted to what was named. |
+| `--limit <n>` | Maximum **issues** to fetch (default: `10`). A note is printed when the result was truncated. It does not bound the orphan pass, whose candidates come out of the pull-request query that is always read in full. |
+| `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. The issue items and the orphan pull-request items share this one budget, and the issues are offered it first. Default: `doWork.maxRunsPerTick`. |
 | `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
@@ -115,7 +117,7 @@ The refusal happens *after* the marker is posted, which is what advances the ans
 |---|---|---|
 | `remoteType` | `automata config set type gh` | Must be `gh`. Azure DevOps is unsupported — see [docs/azdo-gap.md](azdo-gap.md). |
 | `issueDiscoveryTechnique` | `automata config set issue-discovery-technique label` | How to find candidate issues. |
-| `issueDiscoveryValue` | `automata config set issue-discovery-value automated` | The label name, assignee, or title fragment. |
+| `issueDiscoveryValue` | `automata config set issue-discovery-value automated` | The label name, assignee, or title fragment. The same technique and value select the orphan pull requests, read off the pull request instead of the issue. |
 | `allowedUsers` | `automata config set allowed-users alice,bob` | The only accounts whose messages can trigger a turn or reach a prompt. |
 | `agentUser` | `automata config set agent-user automata-bot` | The login the agent posts as. Defines the answer boundary. |
 
@@ -136,16 +138,18 @@ Everything under `doWork` is optional and has a working default — see [docs/co
 
 One tick, in order:
 
-1. **Validate** the configuration, resolve both turn prompts, and check that `gh` is not authenticated as an account that may instruct the agent. Any problem exits 1 before anything happens.
+1. **Validate** the configuration, resolve all three turn prompts, and check that `gh` is not authenticated as an account that may instruct the agent. Any problem exits 1 before anything happens.
 2. **Take the run lock** (`.automata/automata.lock`). If another automata instance holds it, print a message and exit 0 without touching GitHub.
 3. **Run the repository-hygiene pre-flight** — rescue uncommitted changes, check out and fast-forward the base branch, prune dead local branches. See [the pre-flight](#the-repository-hygiene-pre-flight) below. It runs on every tick, including one with nothing to do.
 4. **Discover** candidate issues with one `gh issue list`, then resolve every open pull request's closing references with a paginated GraphQL query. Every page is read, and if the map cannot be read completely the tick **fails** rather than continuing: callers treat absence from it as proof that an issue has no pull request, so a partial map is a wrong answer, not a degraded one. Review threads are paginated for the same reason — feedback past thread 100 would otherwise be invisible to both detection and the prompt.
-5. **Decide** a turn per issue (see below) and print the work plan. `--dry-run` stops here.
+
+   The same query yields the **orphan** candidates — the open pull requests that close no issue of this repository — together with their labels and assignees, so the second pass costs no additional API call.
+5. **Decide** a turn per issue, then a turn per matching orphan pull request (see below), and print the work plan with the issues first. `--dry-run` stops here.
 6. **Process** each work item sequentially:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
-   3. assign the issue to the agent, if it is not already assigned;
-   4. post a `working…` marker comment. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
+   3. assign the issue to the agent, if it is not already assigned — a `pr-orphan` turn assigns nothing, since there is no issue and the discovery filter may itself be `assignee`;
+   4. post a `working…` marker comment — on the pull request for a `pr-work` or `pr-orphan` turn, on the issue for a discussion turn. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
    5. invoke the executor;
    6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
    7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
@@ -261,6 +265,8 @@ When the choice came from a message the `Executor` line says so, and an item a r
   Command      none; a real tick would post the working marker and then replace it with this refusal
 ```
 
+Every `--json` entry — in `plan`, `items` and `runs` — carries both `issue` and `pr`, either of which may be `null`: `issue` is `null` on a `pr-orphan` entry, and `pr` is `null` on an `issue-discuss` entry with no pull request.
+
 `--dry-run --json` carries the same information as `executor`, `model`, `effort`, `executorSource`, `modelSource`, `effortSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first six on each entry of `items`. `effortSource` is never `message` — no directive names a level — but it does change to the new executor's `config` when a `tool:` directive switches executor.
 
 ## Turn kinds
@@ -269,10 +275,59 @@ When the choice came from a message the `Executor` line says so, and an item a r
 |---|---|---|
 | `issue-discuss` | The issue has **no** linked open pull request | Do not touch the code — reply on the issue with specification, plan or questions. Unless a new message explicitly asks for implementation, in which case create a branch, implement, and open a pull request whose body contains `Closes #N`. |
 | `pr-work` | The issue **has** a linked open pull request | Work on that pull request's head branch, which is already checked out. Address the new messages and unresolved review threads, commit and push, and reply on the pull request. Never merge it, never push to the base branch. |
+| `pr-orphan` | An open pull request closes **no** issue of this repository | Same branch handling as `pr-work`, with no issue in the prompt. Find out why the checks are failing, bring the branch up to date, fix what the change needs, and reply with a recommendation. Never merge it, never close it, never push to the base branch. |
 
 The pull-request link is GitHub's own closing reference, so opening a pull request that closes the issue is what moves an issue from discussion into implementation. No intent classification and no extra model call is involved.
 
 Because that link is the state machine, `do-work` repairs it after a discussion turn: if the branch now has a pull request without a closing reference to the issue, one is added. Repair applies **only** to a branch the turn moved onto. If the model merely replied, the tick is still on the base branch — where the "current branch's pull request" would be the base branch's own (a release pull request into `main`, say), and appending a closing reference to that would make an unrelated merge close the issue.
+
+---
+
+## The orphan pull-request pass
+
+An open pull request that declares no closing reference to an issue of this repository — a Dependabot bump, or anything opened without an issue — is invisible to the issue pass, because that pass starts from issues. The orphan pass covers exactly those.
+
+It runs **after** the issue pass and shares its run budget, so a pile of dependency bumps cannot starve the issues.
+
+**Selection** uses the same `issueDiscoveryTechnique` / `issueDiscoveryValue` as the issue pass, read off the pull request: `label` against its labels, `assignee` against its assignees, `title-contains` against its title. There is no separate configuration key, and no change is needed in `.github/dependabot.yml`.
+
+**The trigger is the ordinary one**, and nothing else: a `pr-orphan` turn happens only when the newest message from an account in `allowedUsers` — a conversation comment, a non-empty review body, or a comment in an unresolved review thread — has no later message from `agentUser` on that pull request.
+
+So in particular:
+
+- A freshly opened Dependabot pull request never starts a run on its own. Its author is `dependabot[bot]`, which is not (and should not be) in `allowedUsers`, so its body, its comments and its commits are all invisible. **A human has to ask for something.**
+- There is no "first touch" turn, and there is no re-trigger when the head SHA changes. If a force-push makes an earlier verdict stale, comment again — that comment is the trigger.
+- Because a human has to comment anyway, the label is not what *starts* the work. It only bounds how many pull-request conversations a tick fetches, so it can be added in the same action as the comment.
+
+**Differences from a `pr-work` turn**, all of them consequences of there being no issue:
+
+- Nothing is assigned. The `working…` marker on the pull request is the claim.
+- No pickup note is posted anywhere, and no closing reference is added to anything.
+- The prompt carries no issue identity and no issue conversation.
+- `--json` reports `issue: null` for the item, with the pull request in `pr`.
+
+**Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an oversized prompt or an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
+
+Two extra skips exist for the moment between the plan and the run — the item is re-decided just before it runs, as issue items already are:
+
+| Skip reason | Meaning |
+|---|---|
+| `pr-linked` | It gained a closing reference to an issue of this repository (someone added `Closes #N`). The issue pass owns it now, so this tick leaves it alone rather than answering with the wrong prompt. |
+| `pr-closed` | It was merged or closed. Its branch has landed or gone. |
+
+### Targeting one pull request
+
+```bash
+automata do-work --pr 61              # only this one; no issue pass
+automata do-work --pr 61 --dry-run    # show the command it would launch
+automata do-work --issue 42 --pr 61   # both passes, each restricted
+```
+
+`--pr` is resolved out of the pull-request map the tick already reads in full, so it costs nothing extra and it can be precise about failure:
+
+- the number closes an issue of this repository → exit 1, naming that issue and pointing at `--issue`;
+- the number is not an open pull request here → exit 1;
+- it is an orphan but does not match the discovery filter → a note on stderr, and it is processed anyway.
 
 ---
 
@@ -288,6 +343,7 @@ Because that link is the state machine, `do-work` repairs it after a discussion 
 - A review comment's timestamp is taken from when its review was **submitted**, not when it was drafted. GitHub stamps a pending review's comments as they are written, so a reviewer working through a diff for twenty minutes produces comments dated before an answer the agent posted in the meantime — and using the draft time would mark that whole review answered and discard it.
 - A merged or closed pull request is treated as no pull request, so the turn becomes a discussion.
 - New messages on **both** the issue and its pull request produce exactly one build turn, with both sets of messages in the prompt.
+- On an **orphan** pull request the same rules apply, with the pull request as the only surface. It has no issue, so nothing about it can be new on an issue.
 
 The full decision table is in [wiki/Detection-Rules.md](wiki/Detection-Rules.md).
 
@@ -347,7 +403,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 
 Exit 2 means degraded, not broken. An item was:
 
-- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable, or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path only when the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed;
+- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path only when the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed;
 - `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
@@ -466,11 +522,13 @@ You do not have to redirect anywhere to keep a record: [the operation log](#the-
 ## What `do-work` never does
 
 - Merge a pull request.
-- Close an issue.
+- Close an issue, or close a pull request.
 - Push to the base branch, or commit to it.
 - Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped.
 - Delete a local branch whose work it cannot prove is finished — it pushes the branch and opens a draft pull request instead. Evidence is a merged pull request, a pull request closed unmerged, or zero commits outside the base branch; a branch whose state it could not read is kept.
 - Merge, rebase or reset the base branch to make a pull succeed.
-- Act on a message from an account that is not in `allowedUsers`.
+- Act on a message from an account that is not in `allowedUsers` — including the pull request body and commits of a bot such as Dependabot.
+- Assign anything on an orphan pull-request turn.
+- Start a turn on an orphan pull request that nobody has asked about.
 - Read a `tool:` or `model:` directive from anything but the newest message a turn is answering.
 - Retry a failed run on its own.

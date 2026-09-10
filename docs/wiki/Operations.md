@@ -55,22 +55,24 @@ Because a healthy idle loop stays at 0, cron mail stays meaningful: anything you
 
 ```console
 $ automata do-work
-Work plan (2 of 5 issues need an answer):
+Work plan (3 of 6 candidates need an answer):
   #42 issue-discuss on develop — 1 new issue message, no open pull request, will assign to the agent
   #43 pr-work on feature/043-x — 2 unresolved review threads on pull request #58
   #44 nothing to do — nothing new since the agent's message at 2026-09-08T11:02:00Z
+  PR #61 pr-orphan on dependabot/npm_and_yarn/lodash-4.17.21 — 1 new pull request message on pull request #61 (no linked issue)
   ...
 
 Tick summary:
   #42 issue-discuss answered — answered
   #43 pr-work answered-no-reply — run finished but posted no answer
+  PR #61 pr-orphan answered — answered
 ```
 
 The plan goes to stdout and the progress to stderr, so `--json` can be piped while you still watch the run.
 
 ## Capping the spend
 
-`--max-runs <n>`, or `doWork.maxRunsPerTick`, bounds the model runs per tick. Items beyond the cap are reported as `deferred` and picked up next tick. Worth setting while you are still building trust: a label applied to twenty stale issues is otherwise twenty model runs.
+`--max-runs <n>`, or `doWork.maxRunsPerTick`, bounds the model runs per tick. The issue items and the orphan pull-request items share that one budget, and the issues are offered it first — so a batch of dependency bumps cannot starve the issues. Items beyond the cap are reported as `deferred` and picked up next tick. Worth setting while you are still building trust: a label applied to twenty stale issues is otherwise twenty model runs.
 
 ## What the harness never does
 

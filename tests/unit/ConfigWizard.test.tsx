@@ -13,6 +13,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -42,6 +43,7 @@ const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the exe
 const DO_WORK_CODEX_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Codex";
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
+const DO_WORK_PR_ORPHAN_SCREEN_TEXT = "Instructions for a pull request with no linked issue:";
 
 // ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
 // tell it apart from the start of a longer escape sequence, so advancing only
@@ -725,6 +727,30 @@ describe("ConfigWizard — Do Work prompts", () => {
     await tick();
     expect(lastFrame()).toContain("Do Work — Discuss");
     expect(lastFrame()).toContain(PROMPTS_MENU_HINT);
+  });
+
+  it("reaches the orphan pull request prompt screen prefilled with the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 5);
+    expect(lastFrame()).toContain(DO_WORK_PR_ORPHAN_SCREEN_TEXT);
+    expect(lastFrame()).toContain("default do-work orphan pr prompt");
+  });
+
+  it("writes the orphan pull request prompt file and stores the filename", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 5);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("do-work-pr-orphan.md"),
+      "default do-work orphan pr prompt",
+      "utf8",
+    );
+    expect(writeConfig).toHaveBeenCalledWith({
+      doWork: { prompts: { prOrphan: "do-work-pr-orphan.md" } },
+    });
   });
 
   it("leaves the existing prompt entries reachable at their original positions", async () => {

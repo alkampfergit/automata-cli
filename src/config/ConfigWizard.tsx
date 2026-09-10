@@ -12,6 +12,7 @@ import {
   DEFAULT_DO_WORK,
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
@@ -50,6 +51,7 @@ const PROMPTS_MENU_OPTIONS = [
   "Check-Issue",
   "Do Work — Discuss",
   "Do Work — PR",
+  "Do Work — Orphan PR",
 ] as const;
 
 function parseAllowedUsers(value: string): string[] {
@@ -81,7 +83,8 @@ type Screen =
   | "do-work-max-runs"
   | "do-work-lock-stale"
   | "do-work-discuss-prompt"
-  | "do-work-pr-prompt";
+  | "do-work-pr-prompt"
+  | "do-work-pr-orphan-prompt";
 
 /** The subset of ink's key object this wizard reacts to. */
 interface InkKey {
@@ -223,6 +226,7 @@ const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Scr
   "Check-Issue": "check-issue-prompt",
   "Do Work — Discuss": "do-work-discuss-prompt",
   "Do Work — PR": "do-work-pr-prompt",
+  "Do Work — Orphan PR": "do-work-pr-orphan-prompt",
 };
 
 export function ConfigWizard() {
@@ -269,6 +273,9 @@ export function ConfigWizard() {
   );
   const [doWorkPrPrompt, setDoWorkPrPrompt] = useState(
     existing.doWork?.prompts?.prWork ?? DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  );
+  const [doWorkPrOrphanPrompt, setDoWorkPrOrphanPrompt] = useState(
+    existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   );
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
@@ -476,6 +483,17 @@ export function ConfigWizard() {
       },
       onBack: () => setScreen("prompts-menu"),
     },
+    "do-work-pr-orphan-prompt": {
+      setValue: setDoWorkPrOrphanPrompt,
+      onSubmit: () => {
+        savePrompt("do-work-pr-orphan.md", doWorkPrOrphanPrompt, (value, current) => ({
+          ...current,
+          doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, prOrphan: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
   };
 
   /** The arrow-navigated screens, described the same way as the text ones. */
@@ -650,6 +668,12 @@ export function ConfigWizard() {
       title: "Prompts — Do Work — PR",
       label: "Pull request turn instructions:",
       value: doWorkPrPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "do-work-pr-orphan-prompt": {
+      title: "Prompts — Do Work — Orphan PR",
+      label: "Instructions for a pull request with no linked issue:",
+      value: doWorkPrOrphanPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
     },
   };

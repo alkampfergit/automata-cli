@@ -13,7 +13,7 @@ import {
 const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
 const VALID_TECHNIQUES: IssueDiscoveryTechnique[] = ["label", "assignee", "title-contains"];
 const VALID_EXECUTORS: Executor[] = ["claude", "codex"];
-const VALID_TURN_KINDS: TurnKind[] = ["issue-discuss", "pr-work"];
+const VALID_TURN_KINDS: TurnKind[] = ["issue-discuss", "pr-work", "pr-orphan"];
 
 /** Merge one field into the `doWork` section, leaving the rest of the config alone. */
 function writeDoWork(patch: Partial<AutomataDoWorkConfig>): void {
@@ -240,10 +240,18 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     }
     const current = readRawConfig();
     const prompts = { ...current.doWork?.prompts };
-    if ((turnKind as TurnKind) === "issue-discuss") {
-      prompts.issueDiscuss = prompt;
-    } else {
-      prompts.prWork = prompt;
+    // An exhaustive switch rather than an if/else: a fourth turn kind added to
+    // `TurnKind` must not fall through into whichever branch happened to be last.
+    switch (turnKind as TurnKind) {
+      case "issue-discuss":
+        prompts.issueDiscuss = prompt;
+        break;
+      case "pr-work":
+        prompts.prWork = prompt;
+        break;
+      case "pr-orphan":
+        prompts.prOrphan = prompt;
+        break;
     }
     writeDoWork({ prompts });
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);

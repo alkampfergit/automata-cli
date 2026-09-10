@@ -4,6 +4,7 @@ import {
   DEFAULT_DO_WORK,
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
+  DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   type AutomataConfig,
   type DoWorkEffort,
   type DoWorkModels,
@@ -25,9 +26,11 @@ import {
   type MarkerRef,
   type IssueSurface,
   type OpenPrLinkMap,
+  type OrphanPr,
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
 import {
+  decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
   type Decision,
@@ -75,6 +78,7 @@ interface DoWorkOptions {
   model?: string;
   effort?: string;
   issue?: string;
+  pr?: string;
   limit: string;
   maxRuns?: string;
   dryRun?: boolean;
@@ -104,10 +108,14 @@ interface Settings {
   technique: NonNullable<AutomataConfig["issueDiscoveryTechnique"]>;
   discoveryValue: string;
   onlyIssue: number | undefined;
+  onlyPr: number | undefined;
 }
 
 interface ItemReport {
-  issue: number;
+  /** Null for a `pr-orphan` item: there is no issue. */
+  issue: number | null;
+  /** The pull request the item is about, or null for a discussion turn. */
+  pr: number | null;
   title: string;
   turn: TurnKind | null;
   outcome: Outcome;
@@ -116,6 +124,27 @@ interface ItemReport {
   ranExecutor?: boolean;
   /** Present once the item got far enough for the executor and model to be resolved. */
   execution?: ResolvedExecution;
+}
+
+/**
+ * How an item or a skip is named in the plan, the progress lines and the summary.
+ *
+ * A `pr-orphan` item has no issue, and a bare `#61` would be indistinguishable
+ * from issue 61 in a log an operator reads out of cron mail.
+ */
+function subjectLabel(issue: { number: number } | null, pr: { number: number } | null): string {
+  if (issue !== null) return `#${String(issue.number)}`;
+  // Every decision carries one or the other; the last branch keeps this total.
+  return pr === null ? "#?" : `PR #${String(pr.number)}`;
+}
+
+function itemLabel(item: WorkItem): string {
+  return subjectLabel(item.issue, item.pr);
+}
+
+/** The item's own title: the issue's, or the pull request's when there is none. */
+function itemTitle(item: WorkItem): string {
+  return item.issue?.title ?? item.pr?.title ?? "";
 }
 
 /** stdout carries the plan and the summary; stderr carries progress and warnings. */
@@ -243,10 +272,12 @@ function resolveSettings(options: DoWorkOptions): Settings {
     prompts: {
       "issue-discuss": doWork.prompts?.issueDiscuss ?? DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
       "pr-work": doWork.prompts?.prWork ?? DEFAULT_DO_WORK_PR_WORK_PROMPT,
+      "pr-orphan": doWork.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
     },
     technique: config.issueDiscoveryTechnique,
     discoveryValue: config.issueDiscoveryValue,
     onlyIssue: options.issue === undefined ? undefined : parsePositiveInt(options.issue, "--issue"),
+    onlyPr: options.pr === undefined ? undefined : parsePositiveInt(options.pr, "--pr"),
   };
 }
 
@@ -384,17 +415,14 @@ function describePlannedRun(
   execution: ResolvedExecution,
 ): string {
   const rule = "─".repeat(72);
-  const branchAction = item.turn === "pr-work" ? " and fast-forward" : " and pull";
+  const branchAction = item.turn === "issue-discuss" ? " and pull" : " and fast-forward";
   const assignment = item.needsAssignment
     ? `would assign to ${settings.participants.agentUser}`
     : "already assigned";
-  const markerTarget =
-    item.turn === "pr-work" && item.pr
-      ? `pull request #${String(item.pr.number)}`
-      : `issue #${String(item.issue.number)}`;
+  const markerTarget = markerSurfaceLabel(item);
   const lines = [
     rule,
-    `Issue #${String(item.issue.number)} — ${item.issue.title}`,
+    describeSubject(item),
     rule,
     `  Turn         ${item.turn}`,
     `  Why          ${item.reason}`,
@@ -418,13 +446,20 @@ function describePlannedRun(
   return lines.join("\n") + "\n";
 }
 
+/** The heading of an item's dry-run block: the issue, or the pull request when there is none. */
+function describeSubject(item: WorkItem): string {
+  return item.issue !== null
+    ? `Issue #${String(item.issue.number)} — ${item.issue.title}`
+    : `Pull request #${String(item.pr?.number ?? 0)} — ${itemTitle(item)}`;
+}
+
 /** The dry-run header for an item a real tick would refuse without invoking anything. */
 function describeRefusedRun(item: WorkItem, refusal: string): string {
   const rule = "─".repeat(72);
   return (
     [
       rule,
-      `Issue #${String(item.issue.number)} — ${item.issue.title}`,
+      describeSubject(item),
       rule,
       `  Turn         ${item.turn}`,
       `  Why          ${item.reason}`,
@@ -492,7 +527,7 @@ function validateDoWorkConfig(section: unknown): void {
   validateProtectedBranches(section["protectedBranches"]);
   validateSettingContainer(section["models"], "models", ["claude", "codex"]);
   validateSettingContainer(section["effort"], "effort", ["claude", "codex"]);
-  validateSettingContainer(section["prompts"], "prompts", ["issueDiscuss", "prWork"]);
+  validateSettingContainer(section["prompts"], "prompts", ["issueDiscuss", "prWork", "prOrphan"]);
 }
 
 function validateProtectedBranches(value: unknown): void {
@@ -518,7 +553,24 @@ function validateSettingContainer(value: unknown, container: string, keys: strin
   }
 }
 
+/**
+ * Does the issue pass run at all?
+ *
+ * `--pr N` on its own means "this pull request", so listing issues as well would
+ * contradict the option. Given both `--issue` and `--pr`, both passes run, each
+ * restricted to what was named.
+ */
+function issuePassEnabled(settings: Settings): boolean {
+  return settings.onlyPr === undefined || settings.onlyIssue !== undefined;
+}
+
+/** The mirror of the above: `--issue N` on its own means "this issue". */
+function orphanPassEnabled(settings: Settings): boolean {
+  return settings.onlyIssue === undefined || settings.onlyPr !== undefined;
+}
+
 function discoverIssues(settings: Settings): GitHubIssue[] {
+  if (!issuePassEnabled(settings)) return [];
   const candidates = listCandidateIssues(settings.technique, settings.discoveryValue, settings.limit);
 
   if (settings.onlyIssue === undefined) {
@@ -558,6 +610,69 @@ function issueMatchesFilter(surface: IssueSurface, settings: Settings): boolean 
   }
 }
 
+/**
+ * Does this pull request satisfy the configured discovery filter?
+ *
+ * The same technique and value as the issue pass, read off the pull request:
+ * no second configuration key exists, because a human has to comment before an
+ * orphan pull request becomes work anyway — so the filter only bounds how many
+ * pull-request conversations a tick fetches.
+ */
+function prMatchesFilter(candidate: OrphanPr, settings: Settings): boolean {
+  const value = settings.discoveryValue.toLowerCase();
+  switch (settings.technique) {
+    case "label":
+      return candidate.labels.some((label) => label.toLowerCase() === value);
+    case "assignee":
+      return candidate.assignees.some((assignee) => assignee.toLowerCase() === value);
+    case "title-contains":
+      return candidate.pr.title.toLowerCase().includes(value);
+  }
+}
+
+/**
+ * The open pull requests of this repository that close no issue of it and match
+ * the discovery filter.
+ *
+ * Costs no API call of its own: the candidates come out of the link map the tick
+ * already pages through exhaustively. That exhaustiveness is also what makes
+ * `--pr` answerable from the map alone — a number missing from it is not an open
+ * pull request here, and one present but not orphaned belongs to the issue pass.
+ */
+function discoverOrphanPrs(settings: Settings, linkMap: OpenPrLinkMap): OrphanPr[] {
+  if (!orphanPassEnabled(settings)) return [];
+
+  if (settings.onlyPr === undefined) {
+    return linkMap.orphans.filter((candidate) => prMatchesFilter(candidate, settings));
+  }
+
+  const target = settings.onlyPr;
+  const match = linkMap.orphans.find((candidate) => candidate.pr.number === target);
+  if (match === undefined) {
+    const closes = [...linkMap.byIssue.entries()]
+      .filter(([, prs]) => prs.some((pr) => pr.number === target))
+      .map(([issueNumber]) => issueNumber);
+    if (closes.length > 0) {
+      fail(
+        `Pull request #${String(target)} closes issue #${String(closes[0])} of this repository, so it is not ` +
+          `orphaned and the issue pass owns it. Use \`--issue ${String(closes[0])}\` instead.`,
+      );
+    }
+    fail(
+      `#${String(target)} is not an open pull request of this repository. ` +
+        "The orphan pass only ever works on open pull requests; use `--issue` for an issue.",
+    );
+  }
+
+  if (!prMatchesFilter(match, settings)) {
+    progress(
+      `Note: pull request #${String(target)} does not match the configured discovery filter ` +
+        `(${settings.technique} = ${settings.discoveryValue}); processing it anyway because --pr was given.\n`,
+    );
+  }
+  return [match];
+}
+
 function buildIssueState(issue: GitHubIssue, linkMap: OpenPrLinkMap): IssueState {
   const issueSurface = getIssueSurface(issue.number);
   const linkedPrs = linkMap.byIssue.get(issue.number) ?? [];
@@ -572,13 +687,13 @@ function buildIssueState(issue: GitHubIssue, linkMap: OpenPrLinkMap): IssueState
 function describePlan(decisions: Decision[]): string {
   const lines = decisions.map((decision) => {
     if (decision.kind === "skip") {
-      return `  #${String(decision.issue.number)} nothing to do — ${decision.detail}`;
+      return `  ${subjectLabel(decision.issue, decision.pr)} nothing to do — ${decision.detail}`;
     }
     const item = decision.item;
     const claim = item.needsAssignment ? ", will assign to the agent" : "";
-    return `  #${String(item.issue.number)} ${item.turn} on ${item.branch} — ${item.reason}${claim}`;
+    return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${claim}`;
   });
-  return lines.length === 0 ? "  (no issues matched the discovery filter)\n" : lines.join("\n") + "\n";
+  return lines.length === 0 ? "  (nothing matched the discovery filter)\n" : lines.join("\n") + "\n";
 }
 
 /**
@@ -588,7 +703,7 @@ function describePlan(decisions: Decision[]): string {
  * to run the loop, so a failure warns rather than stopping the turn.
  */
 function claimIssue(item: WorkItem, settings: Settings): void {
-  if (!item.needsAssignment) return;
+  if (!item.needsAssignment || item.issue === null) return;
   try {
     assignIssueToAgent(item.issue.number, settings.participants.agentUser);
     progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
@@ -607,7 +722,9 @@ function claimIssue(item: WorkItem, settings: Settings): void {
  * neither boundary moves.
  */
 function notePickupOnIssue(item: WorkItem, marker: MarkerRef): MarkerRef | null | false {
-  if (item.turn !== "pr-work" || item.pr === null || !item.issueAnalysis.hasNewMessage) return null;
+  // `pr-orphan` is excluded by the turn check: it has no issue to note on.
+  if (item.turn !== "pr-work" || item.pr === null || item.issue === null) return null;
+  if (!item.issueAnalysis.hasNewMessage) return null;
   try {
     return postMarker(
       "issue",
@@ -639,6 +756,7 @@ function reportIssueMessagesBuriedByNote(
   note: MarkerRef,
   participants: Participants,
 ): number {
+  if (item.issue === null) return 0;
   const watermark = promptWatermark([item.issueAnalysis.messages]);
   let buried: RawMessage[];
   try {
@@ -677,33 +795,79 @@ function refreshItem(item: WorkItem, settings: Settings): Decision {
   // none and we would run a discussion turn on the base branch — starting a
   // competing implementation against the branch that already exists.
   const linkMap = getOpenPrLinkMap();
-  return decideWork(buildIssueState(item.issue, linkMap), settings.participants, {
+  const policy = {
     baseBranch: settings.baseBranch,
     defaultBranch: linkMap.defaultBranch,
     protectedBranches: settings.protectedBranches,
-  });
+  };
+
+  if (item.issue === null) return refreshOrphanItem(item, linkMap, settings, policy);
+
+  return decideWork(buildIssueState(item.issue, linkMap), settings.participants, policy);
+}
+
+/**
+ * Re-decide an orphan pull-request item against the current state of GitHub.
+ *
+ * The same re-fetched link map answers one more question here: did the pull
+ * request gain a closing reference while an earlier item ran? If it did, the
+ * issue pass owns it now — running it with the orphan prompt would answer with
+ * the wrong instructions — so it is skipped and the next tick picks it up on the
+ * correct path.
+ */
+function refreshOrphanItem(
+  item: WorkItem,
+  linkMap: OpenPrLinkMap,
+  settings: Settings,
+  policy: { baseBranch: string; defaultBranch: string | null; protectedBranches: string[] },
+): Decision {
+  const number = item.pr?.number ?? 0;
+  const stillOrphan = linkMap.orphans.some((candidate) => candidate.pr.number === number);
+  if (!stillOrphan) {
+    const linkedTo = [...linkMap.byIssue.entries()]
+      .filter(([, prs]) => prs.some((pr) => pr.number === number))
+      .map(([issueNumber]) => `#${String(issueNumber)}`);
+    return {
+      kind: "skip",
+      issue: null,
+      pr: item.pr,
+      reason: linkedTo.length > 0 ? "pr-linked" : "pr-closed",
+      detail:
+        linkedTo.length > 0
+          ? `pull request #${String(number)} now closes ${linkedTo.join(", ")}, so it is no longer orphaned`
+          : `pull request #${String(number)} is no longer an open pull request of this repository`,
+    };
+  }
+  return decideOrphanPrWork({ prSurface: getPrSurface(number) }, settings.participants, policy);
 }
 
 /** Re-read the surface the turn answered, flattened for the answer analysis. */
 function readAnsweringSurface(item: WorkItem): RawMessage[] {
-  if (item.turn === "issue-discuss" || item.pr === null) {
-    return getIssueSurface(item.issue.number).messages;
+  const pr = item.pr;
+  if (pr !== null && item.turn !== "issue-discuss") {
+    const surface = getPrSurface(pr.number);
+    return [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)];
   }
-  const surface = getPrSurface(item.pr.number);
-  return [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)];
+  // A discussion turn always has an issue; the guard keeps the function total.
+  return item.issue === null ? [] : getIssueSurface(item.issue.number).messages;
 }
 
-/** Which surface the turn answers, for marker text that points somewhere real. */
-function markerSurfaceLabel(item: WorkItem): string {
-  return item.turn === "pr-work" && item.pr
-    ? `pull request #${String(item.pr.number)}`
-    : `issue #${String(item.issue.number)}`;
-}
-
+/**
+ * Which surface the turn answers. Both build turns answer on the pull request;
+ * only a discussion turn answers on the issue.
+ */
 function markerSurfaceTarget(item: WorkItem): { surface: "issue" | "pr"; number: number } {
-  return item.turn === "pr-work" && item.pr
+  return item.pr !== null && item.turn !== "issue-discuss"
     ? { surface: "pr", number: item.pr.number }
-    : { surface: "issue", number: item.issue.number };
+    : { surface: "issue", number: item.issue?.number ?? 0 };
+}
+
+/** The same target as prose, for marker text that points somewhere real. */
+function markerSurfaceLabel(item: WorkItem): string {
+  const target = markerSurfaceTarget(item);
+  return target.surface === "pr"
+    ? `pull request #${String(target.number)}`
+    : `issue #${String(target.number)}`;
 }
 
 /**
@@ -769,7 +933,7 @@ function reconcileMarker(
     analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
   } catch (err) {
     progress(
-      `  warning: could not re-read issue #${String(item.issue.number)} to check for an answer: ${(err as Error).message}\n`,
+      `  warning: could not re-read ${markerSurfaceLabel(item)} to check for an answer: ${(err as Error).message}\n`,
     );
     return reportUnverified(item, marker);
   }
@@ -837,7 +1001,7 @@ function reportNoAnswer(item: WorkItem, marker: MarkerRef, runError: Error | nul
     updateMarker(marker, explanation);
   } catch (err) {
     progress(
-      `  warning: could not update the marker comment on issue #${String(item.issue.number)}: ${(err as Error).message}\n` +
+      `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
         `  the humans have not been told that this run produced no answer.\n`,
     );
   }
@@ -872,29 +1036,31 @@ async function invokeExecutor(
  * an unrelated merge close this issue.
  */
 function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
+  const issue = item.issue;
+  if (issue === null) return false;
   try {
     const branch = getCurrentBranch();
     if (branch === baseBranch) {
-      progress(`  issue #${String(item.issue.number)} is still in discussion (no branch was created).\n`);
+      progress(`  issue #${String(issue.number)} is still in discussion (no branch was created).\n`);
       return false;
     }
 
     const pr = getCurrentBranchPr();
     if (!pr) {
-      progress(`  issue #${String(item.issue.number)} is still in discussion (no pull request).\n`);
+      progress(`  issue #${String(issue.number)} is still in discussion (no pull request).\n`);
       return false;
     }
     // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
-    const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(item.issue.number) + String.raw`\b`, "i");
+    const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`, "i");
     if (closesRef.test(pr.body)) {
-      progress(`  pull request #${String(pr.number)} already closes issue #${String(item.issue.number)}.\n`);
+      progress(`  pull request #${String(pr.number)} already closes issue #${String(issue.number)}.\n`);
       return true;
     }
-    addClosesRefToPr(pr.number, item.issue.number);
-    progress(`  linked pull request #${String(pr.number)} to issue #${String(item.issue.number)}.\n`);
+    addClosesRefToPr(pr.number, issue.number);
+    progress(`  linked pull request #${String(pr.number)} to issue #${String(issue.number)}.\n`);
     return true;
   } catch (err) {
-    progress(`  warning: could not link a pull request to issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+    progress(`  warning: could not link a pull request to issue #${String(issue.number)}: ${(err as Error).message}\n`);
     return false;
   }
 }
@@ -910,7 +1076,7 @@ function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
  * must not spend a slot from the run cap.
  */
 function refuseBeforeRun(
-  base: Pick<ItemReport, "issue" | "title" | "turn">,
+  base: Pick<ItemReport, "issue" | "pr" | "title" | "turn">,
   marker: MarkerRef,
   detail: string,
   markerText: string,
@@ -930,7 +1096,7 @@ async function processItem(
   settings: Settings,
   silent: boolean,
 ): Promise<ItemReport> {
-  progress(`\n#${String(planned.issue.number)} ${planned.turn}: ${planned.reason}\n`);
+  progress(`\n${itemLabel(planned)} ${planned.turn}: ${planned.reason}\n`);
 
   // The tick's plan was built before any model ran, and an earlier item can take
   // a long time. Re-read this issue now, so a message that arrived in the
@@ -940,8 +1106,9 @@ async function processItem(
   if (refreshed.kind === "skip") {
     progress(`  skipped: ${refreshed.detail}\n`);
     return {
-      issue: planned.issue.number,
-      title: planned.issue.title,
+      issue: planned.issue?.number ?? null,
+      pr: planned.pr?.number ?? null,
+      title: itemTitle(planned),
       turn: planned.turn,
       outcome: "skipped",
       detail: `no longer actionable: ${refreshed.detail}`,
@@ -954,9 +1121,10 @@ async function processItem(
 
   // Reported from the refreshed item: the summary must say which turn actually
   // ran, not the one the stale plan predicted.
-  const base: Pick<ItemReport, "issue" | "title" | "turn"> = {
-    issue: item.issue.number,
-    title: item.issue.title,
+  const base: Pick<ItemReport, "issue" | "pr" | "title" | "turn"> = {
+    issue: item.issue?.number ?? null,
+    pr: item.pr?.number ?? null,
+    title: itemTitle(item),
     turn: item.turn,
   };
 
@@ -970,9 +1138,9 @@ async function processItem(
   claimIssue(item, settings);
 
   let marker: MarkerRef;
-  const markerSurface = item.turn === "pr-work" && item.pr ? item.pr.number : item.issue.number;
+  const markerTarget = markerSurfaceTarget(item);
   try {
-    marker = postMarker(item.turn === "pr-work" ? "pr" : "issue", markerSurface, "automata do-work: working…");
+    marker = postMarker(markerTarget.surface, markerTarget.number, "automata do-work: working…");
   } catch (err) {
     // Without the marker there is no boundary, so a run now would be answered
     // again on every later tick. Skipping leaves the message for the next tick.
@@ -991,7 +1159,7 @@ async function processItem(
   }
   let buriedByNote = 0;
   if (note !== null) {
-    progress(`  noted on issue #${String(item.issue.number)} that the work is on pull request #${String(item.pr?.number ?? 0)}.\n`);
+    progress(`  noted on issue #${String(item.issue?.number ?? 0)} that the work is on pull request #${String(item.pr?.number ?? 0)}.\n`);
     buriedByNote = reportIssueMessagesBuriedByNote(item, note, settings.participants);
   }
 
@@ -1122,7 +1290,11 @@ function summarize(reports: ItemReport[]): void {
     // absent field would be ambiguous between "no directive" and "an older
     // automata" when read back out of a cron log.
     const ran = report.execution === undefined ? "" : ` · ${describeExecution(report.execution)}`;
-    out(`  #${String(report.issue)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
+    const label = subjectLabel(
+      report.issue === null ? null : { number: report.issue },
+      report.pr === null ? null : { number: report.pr },
+    );
+    out(`  ${label} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
   }
 }
 
@@ -1130,6 +1302,7 @@ function summarize(reports: ItemReport[]): void {
 function toItemJson(report: ItemReport): Record<string, unknown> {
   return {
     issue: report.issue,
+    pr: report.pr,
     title: report.title,
     turn: report.turn,
     outcome: report.outcome,
@@ -1146,7 +1319,8 @@ function toItemJson(report: ItemReport): Record<string, unknown> {
 
 export const doWorkCommand = new Command("do-work")
   .description(
-    "Run one tick of the autonomous loop: find the issues whose newest authorized message the agent has not answered, and answer them",
+    "Run one tick of the autonomous loop: answer the issues whose newest authorized message the agent has not answered, " +
+      "then the open pull requests that close no issue of this repository and have one",
   )
   .option("--with <executor>", "Executor to use: claude or codex (default: from config, else claude)")
   .option("--model <string>", "Model identifier to pass to the executor, overriding the configured default for it")
@@ -1155,6 +1329,10 @@ export const doWorkCommand = new Command("do-work")
     "Reasoning effort to pass to the executor, overriding the configured default for it",
   )
   .option("--issue <number>", "Restrict the tick to a single issue")
+  .option(
+    "--pr <number>",
+    "Restrict the orphan-pull-request pass to a single pull request (one that closes no issue of this repository)",
+  )
   .option("--limit <n>", "Maximum number of issues to fetch", "10")
   .option("--max-runs <n>", "Maximum number of model runs this tick")
   .option(
@@ -1357,17 +1535,24 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
 
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
+  const policy = {
+    baseBranch: settings.baseBranch,
+    defaultBranch: linkMap.defaultBranch,
+    protectedBranches: settings.protectedBranches,
+  };
 
-  const decisions = issues.map((issue) =>
-    decideWork(buildIssueState(issue, linkMap), settings.participants, {
-      baseBranch: settings.baseBranch,
-      defaultBranch: linkMap.defaultBranch,
-      protectedBranches: settings.protectedBranches,
-    }),
-  );
+  // Issues first, then the orphan pull requests, and the ordering is load
+  // bearing: the two passes share one run cap, so a pile of dependency-bump
+  // pull requests must not be able to starve the issues.
+  const decisions = [
+    ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
+    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
+      decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
+    ),
+  ];
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 
-  const planText = `Work plan (${String(items.length)} of ${String(issues.length)} issues need an answer):\n${describePlan(decisions)}`;
+  const planText = `Work plan (${String(items.length)} of ${String(decisions.length)} candidates need an answer):\n${describePlan(decisions)}`;
   if (options.json) {
     progress(planText);
   } else {
@@ -1402,8 +1587,9 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     } catch (err) {
       progress(`  failed: ${(err as Error).message}\n`);
       report = {
-        issue: item.issue.number,
-        title: item.issue.title,
+        issue: item.issue?.number ?? null,
+        pr: item.pr?.number ?? null,
+        title: itemTitle(item),
         turn: item.turn,
         outcome: "failed",
         detail: (err as Error).message,
@@ -1416,10 +1602,11 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   }
 
   for (const item of deferred) {
-    progress(`\n#${String(item.issue.number)} deferred: --max-runs / maxRunsPerTick reached.\n`);
+    progress(`\n${itemLabel(item)} deferred: --max-runs / maxRunsPerTick reached.\n`);
     reports.push({
-      issue: item.issue.number,
-      title: item.issue.title,
+      issue: item.issue?.number ?? null,
+      pr: item.pr?.number ?? null,
+      title: itemTitle(item),
       turn: item.turn,
       outcome: "deferred",
       detail: `run cap of ${String(settings.maxRuns)} reached`,
@@ -1469,7 +1656,8 @@ type DryRunEntry =
 function toRunJson(entry: DryRunEntry): Record<string, unknown> {
   if (entry.kind === "refused") {
     return {
-      issue: entry.item.issue.number,
+      issue: entry.item.issue?.number ?? null,
+      pr: entry.item.pr?.number ?? null,
       turn: entry.item.turn,
       executor: null,
       model: null,
@@ -1485,7 +1673,8 @@ function toRunJson(entry: DryRunEntry): Record<string, unknown> {
     };
   }
   return {
-    issue: entry.item.issue.number,
+    issue: entry.item.issue?.number ?? null,
+    pr: entry.item.pr?.number ?? null,
     turn: entry.item.turn,
     executor: entry.execution.executor,
     model: entry.execution.model ?? null,
@@ -1618,8 +1807,9 @@ function toHygieneJson(hygiene: HygieneReport): Record<string, unknown> {
 function toPlanJson(decision: Decision): Record<string, unknown> {
   if (decision.kind === "skip") {
     return {
-      issue: decision.issue.number,
-      title: decision.issue.title,
+      issue: decision.issue?.number ?? null,
+      pr: decision.pr?.number ?? null,
+      title: decision.issue?.title ?? decision.pr?.title ?? "",
       turn: null,
       skipReason: decision.reason,
       reason: decision.detail,
@@ -1627,11 +1817,11 @@ function toPlanJson(decision: Decision): Record<string, unknown> {
   }
   const item = decision.item;
   return {
-    issue: item.issue.number,
-    title: item.issue.title,
+    issue: item.issue?.number ?? null,
+    pr: item.pr?.number ?? null,
+    title: itemTitle(item),
     turn: item.turn,
     branch: item.branch,
-    pr: item.pr?.number ?? null,
     needsAssignment: item.needsAssignment,
     reason: item.reason,
   };

@@ -311,6 +311,131 @@ describe("getOpenPrLinkMap", () => {
   });
 });
 
+describe("getOpenPrLinkMap — orphan pull requests", () => {
+  function page(nodes: unknown[]) {
+    return json({
+      data: {
+        repository: {
+          defaultBranchRef: { name: "main" },
+          pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes },
+        },
+      },
+    });
+  }
+
+  it("collects a pull request that closes nothing, with its labels and assignees", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      page([
+        {
+          ...prNode(61, "2026-01-08T00:00:00Z"),
+          title: "Bump lodash",
+          headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+          closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          labels: { nodes: [{ name: "dependencies" }, { name: "automated" }] },
+          assignees: { nodes: [{ login: "alice" }] },
+        },
+      ]),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect([...byIssue.keys()]).toEqual([]);
+    expect(orphans).toEqual([
+      {
+        pr: {
+          number: 61,
+          url: "https://gh/pr/61",
+          title: "Bump lodash",
+          headRefName: "dependabot/npm_and_yarn/lodash-4.17.21",
+          baseRefName: "develop",
+          isCrossRepository: false,
+          state: "OPEN",
+          isDraft: false,
+          updatedAt: "2026-01-08T00:00:00Z",
+        },
+        labels: ["dependencies", "automated"],
+        assignees: ["alice"],
+      },
+    ]);
+  });
+
+  it("does not collect a pull request that closes an issue of this repository", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(page([prNode(57, "2026-01-05T00:00:00Z")]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans).toEqual([]);
+  });
+
+  it("collects a pull request that only closes another repository's issue", async () => {
+    // It closes nothing *here*, so the orphan pass owns it — the same
+    // nameWithOwner line that keeps the issue map correct draws this one.
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(page([prNode(61, "2026-01-08T00:00:00Z", 42, "other-org/lib")]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect([...byIssue.keys()]).toEqual([]);
+    expect(orphans.map((candidate) => candidate.pr.number)).toEqual([61]);
+  });
+
+  it("treats a missing labels or assignees connection as empty", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(
+      page([
+        {
+          ...prNode(61, "2026-01-08T00:00:00Z"),
+          closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          labels: { nodes: [{}] },
+          assignees: null,
+        },
+      ]),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans[0]).toMatchObject({ labels: [], assignees: [] });
+  });
+
+  it("asks the query for labels and assignees", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(page([]));
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    getOpenPrLinkMap();
+    const query = calls()[1].args.find((arg) => arg.startsWith("query=")) ?? "";
+    expect(query).toContain("labels(first:50)");
+    expect(query).toContain("assignees(first:50)");
+  });
+
+  it("collects orphans across pages", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(
+        json({
+          data: {
+            repository: {
+              defaultBranchRef: { name: "main" },
+              pullRequests: {
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+                nodes: [
+                  {
+                    ...prNode(61, "2026-01-08T00:00:00Z"),
+                    closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        page([
+          {
+            ...prNode(62, "2026-01-07T00:00:00Z"),
+            closingIssuesReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+          },
+        ]),
+      );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    expect(getOpenPrLinkMap().orphans.map((candidate) => candidate.pr.number)).toEqual([61, 62]);
+  });
+});
+
 describe("getReviewThreads pagination", () => {
   const prView = {
     number: 57,

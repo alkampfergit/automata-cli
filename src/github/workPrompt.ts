@@ -46,9 +46,14 @@ export function composePrompt(input: PromptInput): string {
     `You are: ${agentUser}`,
     `Turn: ${item.turn}`,
     `Base branch: ${baseBranch}`,
-    `Issue #${String(item.issue.number)}: ${item.issue.title}`,
-    `Issue URL: ${item.issue.url}`,
   ];
+
+  // A `pr-orphan` turn has no issue, so every issue line is omitted rather than
+  // rendered empty: an "Issue #0" line, or an empty issue conversation, would
+  // read to the model as an issue it should go and look at.
+  if (item.issue) {
+    lines.push(`Issue #${String(item.issue.number)}: ${item.issue.title}`, `Issue URL: ${item.issue.url}`);
+  }
 
   if (item.pr) {
     lines.push(
@@ -67,12 +72,14 @@ export function composePrompt(input: PromptInput): string {
     lines.push("", "New since your last message — this is what you must answer:", "", formatMessages(newMessages));
   }
 
-  lines.push(
-    "",
-    "Full conversation on the issue (authorized accounts and you only, oldest first):",
-    "",
-    formatMessages(item.issueAnalysis.messages),
-  );
+  if (item.issue) {
+    lines.push(
+      "",
+      "Full conversation on the issue (authorized accounts and you only, oldest first):",
+      "",
+      formatMessages(item.issueAnalysis.messages),
+    );
+  }
 
   if (item.prAnalysis && item.prAnalysis.messages.length > 0) {
     lines.push(

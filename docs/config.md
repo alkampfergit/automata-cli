@@ -140,7 +140,8 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
     "lockStaleMinutes": 120,
     "prompts": {
       "issueDiscuss": "do-work-issue-discuss.md",
-      "prWork": "do-work-pr-work.md"
+      "prWork": "do-work-pr-work.md",
+      "prOrphan": "do-work-pr-orphan.md"
     }
   }
 }
@@ -159,6 +160,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
 | `prompts.prWork` | built-in | Instructions for a pull-request turn. |
+| `prompts.prOrphan` | built-in | Instructions for a turn on an open pull request that closes no issue of this repository — a dependency bump, say. See [do-work.md](do-work.md#the-orphan-pull-request-pass). |
 
 ### Setting these non-interactively
 
@@ -174,9 +176,10 @@ automata config set do-work-max-runs 2
 automata config set do-work-lock-stale-minutes 45
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
 automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
+automata config set do-work-prompt pr-orphan do-work-pr-orphan.md
 ```
 
-`do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
+`do-work-prompt` takes the turn kind (`issue-discuss`, `pr-work` or `pr-orphan`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
 
 `do-work-effort` works the same way: the executor, then the level. It is keyed per executor for the same reason — the two CLIs accept different level names, so a level that is valid for one is not necessarily valid for the other. `--effort` on the command line overrides whichever default applies. A `tool:` directive in a triggering message drops `--effort` along with `--model` when it switches executor, and falls to the level configured for the executor it asked for — see [do-work.md](do-work.md#steering-one-turn-from-a-message).
 

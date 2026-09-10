@@ -329,6 +329,23 @@ describe("doWork configuration", () => {
     expect(readConfig().doWork?.prompts?.prWork).toBe("Fix the review comments");
   });
 
+  it("resolves doWork.prompts.prOrphan file reference", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "orphan.md"), "Rebase the bump");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { prOrphan: "orphan.md" } } }),
+    );
+    expect(readConfig().doWork?.prompts?.prOrphan).toBe("Rebase the bump");
+  });
+
+  it("throws when the prOrphan prompt file escapes .automata/", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ doWork: { prompts: { prOrphan: "../escape.md" } } }),
+    );
+    expect(() => readConfig()).toThrow(/plain filename/);
+  });
+
   it("keeps inline doWork prompts unchanged", () => {
     writeFileSync(
       join(TEST_CWD, ".automata", "config.json"),

@@ -106,6 +106,8 @@ interface RawLinkMapResponse {
           isCrossRepository: boolean;
           isDraft: boolean;
           updatedAt: string;
+          labels: { nodes: { name?: string }[] } | null;
+          assignees: { nodes: { login?: string }[] } | null;
           closingIssuesReferences: {
             pageInfo: { hasNextPage: boolean };
             nodes: { number: number; repository: { nameWithOwner: string } }[];
@@ -293,6 +295,8 @@ query($owner:String!,$repo:String!,$cursor:String){
       pageInfo{ hasNextPage endCursor }
       nodes{
         number url title headRefName baseRefName isCrossRepository isDraft updatedAt
+        labels(first:50){ nodes{ name } }
+        assignees(first:50){ nodes{ login } }
         closingIssuesReferences(first:50){
           pageInfo{ hasNextPage }
           nodes{ number repository{ nameWithOwner } }
@@ -307,23 +311,32 @@ const MAX_LINK_MAP_PAGES = 50;
 
 type RawLinkMapNode = RawLinkMapResponse["data"]["repository"]["pullRequests"]["nodes"][number];
 
-/** Record one pull request against every issue *in this repository* it closes. */
+/**
+ * An open pull request that declares no closing reference to an issue *of this
+ * repository*, together with the two fields the discovery filter reads.
+ *
+ * `labels` and `assignees` are not on `PullRequestRef` because only discovery
+ * reads them: `getPrSurface` would then have to fetch data none of its callers
+ * want, or leave the fields empty and give one type two shapes.
+ */
+export interface OrphanPr {
+  pr: PullRequestRef;
+  labels: string[];
+  assignees: string[];
+}
+
+/**
+ * Record one pull request against every issue *in this repository* it closes.
+ *
+ * Returns true when it closed at least one, so the caller can collect the rest
+ * as orphans — the second `do-work` pass works on exactly those.
+ */
 function indexPullRequest(
   map: Map<number, PullRequestRef[]>,
   node: RawLinkMapNode,
   nameWithOwner: string,
-): void {
-  const ref: PullRequestRef = {
-    number: node.number,
-    url: node.url,
-    title: node.title,
-    headRefName: node.headRefName,
-    baseRefName: node.baseRefName,
-    isCrossRepository: node.isCrossRepository,
-    state: "OPEN",
-    isDraft: node.isDraft,
-    updatedAt: node.updatedAt,
-  };
+): boolean {
+  const ref = toPullRequestRef(node);
 
   if (node.closingIssuesReferences.pageInfo?.hasNextPage) {
     // Callers treat absence from this map as proof that an issue has no pull
@@ -336,10 +349,14 @@ function indexPullRequest(
     );
   }
 
+  let closedAnyHere = false;
   for (const issue of node.closingIssuesReferences.nodes) {
     // `Closes other-org/lib#42` would otherwise be indexed as this repository's
-    // issue 42, linking an unrelated pull request to it.
+    // issue 42, linking an unrelated pull request to it. The same line decides
+    // orphanhood: a pull request closing only another repository's issue closes
+    // nothing *here*, so it belongs to the orphan pass.
     if (issue.repository.nameWithOwner !== nameWithOwner) continue;
+    closedAnyHere = true;
     const existing = map.get(issue.number);
     if (existing) {
       existing.push(ref);
@@ -347,6 +364,31 @@ function indexPullRequest(
       map.set(issue.number, [ref]);
     }
   }
+  return closedAnyHere;
+}
+
+function toPullRequestRef(node: RawLinkMapNode): PullRequestRef {
+  return {
+    number: node.number,
+    url: node.url,
+    title: node.title,
+    headRefName: node.headRefName,
+    baseRefName: node.baseRefName,
+    isCrossRepository: node.isCrossRepository,
+    state: "OPEN",
+    isDraft: node.isDraft,
+    updatedAt: node.updatedAt,
+  };
+}
+
+function toOrphanPr(node: RawLinkMapNode): OrphanPr {
+  return {
+    pr: toPullRequestRef(node),
+    labels: (node.labels?.nodes ?? []).map((label) => label.name ?? "").filter((name) => name.length > 0),
+    assignees: (node.assignees?.nodes ?? [])
+      .map((assignee) => assignee.login ?? "")
+      .filter((login) => login.length > 0),
+  };
 }
 
 /**
@@ -360,11 +402,18 @@ export interface OpenPrLinkMap {
   byIssue: Map<number, PullRequestRef[]>;
   /** The repository default branch, so a build turn can refuse to push to it. */
   defaultBranch: string | null;
+  /**
+   * Every open pull request that closes no issue of this repository, most
+   * recently updated first. Free of extra API cost: the same paged query that
+   * builds `byIssue` has to visit them anyway.
+   */
+  orphans: OrphanPr[];
 }
 
 export function getOpenPrLinkMap(): OpenPrLinkMap {
   const { owner, repo } = getRepoSlug();
   const map = new Map<number, PullRequestRef[]>();
+  const orphans: OrphanPr[] = [];
   let defaultBranch: string | null = null;
 
   // Every page is fetched: callers treat this map as authoritative, so a
@@ -380,11 +429,13 @@ export function getOpenPrLinkMap(): OpenPrLinkMap {
     const connection = response.data.repository.pullRequests;
 
     for (const node of connection.nodes) {
-      indexPullRequest(map, node, `${owner}/${repo}`);
+      if (!indexPullRequest(map, node, `${owner}/${repo}`)) {
+        orphans.push(toOrphanPr(node));
+      }
     }
 
     if (!connection.pageInfo?.hasNextPage || connection.pageInfo.endCursor === null) {
-      return { byIssue: map, defaultBranch };
+      return { byIssue: map, defaultBranch, orphans };
     }
     cursor = connection.pageInfo.endCursor;
   }
