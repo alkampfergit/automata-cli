@@ -48,8 +48,22 @@ export interface WorkItem {
   pr: PullRequestRef | null;
   /** Base branch for a discuss turn, the pull request's head branch otherwise. */
   branch: string;
-  /** True when the agent is not yet among the issue's assignees. Always false without an issue. */
+  /**
+   * True when the issue has no assignee at all. Always false without an issue.
+   *
+   * Membership is deliberately not tested: an issue assigned to anyone — a
+   * human who triaged it, or the agent from an earlier tick — is already
+   * claimed, so the agent must not add itself alongside them.
+   */
   needsAssignment: boolean;
+  /**
+   * True when the turn works on a pull request that has no assignee at all.
+   *
+   * Always false for a discuss turn: no pull request is known at decision time,
+   * so one the model opens during the run is claimed afterwards, where it is
+   * first seen. Also false on a `pr-orphan` turn — see the note there.
+   */
+  prNeedsAssignment: boolean;
   /** The empty analysis on a `pr-orphan` turn — there is no issue surface to read. */
   issueAnalysis: SurfaceAnalysis;
   prAnalysis: SurfaceAnalysis | null;
@@ -83,11 +97,6 @@ const NO_ISSUE_MESSAGES: SurfaceAnalysis = {
   hasNewMessage: false,
   lastAgentAt: null,
 };
-
-function isAssignedToAgent(assignees: string[], agentUser: string): boolean {
-  const agent = agentUser.toLowerCase();
-  return assignees.some((name) => name.toLowerCase() === agent);
-}
 
 /**
  * Threads that still need an answer: unresolved, and with an authorized human as
@@ -243,7 +252,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
   }
 
   const issueAnalysis = analyzeSurface(issueSurface.messages, p);
-  const needsAssignment = !isAssignedToAgent(issueSurface.assignees, p.agentUser);
+  const needsAssignment = issueSurface.assignees.length === 0;
 
   // A merged or closed pull request is treated as no pull request: its branch has
   // landed or gone, so the model must not push to it. A discuss turn lets the
@@ -272,6 +281,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
         pr: null,
         branch: baseBranch,
         needsAssignment,
+        prNeedsAssignment: false,
         issueAnalysis,
         prAnalysis: null,
         actionableThreads: [],
@@ -318,6 +328,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
       pr: surface.pr,
       branch: surface.pr.headRefName,
       needsAssignment,
+      prNeedsAssignment: surface.assignees.length === 0,
       issueAnalysis,
       prAnalysis,
       actionableThreads,
@@ -396,6 +407,13 @@ export function decideOrphanPrWork(
       // agent here would change what the discovery filter matches next tick.
       // The `working…` marker on the pull request is the claim.
       needsAssignment: false,
+      // For the same reason, and more directly: the orphan pass discovers by
+      // the *pull request's own* assignees, so claiming an unassigned orphan
+      // would make it match the filter on the next tick — the agent would
+      // permanently own a pull request the operator never opted in. A build
+      // turn is safe because it reaches its pull request through an issue that
+      // matched the filter, not through the pull request's assignees.
+      prNeedsAssignment: false,
       issueAnalysis: NO_ISSUE_MESSAGES,
       prAnalysis,
       actionableThreads,

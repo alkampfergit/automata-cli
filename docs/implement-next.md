@@ -53,6 +53,7 @@ automata implement-next [options]
 9. After the AI tool finishes (or immediately after claiming when `--no-claude`), checks if the current branch has an open pull request:
    - If a PR exists and a comment URL was captured in step 7, edits the "working" comment to include the PR number and link.
    - If a PR exists, appends `Closes #<issue>` to the PR body so merging the PR auto-closes the issue.
+   - If a PR exists **and has no assignee at all**, assigns it via `gh pr edit --add-assignee` so the PR list shows who is on it. The claimant is the configured `agentUser`, or `@me` (the account `gh` is authenticated as) when `agentUser` is not set. A PR that already has any assignee is left untouched.
    - If `--ask-copilot-review` is passed and a PR exists, runs `gh pr edit --add-reviewer @copilot` to request a Copilot review.
    - All post-AI operations are best-effort: failures are warned on stderr but do not change the exit code.
 

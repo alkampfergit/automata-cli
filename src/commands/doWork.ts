@@ -14,6 +14,7 @@ import {
 import { addClosesRefToPr, getCurrentBranchPr, type GitHubIssue } from "../config/githubService.js";
 import {
   assignIssueToAgent,
+  assignPrToAgent,
   deleteMarker,
   getIssueSurface,
   getOpenPrLinkMap,
@@ -416,6 +417,35 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
   return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
 }
 
+/**
+ * What the tick would do to the assignee lists, per surface.
+ *
+ * Both halves are always named: "already assigned" for a surface nobody would
+ * touch is the answer an operator auditing an unattended tick needs, and
+ * silence there would read as "the claim was forgotten".
+ */
+function describeAssignment(item: WorkItem, agentUser: string): string {
+  const parts: string[] = [];
+  if (item.issue !== null) {
+    parts.push(item.needsAssignment ? `would assign issue to ${agentUser}` : "issue already assigned");
+  }
+  if (item.pr !== null) {
+    if (item.turn === "pr-orphan") {
+      // Never claimed, by design — see the `prNeedsAssignment` note on the
+      // orphan item in `workDetection.ts`. Named anyway so an operator reading
+      // a dry run does not take the silence for a forgotten claim.
+      parts.push(`pull request #${String(item.pr.number)} not claimed (orphan pass)`);
+    } else if (item.turn === "pr-work") {
+      parts.push(
+        item.prNeedsAssignment
+          ? `would assign pull request #${String(item.pr.number)} to ${agentUser}`
+          : `pull request #${String(item.pr.number)} already assigned`,
+      );
+    }
+  }
+  return parts.join(" · ");
+}
+
 /** The per-item summary header printed above the command on a dry run. */
 function describePlannedRun(
   item: WorkItem,
@@ -425,9 +455,7 @@ function describePlannedRun(
 ): string {
   const rule = "─".repeat(72);
   const branchAction = item.turn === "issue-discuss" ? " and pull" : " and fast-forward";
-  const assignment = item.needsAssignment
-    ? `would assign to ${settings.participants.agentUser}`
-    : "already assigned";
+  const assignment = describeAssignment(item, settings.participants.agentUser);
   const markerTarget = markerSurfaceLabel(item);
   const lines = [
     rule,
@@ -725,7 +753,10 @@ function describePlan(decisions: Decision[]): string {
       );
     }
     const item = decision.item;
-    const claim = item.needsAssignment ? ", will assign to the agent" : "";
+    const claims: string[] = [];
+    if (item.needsAssignment) claims.push("the issue");
+    if (item.prNeedsAssignment) claims.push("the pull request");
+    const claim = claims.length === 0 ? "" : `, will assign ${claims.join(" and ")} to the agent`;
     return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${claim}`;
   });
   return lines.length === 0 ? "  (nothing matched the discovery filter)\n" : lines.join("\n") + "\n";
@@ -733,6 +764,10 @@ function describePlan(decisions: Decision[]): string {
 
 /**
  * Add the agent as an assignee, so the claim is visible in the issue list.
+ *
+ * Only when the issue has *no* assignee. An issue somebody already owns keeps
+ * its owner untouched: the assignee column then means "is anyone on this?" and
+ * nothing else, which is what makes it readable at a glance.
  *
  * Advisory: a repository where the agent lacks write access must still be able
  * to run the loop, so a failure warns rather than stopping the turn.
@@ -744,6 +779,19 @@ function claimIssue(item: WorkItem, settings: Settings): void {
     progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
   } catch (err) {
     progress(`  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+  }
+}
+
+/**
+ * The same claim on the pull request, so the pull request list reads like the
+ * issue list. Same empty-list-only rule, same advisory failure.
+ */
+function claimPr(prNumber: number, agentUser: string): void {
+  try {
+    assignPrToAgent(prNumber, agentUser);
+    progress(`  assigned pull request #${String(prNumber)} to ${agentUser}.\n`);
+  } catch (err) {
+    progress(`  warning: could not assign pull request #${String(prNumber)}: ${(err as Error).message}\n`);
   }
 }
 
@@ -1068,7 +1116,7 @@ async function invokeExecutor(
  * release PR into `main`, say) and appending `Closes #<issue>` to it would make
  * an unrelated merge close this issue.
  */
-function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
+function repairIssueLink(item: WorkItem, baseBranch: string, agentUser: string): boolean {
   const issue = item.issue;
   if (issue === null) return false;
   try {
@@ -1082,6 +1130,13 @@ function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
     if (!pr) {
       progress(`  issue #${String(issue.number)} is still in discussion (no pull request).\n`);
       return false;
+    }
+    // Claimed here rather than in the plan: a discuss turn has no pull request
+    // when the decision is made, so this is the first point at which the one the
+    // model just opened is visible. Before the `Closes #N` check on purpose, so a
+    // second discuss turn on an already-linked pull request still claims it.
+    if (pr.assignees.length === 0) {
+      claimPr(pr.number, agentUser);
     }
     // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
     const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`, "i");
@@ -1169,6 +1224,9 @@ async function processItem(
   }
 
   claimIssue(item, settings);
+  if (item.turn === "pr-work" && item.pr !== null && item.prNeedsAssignment) {
+    claimPr(item.pr.number, settings.participants.agentUser);
+  }
 
   let marker: MarkerRef;
   const markerTarget = markerSurfaceTarget(item);
@@ -1293,7 +1351,7 @@ function adjustOutcome(
 
   if (item.turn !== "issue-discuss") return outcome;
 
-  const linked = repairIssueLink(item, settings.baseBranch);
+  const linked = repairIssueLink(item, settings.baseBranch, settings.participants.agentUser);
   // A discuss turn that implemented and opened a pull request has plainly not
   // stalled, even if the model never commented on the issue. Reporting it as
   // "produced no answer" would raise a false alarm; the pull request is the
@@ -1853,6 +1911,7 @@ function toPlanJson(decision: Decision): Record<string, unknown> {
     turn: item.turn,
     branch: item.branch,
     needsAssignment: item.needsAssignment,
+    prNeedsAssignment: item.prNeedsAssignment,
     reason: item.reason,
   };
 }
