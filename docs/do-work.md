@@ -148,11 +148,11 @@ One tick, in order:
 6. **Process** each work item sequentially:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn) and bring it up to date with the remote, fast-forward only;
-   3. assign the issue to the agent, if it is not already assigned — a `pr-orphan` turn assigns nothing, since there is no issue and the discovery filter may itself be `assignee`;
+   3. assign the issue to the agent if it has no assignee at all, and on a build turn do the same for the pull request (see [Assignment](#assignment)) — a `pr-orphan` turn claims neither, since there is no issue and the discovery filter may itself read the pull request's assignees;
    4. post a `working…` marker comment — on the pull request for a `pr-work` or `pr-orphan` turn, on the issue for a discussion turn. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
    5. invoke the executor;
    6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
-   7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
+   7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue, and claim it for the agent if nobody is assigned to it.
 7. **Summarise** and exit.
 
 ---
@@ -238,7 +238,7 @@ Issue #42 — Add a flag
   Turn         issue-discuss
   Why          1 new issue message, no open pull request
   Branch       develop (would check out and pull)
-  Assign       would assign to automata-bot
+  Assign       would assign issue to automata-bot
   Marker       would post on issue #42
   Executor     claude · model claude-opus-4-6
   Permissions  bypassed (do-work always runs unattended)
@@ -393,7 +393,24 @@ The update deliberately does not claim that nothing changed: a run can commit an
 
 ## Assignment
 
-Before the first model run on an issue, `do-work` assigns the issue to `agentUser` so the claim is visible in the issue list. The assignment is additive — an issue already triaged to a human keeps that assignee — and is skipped when the agent is already assigned. It requires the agent account to have write access on the repository; if it fails, a warning is printed and the turn still runs, because assignment is signalling and does not affect correctness.
+`do-work` claims the surfaces it works on for `agentUser`, **only when nobody is assigned to them yet**:
+
+| Surface | No assignee | Any assignee |
+|---|---|---|
+| The issue | assigned to `agentUser` before the first model run | left untouched |
+| The pull request | assigned to `agentUser` — on a build turn before the run, and on a discuss turn once the pull request the model opened is first seen | left untouched |
+
+"Any assignee" means exactly that: an issue triaged to a human keeps that person and the agent does **not** add itself beside them, and an issue already assigned to the agent is not re-assigned. The assignee column therefore answers one question — is anyone on this? — and nothing else.
+
+The two surfaces are decided independently, so an issue a human owns can still have its pull request claimed, and vice versa.
+
+A **`pr-orphan` turn is the one exception: it claims nothing.** There is no issue to assign, and the orphan pass discovers candidates by the pull request's *own* labels, assignees or title — so with `issueDiscoveryTechnique: assignee`, claiming an unassigned orphan would make it match the filter on every later tick, and the agent would permanently own a pull request the operator never opted in. The `working…` marker on the pull request is the claim there. A build turn is not affected: it reaches its pull request through an issue that matched the filter, not through the pull request's assignees. The work plan and `--dry-run` both say `pull request not claimed (orphan pass)` rather than staying silent: on that one surface, silence would read as "somebody is already on it" when in fact nobody is and nobody ever will be.
+
+Both claims require the agent account to have write access on the repository. If a claim fails, a warning is printed and the turn still runs to completion with its normal outcome and exit code: assignment is signalling and does not affect correctness. The underlying calls (`gh issue edit --add-assignee`, `gh pr edit --add-assignee`) are additive, so a human assigning themselves in the same seconds is never overwritten.
+
+`--dry-run` reports both planned claims per item and performs neither; `--dry-run --json` carries them as `needsAssignment` and `prNeedsAssignment` per plan entry.
+
+The two views differ on purpose. A plan line names only what the tick would *do* — `, will assign the issue and the pull request to the agent` — plus any surface the rule exempts; a surface somebody already owns is left unsaid, because the plan is one line per candidate and the absence of `will assign` is the answer. The per-item `Assign` line of a dry run names **every** surface in whichever state it is in (`issue already assigned · would assign pull request #57 to automata-bot`), since that block has the width for it and an operator auditing one item should not have to read silence.
 
 ---
 

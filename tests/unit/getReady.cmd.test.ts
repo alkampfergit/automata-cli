@@ -1181,3 +1181,120 @@ describe("getReady command: post-AI PR linking", () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("getReady command: pull request claim", () => {
+  beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
+    mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
+  });
+
+  const ISSUE = { number: 8, title: "Claim me", body: "Do it.", url: "https://github.com/o/r/issues/8" };
+
+  /**
+   * Dispatch on the `gh` argv rather than on call order: `--no-claude` still
+   * runs the post-claim reconciliation, and that path issues several `pr` calls
+   * whose order is an implementation detail.
+   */
+  function stubGh(assignees: { login: string }[], assignStatus = 0): void {
+    mockSpawnSync.mockImplementation((_cmd: unknown, args: unknown) => {
+      const argv = args as string[];
+      if (argv[0] === "issue" && argv[1] === "list") {
+        return { stdout: JSON.stringify([ISSUE]), stderr: "", status: 0 };
+      }
+      if (argv[0] === "pr" && argv[1] === "view") {
+        // `addClosesRefToPr` asks for the body alone with `-q`.
+        if (argv.includes("-q")) return { stdout: "Closes #8", stderr: "", status: 0 };
+        return {
+          stdout: JSON.stringify({ number: 21, url: "https://github.com/o/r/pull/21", body: "Closes #8", assignees }),
+          stderr: "",
+          status: 0,
+        };
+      }
+      if (argv[0] === "pr" && argv[1] === "edit" && argv.includes("--add-assignee")) {
+        return { stdout: "", stderr: assignStatus === 0 ? "" : "HTTP 403: not a collaborator", status: assignStatus };
+      }
+      return { stdout: "", stderr: "", status: 0 };
+    });
+  }
+
+  function assignCall(): string[] | undefined {
+    const call = mockSpawnSync.mock.calls.find(
+      (c) => (c[1] as string[])[0] === "pr" && (c[1] as string[]).includes("--add-assignee"),
+    );
+    return call ? (call[1] as string[]) : undefined;
+  }
+
+  async function run(): Promise<string> {
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+    return stderrLines.join("");
+  }
+
+  it("assigns the configured agent when the pull request has nobody on it", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+      agentUser: "automata-bot",
+    });
+    stubGh([]);
+    await run();
+    expect(assignCall()).toEqual(["pr", "edit", "21", "--add-assignee", "automata-bot"]);
+    vi.restoreAllMocks();
+  });
+
+  it("falls back to @me when no agentUser is configured", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "gh", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
+    stubGh([]);
+    await run();
+    expect(assignCall()).toEqual(["pr", "edit", "21", "--add-assignee", "@me"]);
+    vi.restoreAllMocks();
+  });
+
+  it("leaves a pull request somebody has already taken alone", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+      agentUser: "automata-bot",
+    });
+    stubGh([{ login: "alice" }]);
+    await run();
+    expect(assignCall()).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  it("warns and carries on when the claim fails", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+      agentUser: "automata-bot",
+    });
+    stubGh([], 1);
+    const stderr = await run();
+    expect(stderr).toMatch(/could not assign PR #21 to automata-bot/);
+    expect(stderr).toMatch(/not a collaborator/);
+    vi.restoreAllMocks();
+  });
+});

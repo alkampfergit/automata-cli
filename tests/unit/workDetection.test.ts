@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  claimStates,
   decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
@@ -8,6 +9,7 @@ import {
   type Decision,
   type IssueState,
   type OrphanPrState,
+  type WorkItem,
 } from "../../src/github/workDetection.js";
 import type { Participants, RawMessage } from "../../src/github/conversation.js";
 import type { IssueSurface, PrSurface, PullRequestRef, ReviewThread } from "../../src/github/ghWorkService.js";
@@ -25,6 +27,7 @@ function issueSurface(overrides: Partial<IssueSurface> = {}): IssueSurface {
     issue: ISSUE,
     state: "OPEN",
     assignees: [],
+    labels: [],
     messages: [message("alice", "2026-01-01T00:00:00Z", "issue-body")],
     ...overrides,
   };
@@ -46,7 +49,7 @@ function pullRequest(overrides: Partial<PullRequestRef> = {}): PullRequestRef {
 }
 
 function prSurface(overrides: Partial<PrSurface> = {}): PrSurface {
-  return { pr: pullRequest(), messages: [], threads: [], ...overrides };
+  return { pr: pullRequest(), assignees: [], messages: [], threads: [], ...overrides };
 }
 
 function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
@@ -54,6 +57,7 @@ function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     path: "src/index.ts",
     line: 12,
     isResolved: false,
+    url: null,
     comments: [message("alice", "2026-01-06T00:00:00Z", "thread-comment")],
     ...overrides,
   };
@@ -448,18 +452,61 @@ describe("decideWork — unsafe pull request branches", () => {
 });
 
 describe("decideWork — assignment and ambiguity", () => {
-  it("needs assignment when the agent is not an assignee", () => {
-    const decision = decideWork(state({ issueSurface: issueSurface({ assignees: ["alice"] }) }), P, { baseBranch: BASE });
+  it("needs assignment when the issue has no assignee at all", () => {
+    const decision = decideWork(state({ issueSurface: issueSurface({ assignees: [] }) }), P, { baseBranch: BASE });
     expect(decision.kind).toBe("work");
     if (decision.kind !== "work") return;
     expect(decision.item.needsAssignment).toBe(true);
   });
 
-  it("does not need assignment when the agent is already an assignee, matched case-insensitively", () => {
+  it("does not need assignment when a human owns the issue, and does not add the agent alongside them", () => {
+    const decision = decideWork(state({ issueSurface: issueSurface({ assignees: ["alice"] }) }), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.needsAssignment).toBe(false);
+  });
+
+  it("does not need assignment when the agent is already the assignee", () => {
+    const decision = decideWork(state({ issueSurface: issueSurface({ assignees: ["AUTOMATA-BOT"] }) }), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.needsAssignment).toBe(false);
+  });
+
+  it("does not need assignment when both a human and the agent are assigned", () => {
     const decision = decideWork(state({ issueSurface: issueSurface({ assignees: ["alice", "AUTOMATA-BOT"] }) }), P, { baseBranch: BASE });
     expect(decision.kind).toBe("work");
     if (decision.kind !== "work") return;
     expect(decision.item.needsAssignment).toBe(false);
+  });
+
+  it("needs pull request assignment on a build turn when the pull request has no assignee", () => {
+    const decision = decideWork(state({
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({ assignees: [], messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+      }), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.turn).toBe("pr-work");
+    expect(decision.item.prNeedsAssignment).toBe(true);
+  });
+
+  it("does not need pull request assignment when anyone is already assigned to it", () => {
+    const decision = decideWork(state({
+        linkedPrs: [pullRequest()],
+        prSurface: prSurface({ assignees: ["bob"], messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+      }), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.prNeedsAssignment).toBe(false);
+  });
+
+  it("never needs pull request assignment on a discuss turn, where no pull request is known yet", () => {
+    const decision = decideWork(state(), P, { baseBranch: BASE });
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.turn).toBe("issue-discuss");
+    expect(decision.item.prNeedsAssignment).toBe(false);
   });
 
   it("reports the other open pull requests when several close the issue", () => {
@@ -472,6 +519,64 @@ describe("decideWork — assignment and ambiguity", () => {
     if (decision.kind !== "work") return;
     expect(decision.item.pr?.number).toBe(58);
     expect(decision.item.ambiguousPrs.map((pr) => pr.number)).toEqual([57]);
+  });
+});
+
+// The one place that answers "what does the tick say about assignment?", so the
+// plan line and the dry-run block cannot drift apart again.
+describe("claimStates — what the claim rule says per surface", () => {
+  function itemOf(decision: Decision): WorkItem {
+    if (decision.kind !== "work") throw new Error("expected a work decision");
+    return decision.item;
+  }
+
+  const PR_MESSAGE = [message("alice", "2026-01-07T00:00:00Z", "pr-comment")];
+
+  it("names only the issue on a discuss turn, where no pull request exists yet", () => {
+    const claims = claimStates(itemOf(decideWork(state(), P, { baseBranch: BASE })));
+    expect(claims).toEqual([{ surface: "issue", number: 42, state: "would-claim" }]);
+  });
+
+  it("names both surfaces on a build turn, each with its own state", () => {
+    const claims = claimStates(
+      itemOf(
+        decideWork(state({
+            issueSurface: issueSurface({ assignees: ["alice"] }),
+            linkedPrs: [pullRequest()],
+            prSurface: prSurface({ assignees: [], messages: PR_MESSAGE }),
+          }), P, { baseBranch: BASE }),
+      ),
+    );
+    expect(claims).toEqual([
+      { surface: "issue", number: 42, state: "already-assigned" },
+      { surface: "pull request", number: 57, state: "would-claim" },
+    ]);
+  });
+
+  it("reports 'already-assigned' for a pull request somebody owns", () => {
+    const claims = claimStates(
+      itemOf(
+        decideWork(state({
+            linkedPrs: [pullRequest()],
+            prSurface: prSurface({ assignees: ["bob"], messages: PR_MESSAGE }),
+          }), P, { baseBranch: BASE }),
+      ),
+    );
+    expect(claims[1]).toEqual({ surface: "pull request", number: 57, state: "already-assigned" });
+  });
+
+  // The distinction the plan line exists to make: nobody is assigned, and
+  // nobody ever will be, so "already-assigned" would be a lie and silence
+  // would be read as one.
+  it("reports the orphan pull request as rule-exempt, not as already assigned", () => {
+    const decision = decideOrphanPrWork(
+      { prSurface: { pr: pullRequest({ number: 61 }), assignees: [], messages: PR_MESSAGE, threads: [] } },
+      P,
+      { baseBranch: BASE },
+    );
+    expect(claimStates(itemOf(decision))).toEqual([
+      { surface: "pull request", number: 61, state: "rule-exempt" },
+    ]);
   });
 });
 
@@ -541,7 +646,7 @@ describe("decideOrphanPrWork — the orphan pull-request decision table", () => 
   const ORPHAN_PR = pullRequest({ number: 61, headRefName: "dependabot/npm_and_yarn/lodash-4.17.21" });
 
   function orphan(overrides: Partial<PrSurface> = {}): OrphanPrState {
-    return { prSurface: { pr: ORPHAN_PR, messages: [], threads: [], ...overrides } };
+    return { prSurface: { pr: ORPHAN_PR, assignees: [], messages: [], threads: [], ...overrides } };
   }
 
   it("runs a pr-orphan turn on the head branch for a new authorized comment", () => {
@@ -557,9 +662,27 @@ describe("decideOrphanPrWork — the orphan pull-request decision table", () => 
     expect(decision.item.pr?.number).toBe(61);
     expect(decision.item.branch).toBe("dependabot/npm_and_yarn/lodash-4.17.21");
     expect(decision.item.needsAssignment).toBe(false);
+    expect(decision.item.prNeedsAssignment).toBe(false);
     expect(decision.item.ambiguousPrs).toEqual([]);
     expect(decision.item.issueAnalysis.messages).toEqual([]);
     expect(decision.item.reason).toMatch(/1 new pull request message on pull request #61 \(no linked issue\)/);
+  });
+
+  // The orphan pass discovers by the pull request's *own* assignees, so
+  // claiming an unassigned orphan would make it match `issueDiscoveryTechnique:
+  // assignee` on the next tick — the agent would permanently own a pull request
+  // the operator never opted in. Deliberately the one surface the claim rule
+  // (assign when nobody is assigned) does not apply to.
+  it("claims neither surface on a pr-orphan turn, even with an empty assignee list", () => {
+    const decision = decideOrphanPrWork(
+      orphan({ assignees: [], messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")] }),
+      P,
+      { baseBranch: BASE },
+    );
+    expect(decision.kind).toBe("work");
+    if (decision.kind !== "work") return;
+    expect(decision.item.needsAssignment).toBe(false);
+    expect(decision.item.prNeedsAssignment).toBe(false);
   });
 
   it("runs a pr-orphan turn for a non-empty authorized review body", () => {

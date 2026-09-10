@@ -14,6 +14,7 @@ import {
 import { addClosesRefToPr, getCurrentBranchPr, type GitHubIssue } from "../config/githubService.js";
 import {
   assignIssueToAgent,
+  assignPrToAgent,
   deleteMarker,
   getIssueSurface,
   getOpenPrLinkMap,
@@ -30,6 +31,7 @@ import {
 } from "../github/ghWorkService.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
 import {
+  claimStates,
   decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
@@ -416,6 +418,54 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
   return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
 }
 
+/**
+ * What the tick would do to the assignee lists, per surface: the `Assign` line
+ * of a dry run's per-item block.
+ *
+ * Every surface the item has is named, in whichever state it is in: "already
+ * assigned" for a surface nobody would touch is the answer an operator auditing
+ * an unattended tick needs, and silence there would read as "the claim was
+ * forgotten". The plan line is terser — see `describePlanClaim`.
+ */
+function describeAssignment(item: WorkItem, agentUser: string): string {
+  return claimStates(item)
+    .map((claim) => {
+      // The issue needs no number here: it is the block's own heading.
+      const label = claim.surface === "issue" ? "issue" : `pull request #${String(claim.number)}`;
+      switch (claim.state) {
+        case "would-claim":
+          return `would assign ${label} to ${agentUser}`;
+        case "already-assigned":
+          return `${label} already assigned`;
+        case "rule-exempt":
+          // Never claimed, by design — see the `prNeedsAssignment` note on the
+          // orphan item in `workDetection.ts`.
+          return `${label} not claimed (orphan pass)`;
+      }
+    })
+    .join(" · ");
+}
+
+/**
+ * The claim suffix of a plan line.
+ *
+ * "Already assigned" stays unsaid: the plan is one line per candidate, and a
+ * state the tick does not act on does not earn the width — the absence of
+ * "will assign" is the answer. An **exemption** is said out loud, because it is
+ * a rule rather than a state: an operator auditing an unattended tick would
+ * otherwise read the silence on an orphan pull request as "somebody is already
+ * on it", when in fact nobody is and nobody ever will be.
+ */
+function describePlanClaim(item: WorkItem): string {
+  const claims = claimStates(item);
+  const would = claims.filter((claim) => claim.state === "would-claim").map((claim) => `the ${claim.surface}`);
+  const exempt = claims.filter((claim) => claim.state === "rule-exempt").map((claim) => claim.surface);
+  const parts: string[] = [];
+  if (would.length > 0) parts.push(`will assign ${would.join(" and ")} to the agent`);
+  if (exempt.length > 0) parts.push(`${exempt.join(" and ")} not claimed (orphan pass)`);
+  return parts.length === 0 ? "" : `, ${parts.join(", ")}`;
+}
+
 /** The per-item summary header printed above the command on a dry run. */
 function describePlannedRun(
   item: WorkItem,
@@ -425,9 +475,7 @@ function describePlannedRun(
 ): string {
   const rule = "─".repeat(72);
   const branchAction = item.turn === "issue-discuss" ? " and pull" : " and fast-forward";
-  const assignment = item.needsAssignment
-    ? `would assign to ${settings.participants.agentUser}`
-    : "already assigned";
+  const assignment = describeAssignment(item, settings.participants.agentUser);
   const markerTarget = markerSurfaceLabel(item);
   const lines = [
     rule,
@@ -725,14 +773,17 @@ function describePlan(decisions: Decision[]): string {
       );
     }
     const item = decision.item;
-    const claim = item.needsAssignment ? ", will assign to the agent" : "";
-    return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${claim}`;
+    return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${describePlanClaim(item)}`;
   });
   return lines.length === 0 ? "  (nothing matched the discovery filter)\n" : lines.join("\n") + "\n";
 }
 
 /**
  * Add the agent as an assignee, so the claim is visible in the issue list.
+ *
+ * Only when the issue has *no* assignee. An issue somebody already owns keeps
+ * its owner untouched: the assignee column then means "is anyone on this?" and
+ * nothing else, which is what makes it readable at a glance.
  *
  * Advisory: a repository where the agent lacks write access must still be able
  * to run the loop, so a failure warns rather than stopping the turn.
@@ -744,6 +795,19 @@ function claimIssue(item: WorkItem, settings: Settings): void {
     progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
   } catch (err) {
     progress(`  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+  }
+}
+
+/**
+ * The same claim on the pull request, so the pull request list reads like the
+ * issue list. Same empty-list-only rule, same advisory failure.
+ */
+function claimPr(prNumber: number, agentUser: string): void {
+  try {
+    assignPrToAgent(prNumber, agentUser);
+    progress(`  assigned pull request #${String(prNumber)} to ${agentUser}.\n`);
+  } catch (err) {
+    progress(`  warning: could not assign pull request #${String(prNumber)}: ${(err as Error).message}\n`);
   }
 }
 
@@ -1068,7 +1132,7 @@ async function invokeExecutor(
  * release PR into `main`, say) and appending `Closes #<issue>` to it would make
  * an unrelated merge close this issue.
  */
-function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
+function repairIssueLink(item: WorkItem, baseBranch: string, agentUser: string): boolean {
   const issue = item.issue;
   if (issue === null) return false;
   try {
@@ -1082,6 +1146,13 @@ function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
     if (!pr) {
       progress(`  issue #${String(issue.number)} is still in discussion (no pull request).\n`);
       return false;
+    }
+    // Claimed here rather than in the plan: a discuss turn has no pull request
+    // when the decision is made, so this is the first point at which the one the
+    // model just opened is visible. Before the `Closes #N` check on purpose, so a
+    // second discuss turn on an already-linked pull request still claims it.
+    if (pr.assignees.length === 0) {
+      claimPr(pr.number, agentUser);
     }
     // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
     const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`, "i");
@@ -1169,6 +1240,9 @@ async function processItem(
   }
 
   claimIssue(item, settings);
+  if (item.turn === "pr-work" && item.pr !== null && item.prNeedsAssignment) {
+    claimPr(item.pr.number, settings.participants.agentUser);
+  }
 
   let marker: MarkerRef;
   const markerTarget = markerSurfaceTarget(item);
@@ -1293,7 +1367,7 @@ function adjustOutcome(
 
   if (item.turn !== "issue-discuss") return outcome;
 
-  const linked = repairIssueLink(item, settings.baseBranch);
+  const linked = repairIssueLink(item, settings.baseBranch, settings.participants.agentUser);
   // A discuss turn that implemented and opened a pull request has plainly not
   // stalled, even if the model never commented on the issue. Reporting it as
   // "produced no answer" would raise a false alarm; the pull request is the
@@ -1853,6 +1927,7 @@ function toPlanJson(decision: Decision): Record<string, unknown> {
     turn: item.turn,
     branch: item.branch,
     needsAssignment: item.needsAssignment,
+    prNeedsAssignment: item.prNeedsAssignment,
     reason: item.reason,
   };
 }
