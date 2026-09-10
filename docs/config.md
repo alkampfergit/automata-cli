@@ -150,10 +150,10 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 |---|---|---|
 | `baseBranch` | `develop` | The branch a discussion turn returns to, and the branch new work is expected to branch off. |
 | `protectedBranches` | `["main", "master"]` | Extra branches a build turn must never check out and push to. The base branch and the repository default are always refused; this covers the rest. In GitFlow the default branch is often `develop`, so without it a back-merge pull request `main → develop` carrying `Closes #N` would be worked on `main`. |
-| `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. |
-| `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
+| `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. Overridden for one turn by a `tool:` directive in the message that triggers it — see [do-work.md](do-work.md#steering-one-turn-from-a-message). |
+| `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. Overridden for one turn by a `model:` directive in the triggering message. |
 | `models.codex` | *(none)* | Default model when the executor is Codex. |
-| `effort.claude` | *(none)* | Default reasoning effort when the executor is Claude; blank means the executor's own default. |
+| `effort.claude` | *(none)* | Default reasoning effort when the executor is Claude; blank means the executor's own default. No directive names a level, but a `tool:` directive that switches executor re-picks it for the executor it switched to. |
 | `effort.codex` | *(none)* | Default reasoning effort when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
@@ -178,7 +178,7 @@ automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 
 `do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
 
-`do-work-effort` works the same way: the executor, then the level. It is keyed per executor for the same reason — the two CLIs accept different level names, so a level that is valid for one is not necessarily valid for the other. `--effort` on the command line overrides whichever default applies.
+`do-work-effort` works the same way: the executor, then the level. It is keyed per executor for the same reason — the two CLIs accept different level names, so a level that is valid for one is not necessarily valid for the other. `--effort` on the command line overrides whichever default applies. A `tool:` directive in a triggering message drops `--effort` along with `--model` when it switches executor, and falls to the level configured for the executor it asked for — see [do-work.md](do-work.md#steering-one-turn-from-a-message).
 
 The level is **not** validated by automata. The valid set is both executor- and model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it changes between executor releases, so an allow-list here would reject a level your installed executor accepts. Whatever you set is forwarded unchanged apart from surrounding whitespace, which is trimmed off both the configured default and `--effort`; only an empty value is refused.
 

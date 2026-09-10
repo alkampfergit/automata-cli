@@ -31,7 +31,7 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
-Command-line options take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults.
+The directive in the newest triggering message takes precedence over the command-line options, which take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults. Only the executor and the model can be named in a message; the reasoning effort follows whichever executor ends up running — see [Steering one turn from a message](#steering-one-turn-from-a-message).
 
 ### Executor, model and effort defaults
 
@@ -43,7 +43,7 @@ Model defaults are held **per executor**, because a Claude model identifier is n
 { "doWork": { "executor": "claude", "models": { "claude": "claude-opus-4-6", "codex": "o3" } } }
 ```
 
-Resolution for one run is: `--model` if given, else the default for the executor actually being used, else nothing (the executor picks its own). So `--with codex` on the configuration above sends `o3`, never the Claude identifier.
+Resolution for one run is: `model:` in the triggering message if present, else `--model` if given, else the default for the executor actually being used, else nothing (the executor picks its own). So `--with codex` on the configuration above sends `o3`, never the Claude identifier.
 
 **Reasoning effort** is held per executor for the same reason, under `doWork.effort`, and resolves the same way — `--effort` if given, else `doWork.effort.<executor in use>`, else nothing:
 
@@ -67,6 +67,43 @@ The two executors express the level differently, and `do-work` handles the diffe
 automata does not validate the level. The valid set is executor- *and* model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it moves between executor releases, so an allow-list here would reject a level your installed executor accepts. The value is forwarded unchanged apart from surrounding whitespace, which is trimmed off both `--effort` and `doWork.effort.<executor>` — an untrimmed `" high "` is an unknown level, and neither executor reports one (see below). Only an empty level is refused, since it would emit a flag with no operand.
 
 **Neither executor errors on an unknown level**, so a typo is quiet rather than fatal: `claude` prints `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` and carries on, and `codex` forwards the value to the API and shows it as `reasoning effort: <x>` in its session header. Check that header, or Claude's warning, if a level does not seem to be taking effect.
+
+A `tool:` directive that switches executor re-picks **both** the model and the effort for the executor it switched to, dropping `--model` and `--effort` along with them — see [Steering one turn from a message](#steering-one-turn-from-a-message).
+
+---
+
+## Steering one turn from a message
+
+An authorized account can pick the executor and the model for the turn its message triggers, by writing a directive anywhere in the message body:
+
+| Directive | Effect |
+|---|---|
+| `tool:claude` / `tool:codex` | Run this turn with that executor. |
+| `model:<id>` | Pass that model identifier to the executor. |
+
+```text
+This one needs a second opinion — tool:codex model:gpt-5-codex
+
+Please rework the retry logic so it backs off exponentially.
+```
+
+- Only the **newest** authorized message the turn is answering is read — the issue comment, the pull request comment or review, the unresolved review-thread comment, or the issue description on a first turn. A directive in an older message is ignored.
+- Therefore a directive **never persists**. Every tick re-reads whichever message is newest then, and a message without a directive resolves to the ordinary defaults.
+- Matching is case-insensitive and works anywhere in the body. If a key appears more than once, the **last** occurrence wins.
+- A key must not be preceded by a word character, a hyphen or a colon, so `mytool:codex` and `no-tool:codex` are not directives.
+- `tool:` **without** `model:` uses `doWork.models.<the executor you asked for>`. A `--model` passed for the executor that was going to run is dropped when the directive switches executor, for the same reason the defaults are held per executor: a Claude identifier is not a valid Codex model.
+- The **reasoning effort** follows the executor the same way, even though no `effort:` directive exists: a switch drops `--effort` too and falls to `doWork.effort.<the executor you asked for>`, else nothing. The two executors accept different level names, so carrying `high` from a Claude default onto `codex` would be as wrong as carrying the model.
+- A `model:` value is **not validated** — automata cannot hold either executor's model catalogue. If the executor rejects it, that surfaces as an ordinary run failure.
+- The directive is **not stripped** from the conversation handed to the executor.
+- `automata implement-next` does not read directives; this is a `do-work` behaviour only.
+
+### An unrecognised `tool:` value refuses the run
+
+`tool:codexx` does not fall back to the default. Falling back would produce a Claude answer that the maintainer reads as a Codex answer, so the item is refused instead: no executor is invoked, the item is reported as `failed` (so the tick exits 2), and the `working…` marker is replaced with
+
+> automata do-work: the newest message asks for `tool:codexx`, which is not an executor automata knows (valid values are `claude` and `codex`). No run was started. Reply here with a corrected directive, or none at all, to have another attempt made.
+
+The refusal happens *after* the marker is posted, which is what advances the answer boundary — otherwise the mistyped message would stay new and be re-refused on every later tick. It does not consume a slot from the run cap, and the other items in the same tick are unaffected.
 
 ---
 
@@ -144,6 +181,19 @@ The command is built by the same argv builders the real invocation uses, so it c
 
 `--dry-run` respects the run cap, and reports how many items it did not describe.
 
+When the choice came from a message the `Executor` line says so, and an item a real tick would refuse shows the refusal instead of a command:
+
+```text
+  Executor     codex · model gpt-5-codex · effort medium — from the message
+```
+
+```text
+  Executor     refused — the newest message asks for `tool:codexx`, which is not an executor automata knows (valid values are `claude` and `codex`)
+  Command      none; a real tick would post the working marker and then replace it with this refusal
+```
+
+`--dry-run --json` carries the same information as `executor`, `model`, `effort`, `executorSource`, `modelSource`, `effortSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first six on each entry of `items`. `effortSource` is never `message` — no directive names a level — but it does change to the new executor's `config` when a `tool:` directive switches executor.
+
 ## Turn kinds
 
 | Turn | When | What the model is told |
@@ -185,6 +235,7 @@ After the run, `do-work` re-reads the surface:
 | Yes | **Deleted.** The answer is newer and holds the boundary, so the marker is noise. |
 | No | **Updated in place** to say the run finished or failed without posting an answer on that surface, to warn that the branch may still have changed, and to ask for a reply. |
 | Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
+| The run was refused before it started | **Updated in place** with the reason — an unrecognised `tool:` directive, or a prompt too long to hand to the executor. Nothing was invoked, so nothing changed. |
 
 A third comment appears only when the timing was unlucky: if an authorized account posts while a run is already in flight, that message cannot reach the run, and because the agent's answer is newer the next tick will not see it as new either. A stateless boundary cannot carry it forward, so the agent says so and asks for it to be posted again. The same applies to an issue message buried by the pickup note. Either case reports the item as degraded (exit 2) rather than losing the message in silence.
 
@@ -228,7 +279,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 Exit 2 means degraded, not broken. An item was:
 
 - `skipped` — nothing was attempted: a dirty tree, branch preparation failed, the marker could not be posted, the item stopped being actionable, or the pull request is unsafe to work on (from a fork, or its head *is* the base branch);
-- `failed` — the run errored, or a read failed before the executor was reached. A marker is updated only if one had already been posted;
+- `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
 
@@ -253,4 +304,5 @@ Pick an interval comfortably shorter than how long you are willing to wait for a
 - Push to the base branch.
 - Stash, reset or discard uncommitted changes — a dirty working tree skips the item instead.
 - Act on a message from an account that is not in `allowedUsers`.
+- Read a `tool:` or `model:` directive from anything but the newest message a turn is answering.
 - Retry a failed run on its own.

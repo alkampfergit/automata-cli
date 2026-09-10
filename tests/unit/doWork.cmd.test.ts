@@ -1225,6 +1225,12 @@ describe("do-work output modes", () => {
         outcome: "answered-no-reply",
         detail: expect.any(String),
         ranExecutor: true,
+        executor: "claude",
+        model: null,
+        effort: null,
+        executorSource: "default",
+        modelSource: "none",
+        effortSource: "none",
       },
     ]);
     expect(payload.exitCode).toBe(2);
@@ -1379,5 +1385,214 @@ describe("do-work executor selection", () => {
     const prompt = mockInvokeClaude.mock.calls[0][0] as string;
     expect(prompt.startsWith("Use the `my-repo-discuss` skill.")).toBe(true);
     expect(prompt).not.toMatch(/Do not modify, create or delete any file/);
+  });
+});
+
+/* ── message directives ─────────────────────────────────────────────────── */
+
+/** An issue whose newest authorized message carries `body`. */
+function withDirective(number: number, body: string): IssueSurface {
+  return {
+    ...needsWork(number),
+    messages: [
+      { kind: "issue-body", author: "alice", body: "please", createdAt: "2026-01-01T00:00:00Z" },
+      { kind: "issue-comment", author: "alice", body, createdAt: "2026-01-02T00:00:00Z" },
+    ],
+  };
+}
+
+describe("do-work message directives", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    mockInvokeCodex.mockResolvedValue(undefined);
+  });
+
+  it("runs with Codex when the newest message says tool:codex", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "please do it — tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalled();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("beats --with, which beats the configuration", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { executor: "codex" } });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "TOOL:CLAUDE"));
+    await runDoWork(["--with", "codex"]);
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("passes a model: directive to the executor", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "model:claude-opus-4-6"));
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "claude-opus-4-6" });
+  });
+
+  it("beats --model", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "model:from-message"));
+    await runDoWork(["--model", "from-flag"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: "from-message" });
+  });
+
+  it("uses the new executor's configured model when tool: switches executor", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", models: { claude: "claude-opus-4-6", codex: "o4-mini" } },
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: "o4-mini" });
+  });
+
+  it("drops a --model chosen for the other executor when tool: switches", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork(["--model", "claude-opus-4-6"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: undefined });
+  });
+
+  it("uses the new executor's configured effort when tool: switches executor", async () => {
+    // No `effort:` directive exists, but the level is keyed per executor, so a
+    // switch must re-pick it — `max` is a Claude level codex does not accept.
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", effort: { claude: "max", codex: "medium" } },
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: "medium",
+    });
+  });
+
+  it("drops an --effort chosen for the other executor when tool: switches", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: undefined,
+    });
+  });
+
+  it("keeps --effort when tool: names the executor that was going to run anyway", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:claude"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "max" });
+  });
+
+  it("ignores a directive in an older message", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => ({
+      ...needsWork(n),
+      messages: [
+        { kind: "issue-comment" as const, author: "alice", body: "tool:codex", createdAt: "2026-01-01T00:00:00Z" },
+        { kind: "issue-comment" as const, author: "alice", body: "carry on", createdAt: "2026-01-02T00:00:00Z" },
+      ],
+    }));
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("leaves the directive in the prompt handed to the executor", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "rework it — tool:claude"));
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][0]).toContain("tool:claude");
+  });
+
+  it("names the effective executor and its origin in the tick summary", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork();
+    expect(stdout).toContain("codex · model o3 — from the message");
+  });
+
+  it("names the effective executor in --dry-run", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Executor     codex · model o3 — from the message");
+  });
+
+  it("reports the origin in --dry-run --json", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex model:o3"));
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({
+      executor: "codex",
+      model: "o3",
+      executorSource: "message",
+      modelSource: "message",
+    });
+  });
+
+  it("reports the origin in --json for a completed item", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      gh.postMarker.mock.calls.length > 0 ? answered(n) : withDirective(n, "tool:codex"),
+    );
+    await runDoWork(["--json"]);
+    const payload = JSON.parse(stdout) as { items: Record<string, unknown>[] };
+    expect(payload.items[0]).toMatchObject({ executor: "codex", executorSource: "message" });
+  });
+});
+
+describe("do-work invalid tool directive", () => {
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codexx"));
+    mockInvokeCodex.mockResolvedValue(undefined);
+  });
+
+  it("invokes no executor", async () => {
+    await runDoWork();
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(mockInvokeCodex).not.toHaveBeenCalled();
+  });
+
+  it("explains the problem on the marker and names the valid values", async () => {
+    await runDoWork();
+    const text = gh.updateMarker.mock.calls[0][1] as string;
+    expect(text).toContain("`tool:codexx`");
+    expect(text).toContain("`claude`");
+    expect(text).toContain("`codex`");
+    expect(gh.deleteMarker).not.toHaveBeenCalled();
+  });
+
+  it("reports the item as failed and exits 2", async () => {
+    await runDoWork();
+    expect(stdout).toMatch(/#42 issue-discuss failed/);
+    expect(exitCode).toBe(2);
+  });
+
+  it("does not stop another issue in the same tick", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 42 ? withDirective(n, "tool:codexx") : needsWork(n),
+    );
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not consume a slot from the run cap", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 42 ? withDirective(n, "tool:codexx") : needsWork(n),
+    );
+    await runDoWork(["--max-runs", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(stdout).not.toMatch(/deferred/);
+  });
+
+  it("shows the refusal in --dry-run without a command", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Executor     refused —");
+    expect(stdout).not.toContain("--dangerously-skip-permissions");
+  });
+
+  // The marker is posted before the refusal is decided and then edited in
+  // place, which is what advances the answer boundary. Wording that implied a
+  // real tick posts nothing would contradict the rest of `docs/do-work.md`.
+  it("says a real tick still posts the marker and replaces it", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain(
+      "Command      none; a real tick would post the working marker and then replace it with this refusal",
+    );
   });
 });
