@@ -137,7 +137,11 @@ One tick of the autonomous loop: answer the open issues whose newest message fro
 
 ### Prerequisites
 
-- Node.js LTS (20+)
+- Node.js `^22.13.0 || ^24.0.0 || >=26.0.0` — npm and the tests are the narrow constraint here, not the CLI.
+  The **published** floor is 22.12 (`engines.node`, set by `commander` and `ink`), but the dev toolchain is stricter:
+  `eslint@10` needs `^20.19.0 || ^22.13.0 || >=24` and `vitest@5` needs `^22.12.0 || ^24.0.0 || >=26.0.0`, so their
+  intersection excludes Node 22.12, 23 and 25. Node 24 LTS is what CI runs and the safe choice.
+  See [docs/maintenance.md](docs/maintenance.md).
 - npm
 
 ### Setup
@@ -165,8 +169,14 @@ git submodule update --init --recursive
 | `npm run lint` | Lint source files with ESLint |
 | `npm run typecheck` | Type-check with tsc (no emit) |
 | `npm run format` | Check formatting with Prettier |
+| `npm run audit:prod` | Audit the dependencies that ship — also runs via `prepublishOnly`, so an advisory blocks publishing |
+| `npm run audit:all` | Audit the whole tree, dev toolchain included (advisory only) |
 
 Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
+
+### Maintenance
+
+Dependency-refresh policy, the supported Node.js floor, what the publish-time audit gate blocks on, and the standing upgrade exceptions are documented in [docs/maintenance.md](docs/maintenance.md).
 
 ## License
 

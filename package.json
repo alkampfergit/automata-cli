@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Automata CLI tool",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "bin": {
     "automata": "./dist/index.js"
   },
@@ -15,6 +18,9 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "format": "prettier --check src/",
+    "audit:prod": "npm audit --omit=dev",
+    "audit:all": "npm audit",
+    "prepublishOnly": "npm run audit:prod",
     "test": "npm run build && vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "npm run build && vitest run tests/integration"
@@ -25,20 +31,20 @@
   },
   "license": "MIT",
   "dependencies": {
-    "commander": "^14.0.3",
-    "ink": "^6.8.0",
-    "react": "^19.2.4"
+    "commander": "^15.0.0",
+    "ink": "^7.1.1",
+    "react": "^19.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.5.0",
-    "@types/react": "^19.2.14",
-    "eslint": "^10.1.0",
+    "@types/react": "^19.3.0",
+    "eslint": "^10.10.0",
     "ink-testing-library": "^4.0.0",
-    "prettier": "^3.8.1",
+    "prettier": "^3.9.6",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.57.2",
-    "vitest": "^4.1.2"
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
   }
 }

@@ -9,7 +9,10 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Key Technologies
 
 - TypeScript 5.x (strict mode)
-- Node.js LTS (18+)
+- Node.js 22.12+ to *run* the CLI (floor set by `commander` 15 and `ink` 7; declared in `package.json` `engines`,
+  which npm reports as an `EBADENGINE` warning rather than refusing the install)
+- Node.js `^22.13.0 || ^24.0.0 || >=26.0.0` to *develop* — the stricter intersection of `eslint@10` and `vitest@5`;
+  Node 24 LTS is what CI runs
 - commander.js for CLI framework
 - vitest for testing
 - tsup for bundling
@@ -17,6 +20,7 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Working Defaults
 
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
+- After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
 
 ## Documentation Convention

@@ -41,12 +41,20 @@ const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Code
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 
+// ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
+// tell it apart from the start of a longer escape sequence, so advancing only
+// microtasks is not enough to observe an Esc keypress.
+const ESC_FLUSH_MS = 30;
+
 async function tick() {
   for (let i = 0; i < 3; i += 1) {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
   }
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ESC_FLUSH_MS);
+  });
 }
 
 async function navigateToPromptsMenu(stdin: { write: (s: string) => void }) {
