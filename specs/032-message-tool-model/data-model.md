@@ -34,6 +34,8 @@ What one work item will actually run with.
 | `executorSource` | `ExecutionSource` | Where it came from. |
 | `model` | `string \| undefined` | The model identifier to pass, or `undefined` to let the executor choose. |
 | `modelSource` | `ExecutionSource \| "none"` | Where it came from; `"none"` when there is no model override. |
+| `effort` | `string \| undefined` | The reasoning effort level to pass, or `undefined` to let the executor choose. |
+| `effortSource` | `Exclude<ExecutionSource, "message" \| "default"> \| "none"` | Where it came from. Never `message` — no directive names a level — and never `default`, since there is no built-in level. |
 
 ## `ResolveExecutionResult`
 
@@ -56,6 +58,8 @@ comment can quote it back to the maintainer.
 | `modelOption` | `string \| undefined` | `--model`, never validated. |
 | `configExecutor` | `Executor \| undefined` | `doWork.executor`. |
 | `configModels` | `DoWorkModels \| undefined` | `doWork.models`. |
+| `effortOption` | `string \| undefined` | `--effort`, already trimmed and rejected-if-empty by the command. |
+| `configEfforts` | `DoWorkEffort \| undefined` | `doWork.effort`. |
 | `defaultExecutor` | `Executor` | The built-in fallback, passed in rather than duplicated from `DEFAULT_DO_WORK`. Required. |
 
 ## Precedence, as a table
@@ -80,6 +84,20 @@ The model, given the executor resolved above:
 | absent | no | set | any | `--model` | `option` |
 | absent | no | unset | set | config | `config` |
 | absent | no | unset | unset | none | `none` |
+
+The effort, given the same resolved executor. No directive can name a level, so the only
+thing a message changes is *which* executor's level applies:
+
+| executor switched by `tool:` | `--effort` | `doWork.effort.<executor>` | Result | `effortSource` |
+|---|---|---|---|---|
+| yes | any | set | config for the **new** executor | `config` |
+| yes | any | unset | none | `none` |
+| no | set | any | `--effort` | `option` |
+| no | unset | set | config | `config` |
+| no | unset | unset | none | `none` |
+
+A configured level is trimmed, and a whitespace-only one is treated as unset: config
+validation only rejects an empty level, and neither executor reports an unknown one.
 
 "Switched" means the directive named an executor different from the one `--with` / config /
 default would have produced.

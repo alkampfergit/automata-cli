@@ -16,6 +16,8 @@ export interface ResolvedExecution {
   executorSource: ExecutionSource;
   model: string | undefined;
   modelSource: ExecutionSource | "none";
+  effort: string | undefined;
+  effortSource: Exclude<ExecutionSource, "message" | "default"> | "none";
 }
 
 export type ResolveExecutionResult =
@@ -28,6 +30,9 @@ export interface ResolveExecutionInput {
   modelOption?: string | undefined;
   configExecutor?: Executor | undefined;
   configModels?: DoWorkModels | undefined;
+  /** `--effort`, already trimmed and rejected-if-empty by the command. */
+  effortOption?: string | undefined;
+  configEfforts?: DoWorkEffort | undefined;
   /** The built-in fallback, passed in rather than duplicated from `DEFAULT_DO_WORK`. */
   defaultExecutor: Executor;
 }
@@ -44,7 +49,7 @@ export function resolveExecution(input: ResolveExecutionInput): ResolveExecution
 /** The two values a `tool:` directive may take, for error messages. */
 export const VALID_TOOLS: readonly Executor[];
 
-/** One-line human rendering, e.g. `codex · model gpt-5-codex — from the message`. */
+/** One-line human rendering, e.g. `codex · model gpt-5-codex · effort medium — from the message`. */
 export function describeExecution(execution: ResolvedExecution): string;
 ```
 

@@ -184,7 +184,7 @@ The command is built by the same argv builders the real invocation uses, so it c
 When the choice came from a message the `Executor` line says so, and an item a real tick would refuse shows the refusal instead of a command:
 
 ```text
-  Executor     codex · model gpt-5-codex — from the message
+  Executor     codex · model gpt-5-codex · effort medium — from the message
 ```
 
 ```text
@@ -192,7 +192,7 @@ When the choice came from a message the `Executor` line says so, and an item a r
   Command      none; a real tick would post the working marker and then replace it with this refusal
 ```
 
-`--dry-run --json` carries the same information as `executor`, `model`, `executorSource`, `modelSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first four on each entry of `items`.
+`--dry-run --json` carries the same information as `executor`, `model`, `effort`, `executorSource`, `modelSource`, `effortSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first six on each entry of `items`. `effortSource` is never `message` — no directive names a level — but it does change to the new executor's `config` when a `tool:` directive switches executor.
 
 ## Turn kinds
 

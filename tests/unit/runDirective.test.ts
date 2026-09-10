@@ -239,6 +239,100 @@ describe("resolveExecution — the model", () => {
   });
 });
 
+/* ── resolveExecution — the reasoning effort ────────────────────────────── */
+
+describe("resolveExecution — the effort", () => {
+  it("is absent when neither the flag nor the config names one", () => {
+    expect(resolveExecution(input())).toMatchObject({ effort: undefined, effortSource: "none" });
+  });
+
+  it("takes the configured default for the executor in use", () => {
+    expect(
+      resolveExecution(
+        input({ configExecutor: "codex", configEfforts: { claude: "high", codex: "medium" } }),
+      ),
+    ).toMatchObject({ executor: "codex", effort: "medium", effortSource: "config" });
+  });
+
+  it("lets --effort override the configured default", () => {
+    expect(
+      resolveExecution(input({ effortOption: "max", configEfforts: { claude: "high" } })),
+    ).toMatchObject({ effort: "max", effortSource: "option" });
+  });
+
+  it("trims a configured level so padding cannot reach the executor", () => {
+    // Neither executor errors on an unknown level, so `" high "` would be
+    // silently ignored rather than reported.
+    expect(resolveExecution(input({ configEfforts: { claude: "  high  " } }))).toMatchObject({
+      effort: "high",
+      effortSource: "config",
+    });
+  });
+
+  it("treats a whitespace-only configured level as absent", () => {
+    expect(resolveExecution(input({ configEfforts: { claude: "   " } }))).toMatchObject({
+      effort: undefined,
+      effortSource: "none",
+    });
+  });
+
+  it("uses the new executor's configured level when tool: switches executor", () => {
+    // The two CLIs accept different level names, so the level must follow the
+    // executor exactly the way the model does.
+    expect(
+      resolveExecution(
+        input({
+          directive: { tool: "codex", model: undefined },
+          configExecutor: "claude",
+          configEfforts: { claude: "max", codex: "medium" },
+        }),
+      ),
+    ).toMatchObject({ executor: "codex", effort: "medium", effortSource: "config" });
+  });
+
+  it("drops --effort when tool: switches executor", () => {
+    // `max` is a Claude level codex does not accept; carrying the operator's
+    // flag across the switch would forward it to the API unchallenged.
+    expect(
+      resolveExecution(
+        input({
+          directive: { tool: "codex", model: undefined },
+          effortOption: "max",
+          configExecutor: "claude",
+        }),
+      ),
+    ).toMatchObject({ executor: "codex", effort: undefined, effortSource: "none" });
+  });
+
+  it("keeps --effort when tool: names the executor that was going to run anyway", () => {
+    expect(
+      resolveExecution(
+        input({
+          directive: { tool: "claude", model: undefined },
+          effortOption: "max",
+          configExecutor: "claude",
+        }),
+      ),
+    ).toMatchObject({ executor: "claude", effort: "max", effortSource: "option" });
+  });
+
+  it("is unaffected by a model: directive, which says nothing about the effort", () => {
+    expect(
+      resolveExecution(
+        input({ directive: { tool: undefined, model: "opus" }, configEfforts: { claude: "high" } }),
+      ),
+    ).toMatchObject({ model: "opus", modelSource: "message", effort: "high", effortSource: "config" });
+  });
+
+  it("is not resolved at all when the tool: value is invalid", () => {
+    expect(
+      resolveExecution(
+        input({ directive: { tool: "codexx", model: undefined }, configEfforts: { claude: "high" } }),
+      ),
+    ).toEqual({ ok: false, invalidTool: "codexx" });
+  });
+});
+
 /* ── triggeringMessage ──────────────────────────────────────────────────── */
 
 function workItem(overrides: Partial<WorkItem>): WorkItem {
@@ -370,6 +464,8 @@ describe("describeExecution", () => {
         executorSource: "config",
         model: "o3",
         modelSource: "config",
+        effort: undefined,
+        effortSource: "none",
       }),
     ).toBe("codex · model o3");
   });
@@ -381,6 +477,8 @@ describe("describeExecution", () => {
         executorSource: "default",
         model: undefined,
         modelSource: "none",
+        effort: undefined,
+        effortSource: "none",
       }),
     ).toBe("claude (no model override)");
   });
@@ -392,6 +490,8 @@ describe("describeExecution", () => {
         executorSource: "message",
         model: undefined,
         modelSource: "none",
+        effort: undefined,
+        effortSource: "none",
       }),
     ).toBe("codex (no model override) — from the message");
   });
@@ -403,8 +503,38 @@ describe("describeExecution", () => {
         executorSource: "default",
         model: "opus",
         modelSource: "message",
+        effort: undefined,
+        effortSource: "none",
       }),
     ).toBe("claude · model opus — from the message");
+  });
+
+  it("names the effort after the model when there is one", () => {
+    expect(
+      describeExecution({
+        executor: "codex",
+        executorSource: "config",
+        model: "o3",
+        modelSource: "config",
+        effort: "medium",
+        effortSource: "config",
+      }),
+    ).toBe("codex · model o3 · effort medium");
+  });
+
+  it("keeps the message credit last, after the effort", () => {
+    // The credit is about the executor and the model; no directive can name an
+    // effort, so it must not read as if one did.
+    expect(
+      describeExecution({
+        executor: "codex",
+        executorSource: "message",
+        model: undefined,
+        modelSource: "none",
+        effort: "medium",
+        effortSource: "config",
+      }),
+    ).toBe("codex (no model override) · effort medium — from the message");
   });
 });
 

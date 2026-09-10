@@ -313,12 +313,18 @@ function resolveItemExecution(item: WorkItem, settings: Settings): ReturnType<ty
 
 /**
  * Drop the `ok` discriminant, leaving just the resolved values. Written once so
- * a new field on `ResolvedExecution` cannot reach the real run while silently
- * missing from the dry run.
+ * the real run and the dry run cannot disagree; the declared return type makes
+ * a field added to `ResolvedExecution` and forgotten here a compile error.
  */
 function toExecution(resolved: Extract<ResolveExecutionResult, { ok: true }>): ResolvedExecution {
-  const { ok: _ok, ...execution } = resolved;
-  return execution;
+  return {
+    executor: resolved.executor,
+    executorSource: resolved.executorSource,
+    model: resolved.model,
+    modelSource: resolved.modelSource,
+    effort: resolved.effort,
+    effortSource: resolved.effortSource,
+  };
 }
 
 /**

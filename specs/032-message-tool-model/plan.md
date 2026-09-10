@@ -124,16 +124,20 @@ and a new top-level directory for one 120-line module would violate Principle V.
    may be invalid — validation is the caller's job) and `model` keeps its original case.
 
 3. **`resolveExecution({ directive, withOption, modelOption, configExecutor, configModels,
-   defaultExecutor })`**
-   — returns either `{ ok: true, executor, executorSource, model, modelSource }` or
+   effortOption, configEfforts, defaultExecutor })`**
+   — returns either
+   `{ ok: true, executor, executorSource, model, modelSource, effort, effortSource }` or
    `{ ok: false, invalidTool }`. The `--with` value is validated by the caller before it gets
-   here, as it is today.
+   here, as it is today, and `--effort` is trimmed and rejected-if-empty there too. The
+   reasoning effort has no directive of its own but is keyed per executor, so it is re-picked
+   by the same "switched executor" rule as the model: one shared helper resolves both.
 
 ### Where it plugs into `doWork.ts`
 
-`Settings` keeps the *baseline* resolution (what `--with` / `--model` / config say), and a new
-per-item `ResolvedExecution` is computed in `processItem` and in `reportDryRun`. Everything
-downstream that reads `settings.executor` / `settings.model` — `planRun`,
+`Settings` keeps the *baseline* resolution (what `--with` / `--model` / `--effort` / config
+say), and a new per-item `ResolvedExecution` is computed in `processItem` and in
+`reportDryRun`. Everything downstream that reads `settings.executor` / `settings.model` /
+`settings.effort` — `planRun`,
 `describePlannedRun`, `invokeExecutor`, `toRunJson` — takes the resolved value as a parameter
 instead. The invalid-tool refusal reuses the exact shape of the oversized-prompt refusal:
 `updateMarker(...)` with an explanation, `progress(...)`, and a `failed` `ItemReport` with no

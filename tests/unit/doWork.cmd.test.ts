@@ -1450,6 +1450,36 @@ describe("do-work message directives", () => {
     expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), { model: undefined });
   });
 
+  it("uses the new executor's configured effort when tool: switches executor", async () => {
+    // No `effort:` directive exists, but the level is keyed per executor, so a
+    // switch must re-pick it — `max` is a Claude level codex does not accept.
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "claude", effort: { claude: "max", codex: "medium" } },
+    });
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork();
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: "medium",
+    });
+  });
+
+  it("drops an --effort chosen for the other executor when tool: switches", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:codex"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: undefined,
+    });
+  });
+
+  it("keeps --effort when tool: names the executor that was going to run anyway", async () => {
+    gh.getIssueSurface.mockImplementation((n: number) => withDirective(n, "tool:claude"));
+    await runDoWork(["--effort", "max"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "max" });
+  });
+
   it("ignores a directive in an older message", async () => {
     gh.getIssueSurface.mockImplementation((n: number) => ({
       ...needsWork(n),
