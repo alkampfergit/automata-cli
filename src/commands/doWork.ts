@@ -54,6 +54,7 @@ import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import { runRepoHygiene, type HygieneReport, type PruneOutcome } from "../git/repoHygiene.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
+import { recordTick, type TickLogItem } from "../run/operationLog.js";
 import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
@@ -126,8 +127,25 @@ function progress(message: string): void {
   process.stderr.write(message);
 }
 
+/**
+ * The current invocation, for the benefit of `fail()`.
+ *
+ * Null for a dry run and until the action starts, so nothing is logged for an
+ * invocation that is not meant to leave a trace.
+ */
+let loggableInvocation: { startedAt: number } | null = null;
+
 function fail(message: string): never {
   process.stderr.write(`Error: ${message}\n`);
+  // Every `fail()` is a pre-flight misconfiguration that exits before the tick
+  // begins. Without a line here a loop that stopped working because someone
+  // edited `.automata/config.json` looks exactly like cron having stopped
+  // firing — the one confusion the execution log exists to remove.
+  if (loggableInvocation !== null) {
+    const { startedAt } = loggableInvocation;
+    loggableInvocation = null;
+    logTick([], 1, startedAt, "config-error");
+  }
   process.exit(1);
 }
 
@@ -1146,6 +1164,11 @@ export const doWorkCommand = new Command("do-work")
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
+    // Before `resolveSettings`, which exits through `fail()` on any bad
+    // configuration: arming this first is what lets that path be logged.
+    const startedAt = Date.now();
+    if (options.dryRun !== true) loggableInvocation = { startedAt };
+
     const settings = resolveSettings(options);
 
     // A dry run changes nothing, so it neither needs the lock nor should be
@@ -1153,14 +1176,21 @@ export const doWorkCommand = new Command("do-work")
     // would defeat the primary diagnostic. It also avoids creating the lock file
     // in a repository that has not ignored it.
     if (options.dryRun === true) {
-      const exitCode = await runTick(settings, options);
+      const { exitCode } = await runTick(settings, options);
       if (exitCode !== 0) process.exit(exitCode);
       return;
     }
 
+    // From here the ordinary paths below do the logging; `fail()` must not.
+    loggableInvocation = null;
+
     const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
     if (!lock.ok) {
       const exitCode = reportLockHeld(lock, settings, options);
+      // A loop wedged behind a stale lock does nothing on every tick, and
+      // without a line that is indistinguishable from cron having stopped
+      // firing — which is the failure the execution log exists to expose.
+      logTick([], exitCode, startedAt, "lock-held");
       if (exitCode !== 0) process.exit(exitCode);
       return;
     }
@@ -1194,8 +1224,11 @@ export const doWorkCommand = new Command("do-work")
     process.once("SIGTERM", onSignal);
 
     let exitCode: number;
+    let reports: ItemReport[] = [];
     try {
-      exitCode = await runTick(settings, options);
+      const result = await runTick(settings, options);
+      exitCode = result.exitCode;
+      reports = result.reports;
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       exitCode = 1;
@@ -1205,8 +1238,51 @@ export const doWorkCommand = new Command("do-work")
       process.removeListener("SIGTERM", onSignal);
     }
 
+    // After the lock is released: a log write must never extend the window in
+    // which the next cron tick is turned away.
+    logTick(reports, exitCode, startedAt);
+
     if (exitCode !== 0) process.exit(exitCode);
   });
+
+/** An item report as the operation log wants it, mirroring `toItemJson`. */
+function toTickLogItem(report: ItemReport): TickLogItem {
+  return {
+    issue: report.issue,
+    turn: report.turn,
+    outcome: report.outcome,
+    detail: report.detail,
+    ranExecutor: report.ranExecutor ?? false,
+    executor: report.execution?.executor,
+    model: report.execution?.model,
+    effort: report.execution?.effort,
+  };
+}
+
+/**
+ * Append this invocation to the operation log. Best-effort throughout:
+ * `recordTick` swallows every filesystem failure, and the slug lookup shells
+ * out to `git remote get-url origin`, so a broken remote logs `repo=-` rather
+ * than taking the tick down after it has already succeeded.
+ */
+function logTick(reports: ItemReport[], exitCode: number, startedAt: number, note?: string): void {
+  let repo: string | null;
+  try {
+    const slug = getRepoSlug();
+    repo = `${slug.owner}/${slug.repo}`;
+  } catch {
+    repo = null;
+  }
+  recordTick({
+    command: "do-work",
+    repo,
+    timestamp: new Date(),
+    durationMs: Date.now() - startedAt,
+    exitCode,
+    note,
+    items: reports.map(toTickLogItem),
+  });
+}
 
 // Not a failure: cron firing while a tick is still running is normal. Returns
 // the exit code the caller should use.
@@ -1260,7 +1336,13 @@ function explainInterruptedMarker(): void {
   }
 }
 
-async function runTick(settings: Settings, options: DoWorkOptions): Promise<number> {
+interface TickResult {
+  exitCode: number;
+  /** Empty for a dry run; the action needs these to write the operation log. */
+  reports: ItemReport[];
+}
+
+async function runTick(settings: Settings, options: DoWorkOptions): Promise<TickResult> {
   // Before anything is read from GitHub: put the repository into a known state.
   // Uncommitted work is committed and pushed rather than left to make every item
   // skip on `dirty-tree`, the base branch is fast-forwarded whether or not there
@@ -1294,7 +1376,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
 
   if (options.dryRun) {
     reportDryRun(items, decisions, settings, options, hygiene);
-    return 0;
+    return { exitCode: 0, reports: [] };
   }
 
   // The cap counts *model runs*, not planned items: an item that turns out not
@@ -1373,7 +1455,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<numb
     summarize(reports);
   }
 
-  return exitCode;
+  return { exitCode, reports };
 }
 
 /**

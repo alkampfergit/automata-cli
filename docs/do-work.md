@@ -358,6 +358,99 @@ A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 
 ---
 
+## The operation log
+
+Every non-dry-run `do-work` invocation appends to two plain-text files in the **parent directory of the working directory** — so a checkout at `~/workspaces/my-repo` writes to `~/workspaces/`:
+
+```text
+~/workspaces/
+├── automata-execution.log   ← one line per invocation (newest 1000 lines kept)
+├── automata-work.log        ← one record per invocation that ran the executor (30 days kept)
+└── my-repo/                 ← where you run do-work
+```
+
+Several checkouts under one parent share the two files. The repository slug on every line and every record header keeps them apart.
+
+Nothing to configure, and nothing to turn on: the location, the 1000-line cap and the 30-day window are all fixed.
+
+### `automata-execution.log`
+
+One line per invocation, including invocations that found nothing to do. Fields are `key=value` and every outcome bucket is present even at zero, so `grep -c 'runs=0'` is a meaningful query.
+
+```text
+2026-09-10T06:51:36.412Z do-work repo=acme/widget items=2 answered=1 answered-no-reply=0 skipped=0 failed=0 deferred=1 runs=1 exit=2 dur=42.1s
+2026-09-10T06:56:03.008Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=1.8s
+2026-09-10T07:01:02.771Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=0.3s note=lock-held
+2026-09-10T07:06:01.334Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=1 dur=0.1s note=config-error
+```
+
+| Field | Meaning |
+|---|---|
+| *(first field)* | UTC ISO-8601 timestamp, written when the tick finished |
+| *(second field)* | The command — always `do-work` |
+| `repo` | `owner/name`, or `-` when the slug could not be resolved |
+| `items` | Reported items, including deferred and skipped ones |
+| `answered`, `answered-no-reply`, `skipped`, `failed`, `deferred` | Item count per [outcome](#exit-codes) |
+| `runs` | Items for which the executor was actually invoked — what `--max-runs` counts |
+| `exit` | The process exit code (see [Exit codes](#exit-codes)) |
+| `dur` | Wall-clock duration in seconds |
+| `note` | Present only for an invocation that ran no tick: `lock-held`, or `config-error` when the run was rejected before the tick began |
+
+After the append, the file is trimmed to its newest 1000 lines.
+
+A line can read `exit=2` with every outcome bucket at zero: that is a tick whose
+[repository-hygiene pre-flight](#the-repository-hygiene-pre-flight) degraded before any item
+was processed. The pre-flight's own outcome is not broken out into fields here — use the
+tick's stdout, or `--json`, for that detail.
+
+Useful queries:
+
+```sh
+tail -f ../automata-execution.log                 # watch the loop
+awk '{print $1}' ../automata-execution.log | tail -1   # when it last fired
+grep 'exit=2' ../automata-execution.log | tail    # the last degraded ticks
+grep 'note=lock-held' ../automata-execution.log   # ticks turned away by the run lock
+grep 'note=config-error' ../automata-execution.log # ticks rejected before they began
+```
+
+If the newest timestamp is older than your cron interval, the loop is not firing — that is the question this file exists to answer.
+
+### `automata-work.log`
+
+One record per invocation in which the executor was actually invoked for at least one item, listing exactly those items. A tick where everything was deferred by the run cap, skipped for a dirty tree, or simply not actionable writes nothing here.
+
+```text
+=== 2026-09-10T06:51:36.412Z acme/widget ===
+#53 issue-discuss answered [claude model=opus-5] — posted a reply
+#51 pr-work answered [codex effort=high] — pushed 2 commits
+
+=== 2026-09-10T07:34:11.902Z acme/widget ===
+#57 issue-discuss failed [claude] — the executor exited with status 1
+
+```
+
+A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the issue number, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set) and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+
+On append, records whose header timestamp is more than 30 days old are dropped. A rolling 30 days, not the previous calendar month: a calendar boundary would delete four weeks of history in one step on the first.
+
+### When the files cannot be written
+
+The logs are diagnostics, never a deliverable. Before writing, automata checks that the directory is writable; if it is not, **both files are skipped silently** — no error, no warning, no change to stdout or to the exit code. Any failure during the write itself is swallowed the same way. A `do-work` tick behaves identically whether or not the logs can be written.
+
+```sh
+chmod a-w .. && automata do-work --limit 1 ; echo "exit=$?" ; chmod u+w ..
+```
+
+### Known limits
+
+- `--dry-run` writes to neither file, matching its promise that nothing changes.
+- An interrupted tick (`Ctrl-C`, `SIGTERM`) writes no line: the process exits from the signal handler before the tick returns.
+- A run rejected for bad configuration **does** write a line, marked `note=config-error`. A loop that stopped working because someone edited `.automata/config.json` is otherwise indistinguishable here from cron having stopped firing.
+- Only `do-work` writes these files. `implement-next`, `execute`, `execute-prompt` and the `git` subcommands do not.
+- When two checkouts under one parent log at the same moment and one of them crosses the 1000-line boundary, the rewrite can lose a line the other just appended. Accepted for a diagnostic log.
+
+---
+
 ## Running under cron
 
 ```cron
@@ -365,6 +458,8 @@ A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 ```
 
 Pick an interval comfortably shorter than how long you are willing to wait for a reply, and do not worry about it being shorter than a tick — the lock handles that. See [wiki/Operations.md](wiki/Operations.md).
+
+You do not have to redirect anywhere to keep a record: [the operation log](#the-operation-log) is maintained regardless, and survives the cron mail you never read.
 
 ---
 

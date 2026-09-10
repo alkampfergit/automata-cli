@@ -22,6 +22,7 @@ const mockAddClosesRefToPr = vi.fn();
 const mockPrepareBaseBranch = vi.fn();
 const mockPreparePrBranch = vi.fn();
 const mockAcquireRunLock = vi.fn();
+const mockRecordTick = vi.fn();
 const mockRelease = vi.fn();
 const mockInvokeClaude = vi.fn();
 const mockInvokeCodex = vi.fn();
@@ -77,6 +78,13 @@ const CLEAN_HYGIENE = {
 
 vi.mock("../../src/run/runLock.js", () => ({
   acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
+}));
+
+// Stubbed rather than pointed at a temp directory: the real module writes to
+// the *parent* of the working directory, so an unmocked test run would litter
+// the directory above the checkout on any machine where it is writable.
+vi.mock("../../src/run/operationLog.js", () => ({
+  recordTick: (...a: unknown[]) => mockRecordTick(...a),
 }));
 
 vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
@@ -1768,5 +1776,157 @@ describe("do-work pre-flight repository hygiene", () => {
 
     // Every step writes to this one checkout, so the lock has to gate it.
     expect(mockRunRepoHygiene).not.toHaveBeenCalled();
+  });
+});
+
+/* ── operation log ──────────────────────────────────────────────────────── */
+
+describe("do-work operation log", () => {
+  interface RecordedTick {
+    command: string;
+    repo: string | null;
+    timestamp: Date;
+    durationMs: number;
+    exitCode: number;
+    note?: string;
+    items: {
+      issue: number;
+      turn: string | null;
+      outcome: string;
+      detail: string;
+      ranExecutor: boolean;
+      executor?: string;
+      model?: string;
+      effort?: string;
+    }[];
+  }
+
+  function recorded(): RecordedTick {
+    expect(mockRecordTick).toHaveBeenCalledTimes(1);
+    return mockRecordTick.mock.calls[0][0] as RecordedTick;
+  }
+
+  it("records a tick that answered an issue, with the resolved executor", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    const before = Date.now();
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.command).toBe("do-work");
+    expect(tick.repo).toBe("acme/widget");
+    // `>= 0` would be true by construction and would still pass if `startedAt`
+    // were captured in the wrong place; pin it to a real window instead.
+    expect(tick.timestamp.getTime()).toBeGreaterThanOrEqual(before);
+    expect(tick.timestamp.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tick.durationMs).toBeLessThanOrEqual(Date.now() - before);
+    expect(tick.note).toBeUndefined();
+    expect(tick.items).toHaveLength(1);
+    expect(tick.items[0]).toMatchObject({
+      issue: 42,
+      turn: "issue-discuss",
+      ranExecutor: true,
+      executor: "claude",
+    });
+    expect(tick.exitCode).toBe(exitCode ?? 0);
+  });
+
+  it("records a tick that found nothing, so a silent loop is still visible", async () => {
+    gh.listCandidateIssues.mockReturnValue([]);
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.items).toEqual([]);
+    expect(tick.exitCode).toBe(0);
+  });
+
+  it("records a deferred item as not having run the executor", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--max-runs", "1"]);
+
+    const tick = recorded();
+    const deferred = tick.items.find((item) => item.outcome === "deferred");
+    expect(deferred).toBeDefined();
+    expect(deferred?.ranExecutor).toBe(false);
+    expect(tick.items.filter((item) => item.ranExecutor)).toHaveLength(1);
+  });
+
+  it("records a tick that threw, so an exploding loop leaves a trace", async () => {
+    gh.listCandidateIssues.mockImplementation(() => {
+      throw new Error("gh exploded");
+    });
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.exitCode).toBe(1);
+    expect(tick.items).toEqual([]);
+  });
+
+  it("marks a run blocked by the lock, which is otherwise indistinguishable from cron not firing", async () => {
+    mockAcquireRunLock.mockReturnValue({
+      ok: false,
+      heldBy: { pid: 4242, startedAt: "2026-01-10T00:00:00Z", host: "runner-1", command: "do-work", token: "t" },
+      suspect: false,
+    });
+    await runDoWork();
+
+    const tick = recorded();
+    expect(tick.note).toBe("lock-held");
+    expect(tick.items).toEqual([]);
+    expect(tick.exitCode).toBe(0);
+  });
+
+  it("logs repo=null rather than failing when the slug cannot be resolved", async () => {
+    gh.getRepoSlug.mockImplementation(() => {
+      throw new Error("not a git repository");
+    });
+    gh.listCandidateIssues.mockReturnValue([]);
+    await runDoWork();
+
+    expect(recorded().repo).toBeNull();
+  });
+
+  // A misconfigured loop exits through `fail()` before the tick begins. Without
+  // a line here it is indistinguishable, in the log, from cron having stopped
+  // firing — which is the one confusion this file exists to remove.
+  it("records a configuration error that stops the tick before it starts", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork();
+
+    expect(exitCode).toBe(1);
+    const tick = recorded();
+    expect(tick.note).toBe("config-error");
+    expect(tick.exitCode).toBe(1);
+    expect(tick.items).toEqual([]);
+  });
+
+  it("writes nothing for a configuration error during a dry run", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork(["--dry-run"]);
+
+    expect(exitCode).toBe(1);
+    expect(mockRecordTick).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing for a dry run", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork(["--dry-run"]);
+
+    expect(mockRecordTick).not.toHaveBeenCalled();
+  });
+
+  it("leaves the --json payload untouched", async () => {
+    // The log is a side channel: the documented JSON contract must not gain a key.
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["dryRun", "exitCode", "items", "plan", "preflight"]);
+    expect(mockRecordTick).toHaveBeenCalledTimes(1);
   });
 });
