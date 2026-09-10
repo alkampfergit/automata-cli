@@ -333,6 +333,9 @@ describe("do-work preconditions", () => {
     ["a string where prompts should be an object", { prompts: "custom.md" }, /doWork.prompts must be an object/],
     ["an unrecognised prompt key", { prompts: { discuss: "x.md" } }, /doWork.prompts.discuss is not a recognised setting/],
     ["a non-object models section", { models: [] }, /doWork.models must be an object/],
+    ["an empty effort", { effort: { claude: "" } }, /effort.claude must be a non-empty string/],
+    ["a non-object effort section", { effort: [] }, /doWork.effort must be an object/],
+    ["an unrecognised effort key", { effort: { gemini: "high" } }, /doWork.effort.gemini is not a recognised setting/],
   ])("refuses %s in the doWork section", async (_what, doWork, expected) => {
     // The types say these are well formed; the hand-edited file makes no such
     // promise, and an unattended loop is the worst place to misread it silently.
@@ -1087,6 +1090,38 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("exec --dangerously-bypass-approvals-and-sandbox --model o3");
   });
 
+  it("--dry-run prints the effort argument as part of the claude command", async () => {
+    await runDoWork(["--dry-run", "--effort", "high"]);
+    expect(stdout).toContain("Executor     claude (no model override) · effort high");
+    expect(stdout).toContain("--effort high");
+  });
+
+  it("--dry-run prints the codex effort as the -c override that would be spawned", async () => {
+    // Codex has no effort flag, so the dry run must show the config override or
+    // it would be describing a command codex could not run.
+    await runDoWork(["--dry-run", "--with", "codex", "--effort", "high"]);
+    expect(stdout).toContain("Executor     codex (no model override) · effort high");
+    expect(stdout).toContain(String.raw`-c 'model_reasoning_effort="high"'`);
+  });
+
+  it("--dry-run prints no effort argument when none is in force", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).not.toContain("--effort");
+    expect(stdout).not.toContain("effort ");
+  });
+
+  it("--dry-run --json reports the resolved effort", async () => {
+    await runDoWork(["--dry-run", "--json", "--effort", "high"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({ effort: "high" });
+  });
+
+  it("--dry-run --json reports a null effort when none is in force", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as { runs: Record<string, unknown>[] };
+    expect(payload.runs[0]).toMatchObject({ effort: null });
+  });
+
   it("--dry-run shell-quotes the prompt so the command can be pasted", async () => {
     await runDoWork(["--dry-run"]);
     const command = stdout.slice(stdout.indexOf("-p "));
@@ -1268,6 +1303,50 @@ describe("do-work executor selection", () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { models: { codex: "o4-mini" } } });
     await runDoWork();
     expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ model: undefined });
+  });
+
+  it("uses the configured effort for the executor in use", async () => {
+    mockReadConfig.mockReturnValue({
+      ...CONFIG,
+      doWork: { executor: "codex", effort: { claude: "high", codex: "medium" } },
+    });
+    await runDoWork();
+    // The Claude default must not leak into a Codex run.
+    expect(mockInvokeCodex).toHaveBeenCalledWith(expect.any(String), {
+      model: undefined,
+      effort: "medium",
+    });
+  });
+
+  it("passes no effort when only the other executor has one configured", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { codex: "medium" } } });
+    await runDoWork();
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: undefined });
+  });
+
+  it("lets --effort override the configured default for the executor in use", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { effort: { claude: "medium" } } });
+    await runDoWork(["--effort", "high"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "high" });
+  });
+
+  it("forwards --effort when nothing is configured", async () => {
+    await runDoWork(["--effort", "xhigh"]);
+    expect(mockInvokeClaude.mock.calls[0][1]).toMatchObject({ effort: "xhigh" });
+  });
+
+  it("forwards a level automata does not know, because the valid set is the executor's", async () => {
+    // Deliberately not allow-listed: the valid set is model-specific and moves
+    // between executor releases.
+    await runDoWork(["--with", "codex", "--effort", "ultra"]);
+    expect(mockInvokeCodex.mock.calls[0][1]).toMatchObject({ effort: "ultra" });
+  });
+
+  it("refuses an empty --effort rather than emitting a flag with no level", async () => {
+    await runDoWork(["--effort", "  "]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/--effort must be a non-empty level/);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
   });
 
   it("lets the command line override the configured executor", async () => {

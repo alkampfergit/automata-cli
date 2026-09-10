@@ -72,7 +72,9 @@ The operator wants to set the default through the documented paths rather than h
 - `doWork.effort` present but not an object, or carrying an unknown key → `do-work` fails validation with a message
   naming the offending path, exactly as `doWork.models` already does.
 - `--effort ""` or an all-whitespace value → rejected at the command line rather than emitting an empty argument.
-- An effort level the executor does not accept → forwarded unchanged; the executor reports it. See Assumptions.
+- An effort level the executor does not accept → forwarded unchanged. Verified behaviour: `claude` warns
+  (`Unknown --effort value '<x>' — ignoring it and using the default effort`) and runs at its default; `codex` accepts
+  it and shows `reasoning effort: <x>` in its session header. Neither errors, so a typo is quiet. See Assumptions.
 - `implement-next --no-claude` → no executor runs, so `--effort` has no effect and is not an error.
 
 ## Requirements
@@ -122,7 +124,8 @@ The operator wants to set the default through the documented paths rather than h
   the installed codex binary as a config key.
 - [AUTO] **Validation**: chose pass-through of any non-empty string over a per-executor allow-list, because the valid
   set is model-dependent and moves between executor releases; an allow-list would reject a newly-shipped level until
-  automata cut a release. Raised on the issue and not objected to.
+  automata cut a release. Raised on the issue and not objected to. Known cost, verified against both binaries: neither
+  executor errors on an unknown level, so a typo is quiet rather than fatal — see Edge Cases.
 - [AUTO] **Config scope**: chose to add the configured default under `doWork` only, mirroring `models`, because
   `execute`, `execute-prompt` and `implement-next` have no configured `--model` default either. A default shared by all
   commands would mean promoting `models` + `effort` to a new top-level block — a config migration, out of scope here.

@@ -8,6 +8,7 @@ import {
 } from "../config/githubService.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
+import { resolveEffortOption } from "../cli/spawnUtils.js";
 
 function writeOverflowHint(output: NodeJS.WriteStream, issues: GitHubIssue[], limit: number): void {
   if (issues.length === limit) {
@@ -107,6 +108,7 @@ export const implementNextCommand = new Command("implement-next")
   .option("--yolo",       "Launch with --dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)")
   .option("--silent",     "Suppress step-by-step Claude output; show only the final summary")
   .option("--model <string>", "Model identifier to pass to the executor")
+  .option("--effort <level>", "Reasoning effort to pass to the executor")
   .option("--take-first", "When multiple issues match, pick the first without prompting")
   .option("--limit <n>",  "Max issues to fetch and display (default: 10)", "10")
   .option("--ask-copilot-review", "Request a Copilot code review on the PR after AI invocation finishes")
@@ -118,6 +120,7 @@ export const implementNextCommand = new Command("implement-next")
     yolo?: boolean;
     silent?: boolean;
     model?: string;
+    effort?: string;
     takeFirst?: boolean;
     limit: string;
     askCopilotReview?: boolean;
@@ -161,6 +164,8 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(1);
     }
 
+    const effort = resolveEffortOption(options.effort);
+
     if (options.claude !== false) {
       const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
       const prompt = `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
@@ -168,9 +173,14 @@ export const implementNextCommand = new Command("implement-next")
         if (options.silent) {
           process.stderr.write("Warning: --silent is only supported with Claude and has no effect when used with Codex.\n");
         }
-        invokeCodexCode(prompt, { yolo: options.yolo, model: options.model });
+        invokeCodexCode(prompt, { yolo: options.yolo, model: options.model, effort });
       } else {
-        await invokeClaudeCode(prompt, { yolo: options.yolo, verbose: !options.silent, model: options.model });
+        await invokeClaudeCode(prompt, {
+          yolo: options.yolo,
+          verbose: !options.silent,
+          model: options.model,
+          effort,
+        });
       }
     }
 

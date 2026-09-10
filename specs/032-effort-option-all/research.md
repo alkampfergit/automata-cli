@@ -56,9 +56,25 @@ through.
 
 **Rationale**: the valid set is both executor-specific and model-specific (`claude`: `low|medium|high|xhigh|max`;
 `codex`: `minimal|low|medium|high`, `xhigh` on max-class models) and moves between executor releases. A hard allow-list
-in automata would reject a level the installed executor accepts, and would need an automata release to unblock. The
-executor already produces a clear error for an unknown level, so the check adds a failure mode without adding safety.
+in automata would reject a level the installed executor accepts, and would need an automata release to unblock.
 Proposed on issue #48 with this rationale and not objected to.
+
+**Verified cost of this choice.** Neither executor errors on an unknown level, so the pass-through does not simply
+relocate the check — it removes it:
+
+```
+$ claude --effort bogus -p "say hi"
+Warning: Unknown --effort value 'bogus' — ignoring it and using the default effort. Valid values: low, medium, high, xhigh, max.
+Hi! …                                                       # exit 0, ran at the default effort
+
+$ codex exec -c model_reasoning_effort="bogus" "hi"
+…
+reasoning effort: bogus                                     # accepted, forwarded to the API
+```
+
+Claude's warning at least names the valid set, so a typo is visible in the output; codex's is only visible in its
+session header. Documented as such rather than claimed as executor-side validation, and revisitable if operators hit
+it in practice.
 
 **Alternatives considered**:
 

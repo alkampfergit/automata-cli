@@ -42,6 +42,44 @@ describe("codexService.invokeCodexCode (sync mode)", () => {
     expect(args).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "hello world"]);
   });
 
+  it("forwards the effort as a -c model_reasoning_effort override", async () => {
+    // Codex has no effort flag: the level goes through its TOML config key, and
+    // the value is quoted because `-c` parses that half as TOML.
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeCodexCode } = await import("../../src/codex/codexService.js");
+    invokeCodexCode("hello world", { effort: "high" });
+
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["exec", "-c", 'model_reasoning_effort="high"', "hello world"]);
+  });
+
+  it("forwards both --model and the effort override when both are specified", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeCodexCode } = await import("../../src/codex/codexService.js");
+    invokeCodexCode("hello world", { model: "gpt-5.1-codex", effort: "medium" });
+
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual([
+      "exec",
+      "--model",
+      "gpt-5.1-codex",
+      "-c",
+      'model_reasoning_effort="medium"',
+      "hello world",
+    ]);
+  });
+
+  it("emits no effort argument when effort is absent or empty", async () => {
+    const { buildCodexArgs } = await import("../../src/codex/codexService.js");
+
+    expect(buildCodexArgs("p")).toEqual(["exec", "p"]);
+    // Whitespace is trimmed away at the CLI layer; the builder only has to
+    // refuse the empty string, which would otherwise emit a dangling `-c`.
+    expect(buildCodexArgs("p", { effort: "" })).toEqual(["exec", "p"]);
+  });
+
   it("forwards --model to codex exec when model is specified", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
 

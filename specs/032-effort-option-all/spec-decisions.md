@@ -23,10 +23,12 @@
 
 - **Validation**: reject only empty/whitespace-only values; forward anything else unchanged. **Rationale**: the valid
   set is executor- *and* model-specific and moves between executor releases, so an allow-list in automata would reject
-  a level the installed executor accepts and would need an automata release to unblock; the executor already errors
-  clearly on an unknown level. Proposed on issue #48 with this rationale and not objected to. **Alternatives
-  considered**: a per-executor allow-list (release-coupled); no check at all (`--effort ""` would emit an empty
-  argument codex would try to parse as TOML).
+  a level the installed executor accepts and would need an automata release to unblock. Proposed on issue #48 with
+  this rationale and not objected to. **Verified cost**: neither executor *errors* on an unknown level — `claude`
+  warns and falls back to its default, `codex` forwards it and shows it in its session header — so this removes the
+  check rather than relocating it. Documented in `docs/config.md` and `docs/do-work.md` as such. **Alternatives
+  considered**: a per-executor allow-list (release-coupled, and revisitable if typos bite in practice); no check at
+  all (`--effort ""` would emit an empty argument codex would try to parse as TOML).
 
 - **Config shape and scope**: `doWork.effort: { claude?, codex? }`, resolved `--effort` > `doWork.effort[executor]` >
   nothing, and scoped to `do-work` only. **Rationale**: an exact mirror of `doWork.models`, including its recorded

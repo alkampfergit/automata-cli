@@ -75,7 +75,9 @@ type Screen =
   | "do-work-protected-branches"
   | "do-work-executor"
   | "do-work-claude-model"
+  | "do-work-claude-effort"
   | "do-work-codex-model"
+  | "do-work-codex-effort"
   | "do-work-max-runs"
   | "do-work-lock-stale"
   | "do-work-discuss-prompt"
@@ -253,6 +255,8 @@ export function ConfigWizard() {
   );
   const [doWorkClaudeModel, setDoWorkClaudeModel] = useState(existing.doWork?.models?.claude ?? "");
   const [doWorkCodexModel, setDoWorkCodexModel] = useState(existing.doWork?.models?.codex ?? "");
+  const [doWorkClaudeEffort, setDoWorkClaudeEffort] = useState(existing.doWork?.effort?.claude ?? "");
+  const [doWorkCodexEffort, setDoWorkCodexEffort] = useState(existing.doWork?.effort?.codex ?? "");
   const [doWorkLockStale, setDoWorkLockStale] = useState(
     String(existing.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes),
   );
@@ -377,13 +381,23 @@ export function ConfigWizard() {
     },
     "do-work-claude-model": {
       setValue: setDoWorkClaudeModel,
-      onSubmit: () => setScreen("do-work-codex-model"),
+      onSubmit: () => setScreen("do-work-claude-effort"),
       onBack: () => setScreen("do-work-executor"),
+    },
+    "do-work-claude-effort": {
+      setValue: setDoWorkClaudeEffort,
+      onSubmit: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-claude-model"),
     },
     "do-work-codex-model": {
       setValue: setDoWorkCodexModel,
+      onSubmit: () => setScreen("do-work-codex-effort"),
+      onBack: () => setScreen("do-work-claude-effort"),
+    },
+    "do-work-codex-effort": {
+      setValue: setDoWorkCodexEffort,
       onSubmit: () => setScreen("do-work-max-runs"),
-      onBack: () => setScreen("do-work-claude-model"),
+      onBack: () => setScreen("do-work-codex-model"),
     },
     "do-work-max-runs": {
       setValue: (update) => {
@@ -402,7 +416,7 @@ export function ConfigWizard() {
         setValidationError("");
         setScreen("do-work-lock-stale");
       },
-      onBack: () => setScreen("do-work-codex-model"),
+      onBack: () => setScreen("do-work-codex-effort"),
     },
     "do-work-lock-stale": {
       setValue: (update) => {
@@ -427,6 +441,10 @@ export function ConfigWizard() {
             models: {
               claude: doWorkClaudeModel.trim() || undefined,
               codex: doWorkCodexModel.trim() || undefined,
+            },
+            effort: {
+              claude: doWorkClaudeEffort.trim() || undefined,
+              codex: doWorkCodexEffort.trim() || undefined,
             },
             maxRunsPerTick: maxRuns ?? undefined,
             lockStaleMinutes: parsed,
@@ -592,11 +610,23 @@ export function ConfigWizard() {
       value: doWorkClaudeModel,
       hint: `Type model · Enter to continue · ${BACK}`,
     },
+    "do-work-claude-effort": {
+      title: "Do Work — Claude Effort",
+      label: "Default reasoning effort when the executor is Claude (blank = the executor's own default):",
+      value: doWorkClaudeEffort,
+      hint: `Type effort · Enter to continue · ${BACK}`,
+    },
     "do-work-codex-model": {
       title: "Do Work — Codex Model",
       label: "Default model when the executor is Codex (blank = the executor's own default):",
       value: doWorkCodexModel,
       hint: `Type model · Enter to continue · ${BACK}`,
+    },
+    "do-work-codex-effort": {
+      title: "Do Work — Codex Effort",
+      label: "Default reasoning effort when the executor is Codex (blank = the executor's own default):",
+      value: doWorkCodexEffort,
+      hint: `Type effort · Enter to continue · ${BACK}`,
     },
     "do-work-max-runs": {
       title: "Do Work — Max Runs Per Tick",

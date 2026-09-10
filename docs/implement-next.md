@@ -27,6 +27,7 @@ automata implement-next [options]
 | `--yolo` | Skip permissions: `--dangerously-skip-permissions` (Claude) or `--dangerously-bypass-approvals-and-sandbox` (Codex) |
 | `--silent` | Suppress step-by-step Claude output; show only the final summary. With `--with codex`, this prints a warning and has no effect. |
 | `--model <string>` | Model identifier to pass to the executor (e.g. `claude-opus-4-6`) |
+| `--effort <level>` | Reasoning effort to pass to the executor (e.g. `high`) |
 | `--take-first` | When multiple issues match, pick the first without prompting |
 | `--limit <n>` | Max issues to fetch and display (default: `10`) |
 | `--ask-copilot-review` | After AI finishes, if a PR exists on the branch, request a Copilot code review via `gh pr edit --add-reviewer @copilot` |
@@ -48,6 +49,7 @@ automata implement-next [options]
    - With `--yolo`: Claude uses `--dangerously-skip-permissions`; Codex uses `--dangerously-bypass-approvals-and-sandbox`.
   - With `--silent`: suppresses verbose Claude streaming output and shows only the final result. When combined with `--with codex`, a warning is printed and Codex behavior is unchanged.
    - With `--model`: passes the specified model identifier to the executor.
+   - With `--effort`: passes the specified reasoning effort to the executor — `--effort <level>` for Claude, `-c model_reasoning_effort="<level>"` for Codex, which has no effort flag.
 9. After the AI tool finishes (or immediately after claiming when `--no-claude`), checks if the current branch has an open pull request:
    - If a PR exists and a comment URL was captured in step 7, edits the "working" comment to include the PR number and link.
    - If a PR exists, appends `Closes #<issue>` to the PR body so merging the PR auto-closes the issue.
@@ -78,6 +80,9 @@ automata implement-next --model claude-sonnet-4-6
 
 # Use Codex with a specific model and full autonomy
 automata implement-next --with codex --yolo --model o3
+
+# Ask for more reasoning effort on this run
+automata implement-next --effort high
 
 # Claim the issue but handle implementation yourself
 automata implement-next --no-claude

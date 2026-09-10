@@ -23,6 +23,7 @@ automata do-work --json             # machine-readable plan and outcomes
 |---|---|
 | `--with <executor>` | Executor to use: `claude` or `codex`. Default: `doWork.executor`, else `claude`. |
 | `--model <string>` | Model identifier passed to the executor, overriding the configured default for it. Default: `doWork.models.<executor>`, else the executor's own default. |
+| `--effort <level>` | Reasoning effort passed to the executor, overriding the configured default for it. Default: `doWork.effort.<executor>`, else the executor's own default. |
 | `--issue <number>` | Process only this issue. Detection rules still apply; a warning is printed if the issue does not match the discovery filter. |
 | `--limit <n>` | Maximum issues to fetch (default: `10`). A note is printed when the result was truncated. |
 | `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. Default: `doWork.maxRunsPerTick`. |
@@ -32,7 +33,7 @@ automata do-work --json             # machine-readable plan and outcomes
 
 Command-line options take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults.
 
-### Executor and model defaults
+### Executor, model and effort defaults
 
 `do-work` always invokes the executor with **permission prompts bypassed** — an unattended run cannot answer a prompt, so there is no option to change this. It defaults to **Claude**, and Codex is selected with `--with codex` or `doWork.executor`.
 
@@ -43,6 +44,29 @@ Model defaults are held **per executor**, because a Claude model identifier is n
 ```
 
 Resolution for one run is: `--model` if given, else the default for the executor actually being used, else nothing (the executor picks its own). So `--with codex` on the configuration above sends `o3`, never the Claude identifier.
+
+**Reasoning effort** is held per executor for the same reason, under `doWork.effort`, and resolves the same way — `--effort` if given, else `doWork.effort.<executor in use>`, else nothing:
+
+```json
+{
+  "doWork": {
+    "executor": "claude",
+    "models": { "claude": "claude-opus-5", "codex": "gpt-5.1-codex-terra" },
+    "effort": { "claude": "high", "codex": "medium" }
+  }
+}
+```
+
+The two executors express the level differently, and `do-work` handles the difference for you:
+
+| Executor | What is spawned |
+|---|---|
+| `claude` | `--effort <level>` |
+| `codex` | `-c model_reasoning_effort="<level>"` — codex has no effort flag, so the level goes through its config-override option |
+
+automata does not validate the level. The valid set is executor- *and* model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it moves between executor releases, so an allow-list here would reject a level your installed executor accepts. The value is forwarded unchanged; only an empty `--effort` is refused, since it would emit a flag with no level.
+
+**Neither executor errors on an unknown level**, so a typo is quiet rather than fatal: `claude` prints `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` and carries on, and `codex` forwards the value to the API and shows it as `reasoning effort: <x>` in its session header. Check that header, or Claude's warning, if a level does not seem to be taking effect.
 
 ---
 

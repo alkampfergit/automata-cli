@@ -38,6 +38,8 @@ const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
+const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Claude";
+const DO_WORK_CODEX_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Codex";
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 
@@ -455,7 +457,7 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor, both models, run cap and lock staleness, then saves", async () => {
+  it("walks base branch, executor, both models, both efforts, run cap and lock staleness, then saves", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
@@ -477,12 +479,20 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
-    // Claude model, then Codex model.
+    // Claude model, Claude effort, Codex model, Codex effort.
     stdin.write("claude-opus-4-6");
     await tick();
     stdin.write(ENTER);
     await tick();
+    stdin.write("high");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
     stdin.write("o3");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    stdin.write("medium");
     await tick();
     stdin.write(ENTER);
     await tick();
@@ -507,10 +517,26 @@ describe("ConfigWizard — Do Work section", () => {
         protectedBranches: ["main", "master"],
         executor: "codex",
         models: { claude: "claude-opus-4-6", codex: "o3" },
+        effort: { claude: "high", codex: "medium" },
         maxRunsPerTick: 2,
         lockStaleMinutes: 45,
       },
     });
+  });
+
+  it("reaches an effort screen for each executor, after that executor's model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CODEX_EFFORT_SCREEN_TEXT);
   });
 
   it("reaches the lock staleness screen after the run cap", async () => {
@@ -608,19 +634,28 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
   });
 
-  it("goes back from the run cap screen to the Codex model screen", async () => {
+  it("goes back from the run cap screen to the Codex effort screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
     await advanceTo(stdin, lastFrame, DO_WORK_MAX_RUNS_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
-    expect(lastFrame()).toContain(DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    expect(lastFrame()).toContain(DO_WORK_CODEX_EFFORT_SCREEN_TEXT);
   });
 
-  it("goes back from the Codex model screen to the Claude one", async () => {
+  it("goes back from the Codex model screen to the Claude effort screen", async () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
     await advanceTo(stdin, lastFrame, DO_WORK_CODEX_MODEL_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
+  });
+
+  it("goes back from an effort screen to its own model screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+    await advanceTo(stdin, lastFrame, DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT);
     stdin.write(ESC);
     await tick();
     expect(lastFrame()).toContain(DO_WORK_CLAUDE_MODEL_SCREEN_TEXT);

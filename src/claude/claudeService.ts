@@ -18,6 +18,13 @@ export interface InvokeClaudeOptions {
   yolo?: boolean;
   verbose?: boolean;
   model?: string;
+  /**
+   * Reasoning effort, forwarded verbatim. Deliberately not validated against a
+   * list of levels: the valid set is model-specific and changes between Claude
+   * Code releases, so an allow-list here would reject a level the installed
+   * binary accepts until automata cut a release of its own.
+   */
+  effort?: string;
 }
 
 export const MODEL_IDS: Record<string, string> = {
@@ -46,6 +53,9 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
   const args: string[] = [];
   if (options.yolo) args.push("--dangerously-skip-permissions");
   if (options.model) args.push("--model", options.model);
+  // Truthiness, not `!== undefined`: an empty level must emit nothing rather
+  // than a bare `--effort` that would swallow the next argument.
+  if (options.effort) args.push("--effort", options.effort);
   if (options.verbose) args.push("--verbose", "--output-format", "stream-json");
   args.push("-p", prompt);
   return args;
@@ -66,11 +76,16 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; printSteps?: boolean } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
-    const args = buildClaudeArgs(prompt, { yolo: true, model: options.model, verbose: true });
+    const args = buildClaudeArgs(prompt, {
+      yolo: true,
+      model: options.model,
+      effort: options.effort,
+      verbose: true,
+    });
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     trackChild(child);
 
@@ -116,23 +131,33 @@ export function runClaude(
 
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
-    return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model);
+    return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model, options.effort);
   }
-  invokeClaudeCodeSync(prompt, options.yolo ?? false, options.model);
+  invokeClaudeCodeSync(prompt, options.yolo ?? false, options.model, options.effort);
 }
 
-function invokeClaudeCodeSync(prompt: string, yolo: boolean, model: string | undefined): void {
+function invokeClaudeCodeSync(
+  prompt: string,
+  yolo: boolean,
+  model: string | undefined,
+  effort: string | undefined,
+): void {
   const claudeBin = resolveCommand("claude");
-  const args = buildClaudeArgs(prompt, { yolo, model, verbose: false });
+  const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: false });
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "claude");
   handleExitCode(result.status, "Claude Code");
 }
 
-function invokeClaudeCodeVerbose(prompt: string, yolo: boolean, model: string | undefined): Promise<void> {
+function invokeClaudeCodeVerbose(
+  prompt: string,
+  yolo: boolean,
+  model: string | undefined,
+  effort: string | undefined,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     const claudeBin = resolveCommand("claude");
-    const args = buildClaudeArgs(prompt, { yolo, model, verbose: true });
+    const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     const rl = createInterface({ input: child.stdout });
