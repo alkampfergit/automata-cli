@@ -120,10 +120,11 @@ and a new top-level directory for one 120-line module would violate Principle V.
 
 2. **`parseRunDirective(body)`** — two global, case-insensitive regexes with a
    `(?<![A-Za-z0-9_:-])` guard so `mytool:` and `no-tool:` are inert. Take the **last** match
-   of each. Returns `{ tool, toolRaw, model }` where `tool` is the lower-cased value (which
+   of each. Returns `{ tool, model }` where `tool` is the lower-cased value (which
    may be invalid — validation is the caller's job) and `model` keeps its original case.
 
-3. **`resolveExecution({ directive, withOption, modelOption, configExecutor, configModels })`**
+3. **`resolveExecution({ directive, withOption, modelOption, configExecutor, configModels,
+   defaultExecutor })`**
    — returns either `{ ok: true, executor, executorSource, model, modelSource }` or
    `{ ok: false, invalidTool }`. The `--with` value is validated by the caller before it gets
    here, as it is today.

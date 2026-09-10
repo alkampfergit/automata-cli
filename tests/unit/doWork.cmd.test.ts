@@ -1465,4 +1465,14 @@ describe("do-work invalid tool directive", () => {
     expect(stdout).toContain("Executor     refused —");
     expect(stdout).not.toContain("--dangerously-skip-permissions");
   });
+
+  // The marker is posted before the refusal is decided and then edited in
+  // place, which is what advances the answer boundary. Wording that implied a
+  // real tick posts nothing would contradict the rest of `docs/do-work.md`.
+  it("says a real tick still posts the marker and replaces it", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain(
+      "Command      none; a real tick would post the working marker and then replace it with this refusal",
+    );
+  });
 });

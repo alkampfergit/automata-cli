@@ -162,7 +162,7 @@ When the choice came from a message the `Executor` line says so, and an item a r
 
 ```text
   Executor     refused — the newest message asks for `tool:codexx`, which is not an executor automata knows (valid values are `claude` and `codex`)
-  Command      none; a real tick would post nothing but the refusal on the marker
+  Command      none; a real tick would post the working marker and then replace it with this refusal
 ```
 
 `--dry-run --json` carries the same information as `executor`, `model`, `executorSource`, `modelSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first four on each entry of `items`.
