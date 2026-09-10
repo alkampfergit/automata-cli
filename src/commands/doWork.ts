@@ -597,37 +597,59 @@ function discoverIssues(settings: Settings): GitHubIssue[] {
   return [surface.issue];
 }
 
-/** Does this specific issue satisfy the configured discovery filter? */
-function issueMatchesFilter(surface: IssueSurface, settings: Settings): boolean {
-  const value = settings.discoveryValue.toLowerCase();
-  switch (settings.technique) {
-    case "label":
-      return surface.labels.some((label) => label.toLowerCase() === value);
-    case "assignee":
-      return surface.assignees.some((assignee) => assignee.toLowerCase() === value);
-    case "title-contains":
-      return surface.issue.title.toLowerCase().includes(value);
-  }
+/** The three fields the discovery filter can read, off an issue or off a pull request. */
+interface DiscoverySubject {
+  labels: string[];
+  assignees: string[];
+  title: string;
 }
 
 /**
- * Does this pull request satisfy the configured discovery filter?
+ * Does this issue or pull request satisfy the configured discovery filter?
  *
- * The same technique and value as the issue pass, read off the pull request:
- * no second configuration key exists, because a human has to comment before an
- * orphan pull request becomes work anyway — so the filter only bounds how many
- * pull-request conversations a tick fetches.
+ * One function for both passes deliberately: the orphan pass uses the same
+ * `issueDiscoveryTechnique` / `issueDiscoveryValue` as the issue pass — there is
+ * no second configuration key — so the two must not be able to interpret the
+ * same setting differently.
  */
-function prMatchesFilter(candidate: OrphanPr, settings: Settings): boolean {
+function matchesDiscoveryFilter(subject: DiscoverySubject, settings: Settings): boolean {
   const value = settings.discoveryValue.toLowerCase();
   switch (settings.technique) {
     case "label":
-      return candidate.labels.some((label) => label.toLowerCase() === value);
+      return subject.labels.some((label) => label.toLowerCase() === value);
     case "assignee":
-      return candidate.assignees.some((assignee) => assignee.toLowerCase() === value);
+      return subject.assignees.some((assignee) => assignee.toLowerCase() === value);
     case "title-contains":
-      return candidate.pr.title.toLowerCase().includes(value);
+      return subject.title.toLowerCase().includes(value);
   }
+}
+
+function issueMatchesFilter(surface: IssueSurface, settings: Settings): boolean {
+  return matchesDiscoveryFilter(
+    { labels: surface.labels, assignees: surface.assignees, title: surface.issue.title },
+    settings,
+  );
+}
+
+function prMatchesFilter(candidate: OrphanPr, settings: Settings): boolean {
+  return matchesDiscoveryFilter(
+    { labels: candidate.labels, assignees: candidate.assignees, title: candidate.pr.title },
+    settings,
+  );
+}
+
+/**
+ * The issues of this repository a given pull request closes, read out of the
+ * link map rather than from a fresh query.
+ *
+ * Written once because two callers ask it for opposite reasons: `--pr` needs it
+ * to explain that a number belongs to the issue pass, and the pre-run refresh
+ * needs it to notice that an item gained a closing reference mid-tick.
+ */
+function issuesClosedBy(linkMap: OpenPrLinkMap, prNumber: number): number[] {
+  return [...linkMap.byIssue.entries()]
+    .filter(([, prs]) => prs.some((pr) => pr.number === prNumber))
+    .map(([issueNumber]) => issueNumber);
 }
 
 /**
@@ -649,9 +671,7 @@ function discoverOrphanPrs(settings: Settings, linkMap: OpenPrLinkMap): OrphanPr
   const target = settings.onlyPr;
   const match = linkMap.orphans.find((candidate) => candidate.pr.number === target);
   if (match === undefined) {
-    const closes = [...linkMap.byIssue.entries()]
-      .filter(([, prs]) => prs.some((pr) => pr.number === target))
-      .map(([issueNumber]) => issueNumber);
+    const closes = issuesClosedBy(linkMap, target);
     if (closes.length > 0) {
       fail(
         `Pull request #${String(target)} closes issue #${String(closes[0])} of this repository, so it is not ` +
@@ -824,9 +844,7 @@ function refreshOrphanItem(
   const number = item.pr?.number ?? 0;
   const stillOrphan = linkMap.orphans.some((candidate) => candidate.pr.number === number);
   if (!stillOrphan) {
-    const linkedTo = [...linkMap.byIssue.entries()]
-      .filter(([, prs]) => prs.some((pr) => pr.number === number))
-      .map(([issueNumber]) => `#${String(issueNumber)}`);
+    const linkedTo = issuesClosedBy(linkMap, number).map((issueNumber) => `#${String(issueNumber)}`);
     return {
       kind: "skip",
       issue: null,

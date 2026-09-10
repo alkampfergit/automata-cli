@@ -864,6 +864,28 @@ export function pullFastForwardOnly(branch?: string): GitCommandResult {
   return gitCommand(branch === undefined ? ["pull", "--ff-only"] : ["pull", "--ff-only", "origin", branch]);
 }
 
+/** `git rev-parse --verify <ref>` — the commit sha, or null when the ref does not exist. */
+export function revParse(ref: string): string | null {
+  const { stdout, status } = run("git", ["rev-parse", "--verify", "--quiet", ref]);
+  if (status !== 0) return null;
+  const sha = stdout.trim();
+  return sha.length === 0 ? null : sha;
+}
+
+/**
+ * `git merge-base --is-ancestor` — is the first commit reachable from the second?
+ *
+ * A commit is its own ancestor, so an equal pair answers true.
+ */
+export function isAncestorCommit(maybeAncestor: string, descendant: string): boolean {
+  return run("git", ["merge-base", "--is-ancestor", maybeAncestor, descendant]).status === 0;
+}
+
+/** `git reset --hard <ref>` — moves the current branch, discarding local commits past `ref`. */
+export function resetHardTo(ref: string): GitCommandResult {
+  return gitCommand(["reset", "--hard", ref]);
+}
+
 export function fetchPrune(): void {
   const result = run("git", ["fetch", "--prune"]);
   if (result.status !== 0) {

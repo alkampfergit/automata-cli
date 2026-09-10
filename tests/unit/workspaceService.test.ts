@@ -5,6 +5,9 @@ const mockCheckoutBranch = vi.fn();
 const mockCreateTrackingBranch = vi.fn();
 const mockFetchBranch = vi.fn();
 const mockPullFastForwardOnly = vi.fn();
+const mockRevParse = vi.fn();
+const mockIsAncestorCommit = vi.fn();
+const mockResetHardTo = vi.fn();
 
 // The git invocations live in gitService, which owns the process runner; this
 // module only sequences them, so that is what the tests pin down.
@@ -14,6 +17,9 @@ vi.mock("../../src/git/gitService.js", () => ({
   createTrackingBranch: (...a: unknown[]) => mockCreateTrackingBranch(...a),
   fetchBranch: (...a: unknown[]) => mockFetchBranch(...a),
   pullFastForwardOnly: (...a: unknown[]) => mockPullFastForwardOnly(...a),
+  revParse: (...a: unknown[]) => mockRevParse(...a),
+  isAncestorCommit: (...a: unknown[]) => mockIsAncestorCommit(...a),
+  resetHardTo: (...a: unknown[]) => mockResetHardTo(...a),
 }));
 
 function ok(): { ok: boolean; stderr: string } {
@@ -31,6 +37,9 @@ beforeEach(() => {
   mockCreateTrackingBranch.mockReturnValue(ok());
   mockFetchBranch.mockReturnValue(ok());
   mockPullFastForwardOnly.mockReturnValue(ok());
+  mockRevParse.mockReturnValue(null);
+  mockIsAncestorCommit.mockReturnValue(false);
+  mockResetHardTo.mockReturnValue(ok());
 });
 
 afterEach(() => {
@@ -134,9 +143,82 @@ describe("preparePrBranch", () => {
     expect(mockCheckoutBranch).not.toHaveBeenCalled();
   });
 
-  it("reports a diverged head branch as a pull failure", async () => {
+  it("reports a diverged head branch as a pull failure when local commits are at risk", async () => {
     mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    // The local tip is not reachable from where the remote was, so it holds a
+    // commit this checkout made and never pushed. Nothing may be discarded.
+    mockRevParse.mockReturnValue("aaa");
+    mockIsAncestorCommit.mockReturnValue(false);
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
-    expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "pull-failed" });
+    expect(preparePrBranch("feature/042")).toMatchObject({
+      ok: false,
+      reason: "pull-failed",
+      detail: expect.stringContaining("reset --hard origin/feature/042"),
+    });
+    expect(mockResetHardTo).not.toHaveBeenCalled();
+  });
+
+  it("reads the remote-tracking ref before the fetch overwrites it", async () => {
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    preparePrBranch("dependabot/npm_and_yarn/left-pad-1.3.0");
+    // Order matters: the forced fetch moves this ref, so afterwards there is no
+    // way to learn where the remote was.
+    expect(mockRevParse.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFetchBranch.mock.invocationCallOrder[0],
+    );
+    expect(mockRevParse).toHaveBeenCalledWith("refs/remotes/origin/dependabot/npm_and_yarn/left-pad-1.3.0");
+  });
+
+  it("resets a force-pushed head branch that holds nothing this checkout made", async () => {
+    // The Dependabot rebase case: the local tip is exactly what the remote said
+    // last time, so every commit on it came from the remote and was rewritten
+    // there. Without this the branch can never be fast-forwarded again.
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    mockRevParse.mockImplementation((ref: string) =>
+      ref === "refs/remotes/origin/dependabot/bump" ? "old" : "old",
+    );
+    mockIsAncestorCommit.mockReturnValue(true);
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("dependabot/bump")).toEqual({ ok: true, branch: "dependabot/bump" });
+    expect(mockIsAncestorCommit).toHaveBeenCalledWith("old", "old");
+    expect(mockResetHardTo).toHaveBeenCalledWith("refs/remotes/origin/dependabot/bump");
+  });
+
+  it("keeps a local branch whose tip the remote never had", async () => {
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    mockRevParse.mockImplementation((ref: string) =>
+      ref === "refs/remotes/origin/dependabot/bump" ? "old" : "unpushed",
+    );
+    mockIsAncestorCommit.mockReturnValue(false);
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("dependabot/bump")).toMatchObject({ ok: false, reason: "pull-failed" });
+    expect(mockIsAncestorCommit).toHaveBeenCalledWith("unpushed", "old");
+    expect(mockResetHardTo).not.toHaveBeenCalled();
+  });
+
+  it("refuses rather than resetting when the remote-tracking ref was unknown", async () => {
+    // Nothing to compare the local tip against, so nothing can be proved
+    // disposable — the local branch may hold work made on this checkout.
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    mockRevParse.mockImplementation((ref: string) =>
+      ref === "refs/remotes/origin/dependabot/bump" ? null : "local",
+    );
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("dependabot/bump")).toMatchObject({ ok: false, reason: "pull-failed" });
+    expect(mockIsAncestorCommit).not.toHaveBeenCalled();
+    expect(mockResetHardTo).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed reset as a pull failure", async () => {
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    mockRevParse.mockReturnValue("old");
+    mockIsAncestorCommit.mockReturnValue(true);
+    mockResetHardTo.mockReturnValue(fail("fatal: could not reset index"));
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("dependabot/bump")).toEqual({
+      ok: false,
+      reason: "pull-failed",
+      detail: "fatal: could not reset index",
+    });
   });
 });

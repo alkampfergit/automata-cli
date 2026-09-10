@@ -118,3 +118,38 @@ exit code than it did before.
   because `docs/do-work.md` documents that `do-work` never merges a pull request or closes anything. A
   repository that wants a superseded bump closed automatically can say so in its own `prOrphan`
   prompt.
+
+## Review follow-up (2026-09-10)
+
+A review of the branch with Opus found one correctness defect and two duplications, all fixed on the
+branch:
+
+- **Force-pushed head branches were unworkable after the first tick.** `preparePrBranch` fetches with
+  a forced refspec, so the remote-tracking ref updates, but it then ran `git pull --ff-only`, which
+  fails permanently once the local branch has seen the old tip. Dependabot force pushes every rebase,
+  so this is the *normal* path for the very case this feature exists for: the second maintainer
+  comment on a rebased bump would be skipped as `pull-failed`, on that tick and on every tick after
+  it, until a human reset the branch by hand. (Reproduced against a real repository, not inferred.)
+  `preparePrBranch` now reads `refs/remotes/origin/<branch>` *before* the fetch and, when the
+  fast-forward fails, resets to the remote only if the local tip was already reachable from that
+  pre-fetch sha — proof that every commit the local branch holds came from the remote and was
+  rewritten there, so no work a turn committed here can be lost. Anything else still refuses, and the
+  message now names the branch and the reset to run. The dirty-tree refusal is unchanged and still
+  runs first, so uncommitted changes are never touched.
+- **`issueMatchesFilter` and `prMatchesFilter`** were the same three-way switch over two different
+  sources, which let one pass drift from the other on a setting they share. Extracted into
+  `matchesDiscoveryFilter(subject, settings)` over a `{ labels, assignees, title }` subject.
+- **"Which issues does pull request N close"** was inlined twice over `linkMap.byIssue`, in
+  `discoverOrphanPrs` and in `refreshOrphanItem`. Extracted into `issuesClosedBy(linkMap, prNumber)`.
+
+Everything else reviewed clean: the orphan trigger is the issue rule with the pull request as the only
+surface (the pull request *body* is not a message at all in `getPrSurface`, so a Dependabot bump
+genuinely cannot start a run); `indexPullRequest` throws rather than under-reporting closing
+references, so no pull request can be misclassified as orphaned; `triggeringMessage` already covers a
+`tool:`/`model:` directive on an orphan pull request through its non-`issue-discuss` branch; and
+`markerSurfaceTarget`, `readAnsweringSurface` and the dry-run branch action all stayed behaviourally
+identical for `issue-discuss` and `pr-work`.
+
+Known and accepted, not changed here: the orphan pass calls `getPrSurface` once per matching candidate
+at plan time and `--limit` does not bound it (spec decision), so a repository with many labelled
+orphan pull requests pays those reads on every tick.

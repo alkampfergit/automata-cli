@@ -147,7 +147,7 @@ One tick, in order:
 5. **Decide** a turn per issue, then a turn per matching orphan pull request (see below), and print the work plan with the issues first. `--dry-run` stops here.
 6. **Process** each work item sequentially:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
-   2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn);
+   2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn) and bring it up to date with the remote, fast-forward only;
    3. assign the issue to the agent, if it is not already assigned — a `pr-orphan` turn assigns nothing, since there is no issue and the discovery filter may itself be `assignee`;
    4. post a `working…` marker comment — on the pull request for a `pr-work` or `pr-orphan` turn, on the issue for a discussion turn. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
    5. invoke the executor;
@@ -307,6 +307,14 @@ So in particular:
 - `--json` reports `issue: null` for the item, with the pull request in `pr`.
 
 **Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an oversized prompt or an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
+
+### Force-pushed head branches
+
+Dependabot force pushes every rebase, so an orphan pull request's head branch is routinely rewritten between two ticks. On a checkout that has already seen the old tip, `git pull --ff-only` then fails for good — and would refuse the turn on every later tick.
+
+So when the fast-forward fails, `do-work` resets the local branch to the remote, but **only** when the local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch. Every commit the local branch holds then came from the remote and was rewritten there, so nothing a turn committed here can be lost. In any other case — a commit made locally and never pushed, or no previously known remote-tracking ref to compare against — the item is skipped as `pull-failed`, and the message names the branch to inspect and the reset to run by hand.
+
+A dirty working tree is still refused before any of this, so uncommitted changes are never touched.
 
 Two extra skips exist for the moment between the plan and the run — the item is re-decided just before it runs, as issue items already are:
 
@@ -524,7 +532,7 @@ You do not have to redirect anywhere to keep a record: [the operation log](#the-
 - Merge a pull request.
 - Close an issue, or close a pull request.
 - Push to the base branch, or commit to it.
-- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped.
+- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped. It does reset a pull-request branch that was force-pushed, but only when every commit on it demonstrably came from the remote — see [force-pushed head branches](#force-pushed-head-branches).
 - Delete a local branch whose work it cannot prove is finished — it pushes the branch and opens a draft pull request instead. Evidence is a merged pull request, a pull request closed unmerged, or zero commits outside the base branch; a branch whose state it could not read is kept.
 - Merge, rebase or reset the base branch to make a pull succeed.
 - Act on a message from an account that is not in `allowedUsers` — including the pull request body and commits of a bot such as Dependabot.
