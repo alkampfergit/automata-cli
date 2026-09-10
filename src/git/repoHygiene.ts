@@ -61,8 +61,9 @@ export type RescueOutcome =
       kind: "rescued";
       branch: string;
       createdBranch: boolean;
-      pr: number | null;
-      prUrl: string | null;
+      /** Never null: a rescue whose pull request could not be resolved is `failed`. */
+      pr: number;
+      prUrl: string;
       prCreated: boolean;
     }
   | { kind: "would-rescue"; branch: string; createdBranch: boolean }
@@ -76,6 +77,7 @@ export type PruneOutcome =
   | { kind: "deleted"; branch: string }
   | { kind: "would-delete"; branch: string }
   | { kind: "kept"; branch: string; reason: PruneKeptReason; detail: string }
+  /** Pushed and kept. `pr` is null when the branch is safe but the draft PR could not be opened. */
   | { kind: "rescued"; branch: string; pr: number | null; prUrl: string | null }
   | { kind: "would-rescue"; branch: string; unmergedCommits: number };
 
@@ -428,11 +430,18 @@ export function runRepoHygiene(options: HygieneOptions, now: Date = new Date()):
   const base = prepareBase(options);
   const { outcomes, remoteUnreadable } = prune(options);
 
+  // Every reported failure has to show up here, or the tick exits 0 while the
+  // log says a step failed. A pushed branch without its draft pull request is
+  // one of them: the work is safe, but a human still has to finish the job.
   const degraded =
     rescue.kind === "failed" ||
     !base.ok ||
     remoteUnreadable ||
-    outcomes.some((outcome) => outcome.kind === "kept" && outcome.reason !== "open-pr");
+    outcomes.some(
+      (outcome) =>
+        (outcome.kind === "kept" && outcome.reason !== "open-pr") ||
+        (outcome.kind === "rescued" && outcome.pr === null),
+    );
 
   return { rescue, base, prunes: outcomes, degraded };
 }

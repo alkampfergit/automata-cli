@@ -1498,8 +1498,8 @@ function describeRescue(rescue: HygieneReport["rescue"]): string {
       return "nothing to rescue";
     case "rescued":
       return rescue.prCreated
-        ? `committed and pushed ${rescue.branch}, opened draft PR #${String(rescue.pr ?? 0)}`
-        : `committed and pushed ${rescue.branch}, PR #${String(rescue.pr ?? 0)} already open`;
+        ? `committed and pushed ${rescue.branch}, opened draft PR #${String(rescue.pr)}`
+        : `committed and pushed ${rescue.branch}, PR #${String(rescue.pr)} already open`;
     case "would-rescue":
       return `would rescue onto ${rescue.branch}`;
     case "failed":

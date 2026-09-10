@@ -185,6 +185,7 @@ For each candidate:
 | No pull request, or only ones closed without merging, **and** no commit outside the base branch | Deleted. |
 | No pull request, or only ones closed without merging, **but** commits the base branch does not have | Pushed, given a draft pull request, and **kept**. |
 | Its pull requests, or its commit count, could not be read | Kept, and the tick is reported as degraded. |
+| Pushed, but the draft pull request could not be opened | Kept. The commits are safe on `origin`, but the tick is reported as degraded so the missing pull request is not silently forgotten. |
 
 **A branch is deleted only on proof that its work landed** — either a merged pull request, or a confirmed zero unmerged commits from `git rev-list --count <base>..<branch>`.
 
@@ -346,7 +347,7 @@ Exit 2 means degraded, not broken. An item was:
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
 
-A degraded [pre-flight](#the-repository-hygiene-pre-flight) also produces exit 2 on its own — a rescue that could not push, a base branch that would not fast-forward, or a branch whose state could not be read. Exit 1 is not used for it: by then the tick has run, so "nothing was attempted" would be false.
+A degraded [pre-flight](#the-repository-hygiene-pre-flight) also produces exit 2 on its own — a rescue that could not push, a base branch that would not fast-forward, a branch whose state could not be read, or a branch that was pushed but got no draft pull request. Exit 1 is not used for it: by then the tick has run, so "nothing was attempted" would be false.
 
 A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 

@@ -423,6 +423,8 @@ describe("prune", () => {
     expect(report.prunes).toEqual([
       { kind: "rescued", branch: "fix/wip", pr: 99, prUrl: "https://gh/pr/99" },
     ]);
+    // Pushed and given a pull request is the step working as designed.
+    expect(report.degraded).toBe(false);
   });
 
   it("never considers the base branch, the current branch or a protected branch", async () => {
@@ -503,6 +505,9 @@ describe("prune", () => {
     const report = runRepoHygiene(options(), NOW);
     expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
     expect(report.prunes).toEqual([{ kind: "rescued", branch: "fix/wip", pr: null, prUrl: null }]);
+    // The work is safe on the remote, but a step failed and a human has to
+    // finish it — reporting that as a healthy tick would hide it.
+    expect(report.degraded).toBe(true);
   });
 
   it("keeps a branch with unmerged commits that could not be pushed", async () => {
