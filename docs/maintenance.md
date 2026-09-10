@@ -108,6 +108,29 @@ would surface it earlier; see [Next refresh](#next-refresh--open-items) for the 
    is what blocks the release; the second may report dev-toolchain advisories, which belong in the table below rather
    than in a blocked merge.
 
+### Dependabot scope — security updates only
+
+Dependabot runs in security-update mode only. There is deliberately **no `.github/dependabot.yml`** in this repository.
+
+The two modes are configured in different places and do different things:
+
+| Mode | Configured by | Targets |
+| --- | --- | --- |
+| Version updates | `.github/dependabot.yml` (`updates:` block) | the newest published version |
+| Security updates | the repository's "Dependabot security updates" setting | the minimum non-vulnerable version |
+
+Only the second is wanted here. Version updates were enabled briefly and reverted: they proposed majors that this
+project holds back on purpose (see [Deferred upgrades](#deferred-upgrades)), because Dependabot resolves the highest
+published version and has no notion of a dist-tag — so it re-raises `typescript` 7 and `@types/node` 26 every week
+regardless of the reasons recorded below. Adding `ignore` conditions would mean restating every deferral in a second
+place and keeping the two in sync.
+
+Removing the config file does not weaken the security posture: security-update pull requests come from the repository
+setting, not from the file, and advisories are independently gated by `npm run audit:prod` at publish time. Routine
+upgrades are done deliberately instead, per the policy above.
+
+**Do not add `.github/dependabot.yml` back** without also deciding what happens to the deferrals below.
+
 ## Deferred upgrades
 
 Standing exceptions to "latest". Each names the condition that unblocks it.
