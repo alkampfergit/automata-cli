@@ -124,17 +124,35 @@ errors because TS 7 does not resolve `@types/node` (`Cannot find name 'node:fs'`
 **Unblocked when** `typescript-eslint` publishes a release declaring TypeScript 7 support. `^5.9.3` is already the newest
 5.x, so nothing is available in the meantime.
 
-### `@types/node` — held at `^25.5.0`
-
-DefinitelyTyped tags `22.20.2` as the `latest` version of `@types/node`. `npm outdated` *does* list the package, but
-its "Latest" column reads `22.20.2` against a "Current" of `25.9.6` — by npm's own reckoning the project is already
-ahead, so the row is not an upgrade to take. Higher majors exist (26.x) but type APIs that do not exist on the Node 24
-LTS that CI runs, which invites code that compiles and then fails at runtime.
-
-**Unblocked when** the project's target Node version moves past what `^25` describes. Track the Node LTS line, not the
-highest published `@types/node`.
-
 ## Watch items
+
+### `@types/node` types a newer Node line than `engines` declares
+
+`@types/node` is on **`^26.5.0`** (Dependabot PR #67); `engines.node` declares **`>=22.12.0`**. The type surface
+therefore describes APIs that a supported consumer's runtime may not have, so `tsc` can accept a call that throws at
+run time. This is a pre-existing gap, not one PR #67 introduced — `^25` overshot the same floor — and it is why
+`@types/node` was recorded as held at `^25` during the 031 refresh. What #67 changed is the size of the gap, not its
+existence.
+
+Two things make it tolerable rather than urgent: `@types/node` is a devDependency erased at build time, so nothing
+reaches consumers, and `npm run typecheck` is green on 26.5.0 because no source file uses a post-22 API today.
+
+**`npm outdated` cannot police this, and that is the trap.** DefinitelyTyped points the `latest` dist-tag at the oldest
+still-supported Node line, so `npm outdated` reads the installed version as *ahead* of "Latest" and never proposes a
+`@types/node` major at all. Verified 2026-09-10:
+
+```
+Package      Current  Wanted   Latest
+@types/node   26.5.0  26.5.1  22.20.2
+```
+
+An `npm outdated`-driven refresh structurally cannot surface a `@types/node` major; Dependabot resolves the highest
+published version and ignores the dist-tag, which is why it raised one and the 031 refresh did not. Do not read that
+`Latest` column as "we are ahead" — it says nothing about the version this project should be on.
+
+**Revisit when** the `engines.node` floor moves. The version to pick is the one matching the *declared floor*, not the
+highest published and not the `latest` dist-tag; on today's `>=22.12.0` that argument favours `^22`, and closing the gap
+that way is a deliberate change with its own typecheck fallout, not part of a dependency bump.
 
 ### `esbuild` is pinned below its latest release
 
@@ -159,8 +177,8 @@ The order to work through when the next refresh starts. Each row points at the s
 | Item | Trigger | Action |
 |---|---|---|
 | Audit step in `ci.yml` | Needs a maintainer, or a token with the `workflow` OAuth scope | Add to the end of the `build` job in `.github/workflows/ci.yml`: a `run: npm run audit:prod` step (blocking) and a `run: npm run audit:all` step with `continue-on-error: true`. This surfaces an advisory at pull-request time instead of only at publish time; the release itself is already gated by `prepublishOnly`. GitHub refuses pushes that touch `.github/workflows/` from an OAuth token without the `workflow` scope, which is why the automation could not land it. Extend `tests/unit/ciAuditGate.test.ts` with the matching assertions when it goes in. |
-| `typescript` 5 -> 7 | `typescript-eslint` declares TypeScript 7 support | See [Deferred upgrades](#typescript--held-at-593). Expect `@types/node` resolution work alongside it. |
-| `@types/node` `^25` -> next | Project's target Node line moves past what `^25` describes | See [Deferred upgrades](#typesnode--held-at-2550). Follow the Node LTS line, not the highest published version. |
+| `typescript` 5 -> 7 | `typescript-eslint` declares TypeScript 7 support | See [Deferred upgrades](#typescript--held-at-593). Expect `@types/node` resolution work alongside it. Dependabot will keep reopening this major until then; ignore conditions in `.github/dependabot.yml` are the place to suppress it. |
+| Align `@types/node` with `engines` | `engines.node` floor moves, or the overshoot causes a real runtime failure | See [Watch items](#typesnode-types-a-newer-node-line-than-engines-declares). Pick the major matching the declared floor. Do not use `npm outdated` to decide — its `Latest` column for this package is behind the installed version by design. |
 | `esbuild` 0.27.2 -> current | `tsup` widens its `esbuild` range | See [Watch items](#esbuild-is-pinned-below-its-latest-release). Move it forward and delete that entry. |
 
 ## Note for test authors
