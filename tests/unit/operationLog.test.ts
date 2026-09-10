@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   EXECUTION_LOG_FILE,
@@ -223,6 +231,55 @@ describe("trimToLastLines", () => {
   });
 });
 
+/* ── field escaping ──────────────────────────────────────────────────────── */
+
+// A newline in any interpolated field does more than split one line: a fragment
+// starting `=== <token> ` matches the record-header pattern, so the *next*
+// prune reads it as a boundary, dates the remainder from the injected timestamp
+// and deletes half of a legitimate record. `model` and `effort` come straight
+// from `.automata/config.json` and are never validated for this.
+describe("field escaping", () => {
+  const INJECTION = "m\n=== 2000-01-01T00:00:00.000Z evil ===\nx";
+
+  it("keeps a work record to one line per item when a model contains a newline", () => {
+    const record = formatWorkRecord(
+      tick({ items: [item({ executor: "claude", model: INJECTION })] }),
+    );
+    const lines = (record ?? "").split("\n").filter((line) => line.length > 0);
+    expect(lines).toHaveLength(2); // header + one item
+    // The text survives inline, which is harmless — only a match at column 0
+    // is read as a record boundary.
+    expect(lines.filter((line) => line.startsWith("=== "))).toHaveLength(1);
+  });
+
+  it("does not let an injected model forge a record boundary a later prune acts on", () => {
+    const now = new Date("2026-09-10T00:00:00.000Z");
+    const record =
+      formatWorkRecord(
+        tick({ timestamp: now, items: [item({ executor: "claude", model: INJECTION })] }),
+      ) ?? "";
+
+    // The whole record is one second old, so a correct prune is a no-op.
+    expect(pruneOldRecords(record, now, WORK_RECORD_MAX_AGE_DAYS * DAY_MS)).toBe(record);
+  });
+
+  it("flattens a turn and an executor containing newlines", () => {
+    const record =
+      formatWorkRecord(tick({ items: [item({ turn: "a\nb", executor: "c\nd" })] })) ?? "";
+    const lines = record.split("\n").filter((line) => line.length > 0);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("#53 a b answered [c d]");
+  });
+
+  it("keeps a repo containing a newline on the header line", () => {
+    expect(formatExecutionLine(tick({ repo: "owner/name\ninjected" }))).toContain(
+      "repo=owner/name injected",
+    );
+    const record = formatWorkRecord(tick({ repo: "owner/name\ninjected", items: [item()] })) ?? "";
+    expect(record.split("\n")[0]).toBe("=== 2026-09-10T06:51:36.412Z owner/name injected ===");
+  });
+});
+
 /* ── pruneOldRecords ─────────────────────────────────────────────────────── */
 
 describe("pruneOldRecords", () => {
@@ -352,7 +409,6 @@ describe("recordTick", () => {
       .filter((line) => line.length > 0);
     expect(lines).toHaveLength(MAX_EXECUTION_LINES);
     expect(lines[0]).toBe("seeded 1");
-    expect(lines[0]).not.toBe("seeded 0");
     expect(lines[lines.length - 1]).toContain("do-work repo=alkampfergit/automata-cli");
   });
 
@@ -375,6 +431,10 @@ describe("recordTick", () => {
     expect(content).toContain("#3 issue-discuss answered — new");
   });
 
+  // Asserting on the whole directory rather than one guessed filename: the temp
+  // name is a uuid, so a leak under any other name has to be caught by
+  // exclusion. The earlier version of this test hardcoded a pid-shaped name and
+  // would have passed through the leak below.
   it("leaves no temp file behind after a rewrite", () => {
     writeFileSync(
       join(TEST_DIR, EXECUTION_LOG_FILE),
@@ -383,9 +443,47 @@ describe("recordTick", () => {
       "utf8",
     );
     recordTick(tick(), TEST_DIR);
-    expect(existsSync(join(TEST_DIR, `${EXECUTION_LOG_FILE}.${String(process.pid)}.tmp`))).toBe(
-      false,
+    expect(readdirSync(TEST_DIR).sort()).toEqual([EXECUTION_LOG_FILE]);
+  });
+
+  // A rewrite that cannot complete must not strand its staging file: nothing
+  // ever collects them and the name differs every tick, so they would pile up
+  // in the operator's workspace root for good.
+  it("leaves no temp file behind when the rewrite cannot finish", () => {
+    if (process.getuid?.() === 0) return; // root writes to a 0555 directory anyway
+    const target = join(TEST_DIR, EXECUTION_LOG_FILE);
+    writeFileSync(
+      target,
+      Array.from({ length: MAX_EXECUTION_LINES + 5 }, (_, i) => `seeded ${String(i)}`).join("\n") +
+        "\n",
+      "utf8",
     );
+    // Make the *directory* read-only after the log exists: the append still
+    // succeeds (the file handle is what matters), the staging write fails.
+    chmodSync(TEST_DIR, 0o555);
+    try {
+      expect(() => {
+        recordTick(tick(), TEST_DIR);
+      }).not.toThrow();
+      expect(readdirSync(TEST_DIR).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      chmodSync(TEST_DIR, 0o755);
+    }
+  });
+
+  // The writability pre-check tests the directory, so it cannot see one log
+  // file that has become unwritable on its own — one `do-work` run as root in a
+  // shared parent is enough. A single catch around both writes would let that
+  // file take the other permanently down with it.
+  it("still writes the work log when the execution log cannot be written", () => {
+    // A directory where the execution log should be: every write to it fails.
+    mkdirSync(join(TEST_DIR, EXECUTION_LOG_FILE), { recursive: true });
+
+    expect(() => {
+      recordTick(tick({ items: [item({ issue: 9 })] }), TEST_DIR);
+    }).not.toThrow();
+
+    expect(workLog()).toContain("#9 issue-discuss answered");
   });
 
   it("does nothing and does not throw when the directory does not exist", () => {
@@ -397,6 +495,9 @@ describe("recordTick", () => {
   });
 
   it("does nothing and does not throw when the directory is not writable", () => {
+    // Root satisfies access(W_OK) on a 0555 directory, so the premise of this
+    // test does not hold there and it would fail for the wrong reason.
+    if (process.getuid?.() === 0) return;
     const locked = join(TEST_DIR, "locked");
     mkdirSync(locked, { recursive: true });
     chmodSync(locked, 0o555);

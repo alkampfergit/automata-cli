@@ -4,8 +4,10 @@ import {
   constants,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 /**
@@ -91,7 +93,9 @@ export function operationLogDirectory(): string {
 
 /** `-` rather than an empty field, so a line always has the same shape. */
 function repoField(repo: string | null): string {
-  return repo === null || repo.trim().length === 0 ? "-" : repo.trim();
+  if (repo === null) return "-";
+  const flat = oneLine(repo);
+  return flat.length === 0 ? "-" : flat;
 }
 
 /**
@@ -129,17 +133,32 @@ export function formatExecutionLine(tick: TickLog): string {
   return fields.join(" ") + "\n";
 }
 
+/**
+ * Collapse a value to a single line.
+ *
+ * Every field interpolated into a log line goes through this, not just the
+ * detail. A newline in any of them would not merely split one item across two
+ * lines: a fragment starting `=== <token> ` matches `RECORD_HEADER`, so the
+ * next prune reads it as a record boundary, dates the remainder from the
+ * injected timestamp and can delete half of a legitimate record. `model` and
+ * `effort` come straight from `.automata/config.json` and are never validated
+ * for this, so the guarantee has to be enforced here.
+ */
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 /** A newline inside a detail would split one item across two lines. */
 function briefDetail(detail: string): string {
-  const flat = detail.replace(/\s+/g, " ").trim();
+  const flat = oneLine(detail);
   return flat.length <= MAX_DETAIL_LENGTH ? flat : `${flat.slice(0, MAX_DETAIL_LENGTH)}…`;
 }
 
 function describeItemExecution(item: TickLogItem): string {
   if (item.executor === undefined) return "";
-  const model = item.model === undefined ? "" : ` model=${item.model}`;
-  const effort = item.effort === undefined ? "" : ` effort=${item.effort}`;
-  return ` [${item.executor}${model}${effort}]`;
+  const model = item.model === undefined ? "" : ` model=${oneLine(item.model)}`;
+  const effort = item.effort === undefined ? "" : ` effort=${oneLine(item.effort)}`;
+  return ` [${oneLine(item.executor)}${model}${effort}]`;
 }
 
 /**
@@ -156,7 +175,7 @@ export function formatWorkRecord(tick: TickLog): string | null {
   const header = `=== ${tick.timestamp.toISOString()} ${repoField(tick.repo)} ===\n`;
   const lines = ran.map(
     (item) =>
-      `#${String(item.issue)} ${item.turn ?? "-"} ${item.outcome}` +
+      `#${String(item.issue)} ${item.turn === null ? "-" : oneLine(item.turn)} ${item.outcome}` +
       `${describeItemExecution(item)} — ${briefDetail(item.detail)}\n`,
   );
   return header + lines.join("") + "\n";
@@ -168,7 +187,7 @@ export function formatWorkRecord(tick: TickLog): string | null {
  */
 export function trimToLastLines(content: string, max: number): string {
   const lines = content.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
+  if (lines.at(-1) === "") lines.pop();
   if (lines.length <= max) return content;
   return lines.slice(lines.length - max).join("\n") + "\n";
 }
@@ -200,7 +219,7 @@ export function pruneOldRecords(content: string, now: Date, maxAgeMs: number): s
   const lines = content.split("\n");
   // The file's terminating newline produces a final empty element that belongs
   // to no line; re-added below, once, when each group is written back.
-  if (lines[lines.length - 1] === "") lines.pop();
+  if (lines.at(-1) === "") lines.pop();
 
   const groups: Group[] = [];
   let current: Group = { header: null, lines: [] };
@@ -236,11 +255,19 @@ export function pruneOldRecords(content: string, now: Date, maxAgeMs: number): s
  *
  * In this order because the newest entry is the one most likely to matter and
  * must survive a failed rewrite — and because the common path then stays a
- * single `O_APPEND` write, which is atomic for a short line and so safe when
- * two checkouts under the same parent log at once.
+ * single `O_APPEND` write, which is atomic for a short line.
+ *
+ * The rewrite, by contrast, is read-modify-write and *can* lose a line that
+ * another checkout appends inside the window. That is accepted rather than
+ * fixed — see "Known limits" in `docs/do-work.md`. Taking a lock to protect a
+ * diagnostic file would mean a log that can block the tick it describes, which
+ * is a worse failure than a dropped line in a file that is already lossy by
+ * construction.
  *
  * The rewrite goes through a temp file and `renameSync` so a reader never sees
- * a half-written log, matching what `runLock.ts` does for the same reason.
+ * a half-written log, matching what `runLock.ts` does for the same reason —
+ * including the `randomUUID()` name and the `finally` cleanup, so a failed
+ * rename cannot leave a `.tmp` file behind in the user's workspace root.
  */
 function appendWithRetention(
   dir: string,
@@ -255,10 +282,21 @@ function appendWithRetention(
   const retained = retain(existing);
   if (retained === existing) return;
 
-  // The pid keeps two concurrent checkouts from colliding on the temp name.
-  const temp = `${target}.${String(process.pid)}.tmp`;
-  writeFileSync(temp, retained, "utf8");
-  renameSync(temp, target);
+  // A pid is unique only within one host, and this directory is shared by
+  // design — possibly across containers mounting the same workspace root.
+  const temp = `${target}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, retained, "utf8");
+    renameSync(temp, target);
+  } finally {
+    // Nothing else ever collects these, and the name is different every tick,
+    // so a leak here accumulates for good.
+    try {
+      unlinkSync(temp);
+    } catch {
+      // The rename consumed it, which is the successful path.
+    }
+  }
 }
 
 /**
@@ -274,13 +312,26 @@ export function recordTick(tick: TickLog, dir: string = operationLogDirectory())
     // The cheap path for a deliberately locked-down parent: no file is created
     // and no error is allocated. It is advisory only — foreign file ownership,
     // a full disk or a remount are all still possible, which is what the
-    // surrounding catch is for.
+    // per-file catches below are for.
     accessSync(dir, constants.W_OK);
+  } catch {
+    return;
+  }
 
+  // One try per file, not one around both. The pre-check tests the *directory*,
+  // so it cannot see a single log file that has become unwritable on its own —
+  // the realistic case being one `do-work` run as root, or as another container
+  // UID, leaving `automata-execution.log` owned by someone else. A shared catch
+  // would let that one file take the other permanently down with it.
+  try {
     appendWithRetention(dir, EXECUTION_LOG_FILE, formatExecutionLine(tick), (existing) =>
       trimToLastLines(existing, MAX_EXECUTION_LINES),
     );
+  } catch {
+    // Diagnostics must never take down the tick they are describing.
+  }
 
+  try {
     const record = formatWorkRecord(tick);
     if (record === null) return;
     const maxAgeMs = WORK_RECORD_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
@@ -288,6 +339,6 @@ export function recordTick(tick: TickLog, dir: string = operationLogDirectory())
       pruneOldRecords(existing, tick.timestamp, maxAgeMs),
     );
   } catch {
-    // Diagnostics must never take down the tick they are describing.
+    // As above.
   }
 }

@@ -127,8 +127,25 @@ function progress(message: string): void {
   process.stderr.write(message);
 }
 
+/**
+ * The current invocation, for the benefit of `fail()`.
+ *
+ * Null for a dry run and until the action starts, so nothing is logged for an
+ * invocation that is not meant to leave a trace.
+ */
+let loggableInvocation: { startedAt: number } | null = null;
+
 function fail(message: string): never {
   process.stderr.write(`Error: ${message}\n`);
+  // Every `fail()` is a pre-flight misconfiguration that exits before the tick
+  // begins. Without a line here a loop that stopped working because someone
+  // edited `.automata/config.json` looks exactly like cron having stopped
+  // firing — the one confusion the execution log exists to remove.
+  if (loggableInvocation !== null) {
+    const { startedAt } = loggableInvocation;
+    loggableInvocation = null;
+    logTick([], 1, startedAt, "config-error");
+  }
   process.exit(1);
 }
 
@@ -1147,6 +1164,11 @@ export const doWorkCommand = new Command("do-work")
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
+    // Before `resolveSettings`, which exits through `fail()` on any bad
+    // configuration: arming this first is what lets that path be logged.
+    const startedAt = Date.now();
+    if (options.dryRun !== true) loggableInvocation = { startedAt };
+
     const settings = resolveSettings(options);
 
     // A dry run changes nothing, so it neither needs the lock nor should be
@@ -1159,7 +1181,8 @@ export const doWorkCommand = new Command("do-work")
       return;
     }
 
-    const startedAt = Date.now();
+    // From here the ordinary paths below do the logging; `fail()` must not.
+    loggableInvocation = null;
 
     const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
     if (!lock.ok) {
@@ -1239,8 +1262,8 @@ function toTickLogItem(report: ItemReport): TickLogItem {
 /**
  * Append this invocation to the operation log. Best-effort throughout:
  * `recordTick` swallows every filesystem failure, and the slug lookup shells
- * out to `gh`, so a broken remote logs `repo=-` rather than taking the tick
- * down after it has already succeeded.
+ * out to `git remote get-url origin`, so a broken remote logs `repo=-` rather
+ * than taking the tick down after it has already succeeded.
  */
 function logTick(reports: ItemReport[], exitCode: number, startedAt: number, note?: string): void {
   let repo: string | null;

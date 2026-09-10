@@ -1809,13 +1809,17 @@ describe("do-work operation log", () => {
   it("records a tick that answered an issue, with the resolved executor", async () => {
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockReturnValue(needsWork(42));
+    const before = Date.now();
     await runDoWork();
 
     const tick = recorded();
     expect(tick.command).toBe("do-work");
     expect(tick.repo).toBe("acme/widget");
-    expect(tick.timestamp).toBeInstanceOf(Date);
-    expect(tick.durationMs).toBeGreaterThanOrEqual(0);
+    // `>= 0` would be true by construction and would still pass if `startedAt`
+    // were captured in the wrong place; pin it to a real window instead.
+    expect(tick.timestamp.getTime()).toBeGreaterThanOrEqual(before);
+    expect(tick.timestamp.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(tick.durationMs).toBeLessThanOrEqual(Date.now() - before);
     expect(tick.note).toBeUndefined();
     expect(tick.items).toHaveLength(1);
     expect(tick.items[0]).toMatchObject({
@@ -1881,6 +1885,30 @@ describe("do-work operation log", () => {
     await runDoWork();
 
     expect(recorded().repo).toBeNull();
+  });
+
+  // A misconfigured loop exits through `fail()` before the tick begins. Without
+  // a line here it is indistinguishable, in the log, from cron having stopped
+  // firing — which is the one confusion this file exists to remove.
+  it("records a configuration error that stops the tick before it starts", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork();
+
+    expect(exitCode).toBe(1);
+    const tick = recorded();
+    expect(tick.note).toBe("config-error");
+    expect(tick.exitCode).toBe(1);
+    expect(tick.items).toEqual([]);
+  });
+
+  it("writes nothing for a configuration error during a dry run", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork(["--dry-run"]);
+
+    expect(exitCode).toBe(1);
+    expect(mockRecordTick).not.toHaveBeenCalled();
   });
 
   it("writes nothing for a dry run", async () => {

@@ -381,6 +381,7 @@ One line per invocation, including invocations that found nothing to do. Fields 
 2026-09-10T06:51:36.412Z do-work repo=acme/widget items=2 answered=1 answered-no-reply=0 skipped=0 failed=0 deferred=1 runs=1 exit=2 dur=42.1s
 2026-09-10T06:56:03.008Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=1.8s
 2026-09-10T07:01:02.771Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=0.3s note=lock-held
+2026-09-10T07:06:01.334Z do-work repo=acme/widget items=0 answered=0 answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=1 dur=0.1s note=config-error
 ```
 
 | Field | Meaning |
@@ -393,9 +394,14 @@ One line per invocation, including invocations that found nothing to do. Fields 
 | `runs` | Items for which the executor was actually invoked — what `--max-runs` counts |
 | `exit` | The process exit code (see [Exit codes](#exit-codes)) |
 | `dur` | Wall-clock duration in seconds |
-| `note` | Present only for an invocation that ran no tick; currently only `lock-held` |
+| `note` | Present only for an invocation that ran no tick: `lock-held`, or `config-error` when the run was rejected before the tick began |
 
 After the append, the file is trimmed to its newest 1000 lines.
+
+A line can read `exit=2` with every outcome bucket at zero: that is a tick whose
+[repository-hygiene pre-flight](#the-repository-hygiene-pre-flight) degraded before any item
+was processed. The pre-flight's own outcome is not broken out into fields here — use the
+tick's stdout, or `--json`, for that detail.
 
 Useful queries:
 
@@ -404,6 +410,7 @@ tail -f ../automata-execution.log                 # watch the loop
 awk '{print $1}' ../automata-execution.log | tail -1   # when it last fired
 grep 'exit=2' ../automata-execution.log | tail    # the last degraded ticks
 grep 'note=lock-held' ../automata-execution.log   # ticks turned away by the run lock
+grep 'note=config-error' ../automata-execution.log # ticks rejected before they began
 ```
 
 If the newest timestamp is older than your cron interval, the loop is not firing — that is the question this file exists to answer.
@@ -438,6 +445,7 @@ chmod a-w .. && automata do-work --limit 1 ; echo "exit=$?" ; chmod u+w ..
 
 - `--dry-run` writes to neither file, matching its promise that nothing changes.
 - An interrupted tick (`Ctrl-C`, `SIGTERM`) writes no line: the process exits from the signal handler before the tick returns.
+- A run rejected for bad configuration **does** write a line, marked `note=config-error`. A loop that stopped working because someone edited `.automata/config.json` is otherwise indistinguishable here from cron having stopped firing.
 - Only `do-work` writes these files. `implement-next`, `execute`, `execute-prompt` and the `git` subcommands do not.
 - When two checkouts under one parent log at the same moment and one of them crosses the 1000-line boundary, the rewrite can lose a line the other just appended. Accepted for a diagnostic log.
 
