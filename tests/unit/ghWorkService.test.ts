@@ -595,6 +595,25 @@ describe("getPrSurface", () => {
     expect(thread).toMatchObject({ path: "src/index.ts", line: 12, isResolved: false });
   });
 
+  it("flattens the pull request assignees", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(json({ ...prView, assignees: [{ login: "automata-bot" }, { login: "bob" }] }))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json(threadsResponse));
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    expect(getPrSurface(57).assignees).toEqual(["automata-bot", "bob"]);
+    expect(calls()[0].args.join(" ")).toContain("assignees");
+  });
+
+  it("reports no assignees when the field is absent", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(json(prView))
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json(threadsResponse));
+    const { getPrSurface } = await import("../../src/github/ghWorkService.js");
+    expect(getPrSurface(57).assignees).toEqual([]);
+  });
+
   it("normalises the pull request state", async () => {
     mockSpawnSync
       .mockReturnValueOnce(json({ ...prView, state: "MERGED" }))
@@ -713,6 +732,29 @@ describe("assignIssueToAgent", () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403: not a collaborator", status: 1 });
     const { assignIssueToAgent } = await import("../../src/github/ghWorkService.js");
     expect(() => assignIssueToAgent(42, "automata-bot")).toThrow(/not a collaborator/);
+  });
+});
+
+describe("assignPrToAgent", () => {
+  it("edits the pull request rather than the issue, additively", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { assignPrToAgent } = await import("../../src/github/ghWorkService.js");
+    assignPrToAgent(57, "automata-bot");
+    expect(calls()[0].args).toEqual(["pr", "edit", "57", "--add-assignee", "automata-bot"]);
+  });
+
+  it("surfaces a failure", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403: not a collaborator", status: 1 });
+    const { assignPrToAgent } = await import("../../src/github/ghWorkService.js");
+    expect(() => assignPrToAgent(57, "automata-bot")).toThrow(/not a collaborator/);
+  });
+
+  it("reports the pull request number when gh says nothing", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 1 });
+    const { assignPrToAgent } = await import("../../src/github/ghWorkService.js");
+    expect(() => assignPrToAgent(57, "automata-bot")).toThrow(
+      "Failed to assign pull request #57 to automata-bot.",
+    );
   });
 });
 

@@ -157,14 +157,16 @@ export function editComment(commentUrl: string, body: string): void {
 
 /**
  * Check if the current branch has an open pull request.
- * Returns the PR number, URL, and body, or null if no PR exists.
+ * Returns the PR number, URL, body and assignee logins, or null if no PR exists.
  */
-export function getCurrentBranchPr(branch?: string): { number: number; url: string; body: string } | null {
+export function getCurrentBranchPr(
+  branch?: string,
+): { number: number; url: string; body: string; assignees: string[] } | null {
   const args = ["pr", "view"];
   if (branch) {
     args.push(branch);
   }
-  args.push("--json", "number,url,body");
+  args.push("--json", "number,url,body,assignees");
 
   const { stdout, stderr, status } = run("gh", args);
   if (status !== 0) {
@@ -173,7 +175,20 @@ export function getCurrentBranchPr(branch?: string): { number: number; url: stri
     }
     throw new Error(stderr.trim() || "Failed to query PR for current branch.");
   }
-  return JSON.parse(stdout) as { number: number; url: string; body: string };
+  const raw = JSON.parse(stdout) as {
+    number: number;
+    url: string;
+    body: string;
+    assignees?: { login?: string }[];
+  };
+  return {
+    number: raw.number,
+    url: raw.url,
+    body: raw.body,
+    // Absent when an older `gh` ignores the field, and `[]` is the right reading
+    // of "nobody is assigned" either way.
+    assignees: (raw.assignees ?? []).map((a) => a.login ?? "").filter((name) => name.length > 0),
+  };
 }
 
 /**

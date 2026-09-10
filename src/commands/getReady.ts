@@ -6,6 +6,7 @@ import {
   getCurrentBranchPr, addClosesRefToPr, addCopilotReviewer,
   type GitHubIssue,
 } from "../config/githubService.js";
+import { assignPrToAgent } from "../github/ghWorkService.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 import { resolveEffortOption } from "../cli/spawnUtils.js";
@@ -185,7 +186,7 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     // ── Post-claim: link PR to issue ───────────────────────────────────────
-    linkPrToIssue(issue.number, commentUrl, options.askCopilotReview === true);
+    linkPrToIssue(issue.number, commentUrl, options.askCopilotReview === true, config.agentUser);
   });
 
 function resolveExecutor(requested: string): "claude" | "codex" {
@@ -207,7 +208,12 @@ function warnOnFailure(what: string, action: () => void): void {
   }
 }
 
-function linkPrToIssue(issueNumber: number, commentUrl: string | undefined, askCopilotReview: boolean): void {
+function linkPrToIssue(
+  issueNumber: number,
+  commentUrl: string | undefined,
+  askCopilotReview: boolean,
+  agentUser: string | undefined,
+): void {
   let pr: ReturnType<typeof getCurrentBranchPr>;
   try {
     pr = getCurrentBranchPr();
@@ -225,6 +231,16 @@ function linkPrToIssue(issueNumber: number, commentUrl: string | undefined, askC
   warnOnFailure(`add Closes #${String(issueNumber)} to PR`, () => {
     addClosesRefToPr(pr.number, issueNumber);
   });
+  // Only when nobody is assigned. `agentUser` is optional for this command —
+  // unlike `do-work`, which refuses to run without it — so `@me` stands in: the
+  // person running `implement-next` is the identity doing the work, and `gh`
+  // resolves `@me` to the authenticated account without an extra lookup.
+  if (pr.assignees.length === 0) {
+    const claimant = (agentUser ?? "").trim() || "@me";
+    warnOnFailure(`assign PR #${String(pr.number)} to ${claimant}`, () => {
+      assignPrToAgent(pr.number, claimant);
+    });
+  }
   if (askCopilotReview) {
     warnOnFailure("request Copilot review", () => {
       addCopilotReviewer(pr.number);
