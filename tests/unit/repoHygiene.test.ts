@@ -210,12 +210,14 @@ describe("rescue", () => {
     expect(report.rescue).toMatchObject({ kind: "rescued", createdBranch: true });
   });
 
-  it("flattens a slashed base branch name into one rescue level", async () => {
+  // Two separators, not one: a non-global replace would still pass with a single
+  // slash, and `rescue/a/b-<stamp>` is a two-level ref rather than the flat name.
+  it("flattens every slash in the base branch name into one rescue level", async () => {
     mockHasUncommittedChanges.mockReturnValue(true);
-    mockGetCurrentBranch.mockReturnValue("release/2.0");
+    mockGetCurrentBranch.mockReturnValue("release/2.0/rc");
     const { runRepoHygiene } = await hygiene();
-    runRepoHygiene(options({ baseBranch: "release/2.0" }), NOW);
-    expect(mockCreateBranchAtHead).toHaveBeenCalledWith("rescue/release-2.0-20260910T054512Z");
+    runRepoHygiene(options({ baseBranch: "release/2.0/rc" }), NOW);
+    expect(mockCreateBranchAtHead).toHaveBeenCalledWith("rescue/release-2.0-rc-20260910T054512Z");
   });
 
   // Every rescue step is additive, so a failure leaves the tree exactly as dirty

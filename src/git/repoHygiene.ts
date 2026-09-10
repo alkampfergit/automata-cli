@@ -104,7 +104,7 @@ function utcStamp(now: Date): string {
 
 /** `feature/031-foo` → `feature-031-foo`, so the rescue prefix stays one level deep. */
 function flattenBranchName(branch: string): string {
-  return branch.replace(/\//g, "-");
+  return branch.replaceAll("/", "-");
 }
 
 function detectRescueTarget(
