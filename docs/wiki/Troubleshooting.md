@@ -65,9 +65,9 @@ You can also link them by hand in the GitHub UI — `closingIssuesReferences` co
 
 | Message | Cause | Fix |
 |---|---|---|
-| `dirty-tree` | The working tree has uncommitted changes **and** the pre-flight rescue could not put them somewhere safe. `do-work` never discards work it did not create. | Read the `Pre-flight:` block for the step that failed (usually a rejected push or an unauthenticated `gh`). The changes are untouched, so commit and push them yourself once the cause is fixed. |
+| `dirty-tree` | The working tree has uncommitted changes and nothing rescued them. Either the pre-flight rescue failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one. `do-work` never discards work it did not create. | If there is a `Pre-flight:` block, read it for the step that failed (usually a rejected push or an unauthenticated `gh`). If it reported `clean`, an earlier item in the same tick is the source — see which one ran before this. Either way the changes are untouched, so commit and push them yourself. |
 | `checkout-failed` | The branch does not exist locally or remotely, or `git fetch` failed. | Check the branch still exists on the remote. |
-| `pull-failed` | The local branch has diverged from the remote. The pull is `--ff-only`, so it fails loudly rather than merging silently. | Reconcile the branch by hand, or delete the local branch and let the next tick recreate it. |
+| `pull-failed` | The local branch has diverged from the remote **and** holds a commit that never came from it. The pull is `--ff-only`, so it fails loudly rather than merging silently. A divergence caused only by a force-push — every local commit already reachable from the remote-tracking ref before the fetch, the Dependabot rebase case — is reset to the remote automatically instead. | Inspect the local-only commits, then `git reset --hard origin/<branch>`, or delete the local branch and let the next tick recreate it. |
 | `marker failed` | The `working…` comment could not be posted, so no model was invoked. | Usually the agent account cannot comment on the repository. |
 
 ## A "working…" comment is stuck on an issue

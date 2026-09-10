@@ -1997,4 +1997,53 @@ describe("gitService branch primitives", () => {
     const { checkoutBranch } = await import("../../src/git/gitService.js");
     expect(checkoutBranch("nope")).toEqual({ ok: false, stderr: "fatal: nope" });
   });
+
+  it("revParse returns the sha of an existing ref", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "deadbeef\n", stderr: "", status: 0 });
+    const { revParse } = await import("../../src/git/gitService.js");
+    expect(revParse("refs/heads/feature/042")).toBe("deadbeef");
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "git",
+      ["rev-parse", "--verify", "--quiet", "refs/heads/feature/042"],
+      expect.anything(),
+    );
+  });
+
+  it("revParse returns null for a ref that does not exist", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 1 });
+    const { revParse } = await import("../../src/git/gitService.js");
+    expect(revParse("refs/remotes/origin/gone")).toBeNull();
+  });
+
+  it("revParse returns null when the ref resolves to nothing", async () => {
+    // `--quiet` makes git exit 0 with empty output in some plumbing paths; an
+    // empty string would otherwise be handed on as if it were a commit.
+    mockSpawnSync.mockReturnValue({ stdout: "\n", stderr: "", status: 0 });
+    const { revParse } = await import("../../src/git/gitService.js");
+    expect(revParse("refs/remotes/origin/gone")).toBeNull();
+  });
+
+  it("isAncestorCommit reads the exit status of merge-base", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { isAncestorCommit } = await import("../../src/git/gitService.js");
+    expect(isAncestorCommit("old", "new")).toBe(true);
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "git",
+      ["merge-base", "--is-ancestor", "old", "new"],
+      expect.anything(),
+    );
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 1 });
+    expect(isAncestorCommit("unrelated", "new")).toBe(false);
+  });
+
+  it("resetHardTo issues the expected git argv", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { resetHardTo } = await import("../../src/git/gitService.js");
+    expect(resetHardTo("refs/remotes/origin/dependabot/bump")).toEqual({ ok: true, stderr: "" });
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "git",
+      ["reset", "--hard", "refs/remotes/origin/dependabot/bump"],
+      expect.anything(),
+    );
+  });
 });

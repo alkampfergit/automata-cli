@@ -52,6 +52,11 @@ export interface HygieneOptions {
   protectedBranches: string[];
   /** Report every step without issuing a single mutating command. */
   dryRun: boolean;
+  /**
+   * The agent's login, used to tell a branch automata owns from one it is only
+   * visiting. Empty disables the distinction (every branch counts as foreign).
+   */
+  agentUser: string;
   /** Progress sink, so the caller keeps ownership of its stdout/stderr split. */
   log: (message: string) => void;
 }
@@ -110,19 +115,46 @@ function flattenBranchName(branch: string): string {
   return branch.replaceAll("/", "-");
 }
 
+/**
+ * True when committing onto `branch` and pushing it would only ever touch work
+ * automata is responsible for.
+ *
+ * A branch with no open pull request is the agent's own working branch — that is
+ * the ordinary post-`implement-next` state, and the rescue's whole purpose. A
+ * branch whose open pull request somebody *else* opened is not: since the orphan
+ * pass, a tick can end with the checkout sitting on a dependency bump's branch,
+ * and committing a stray edit there would push it into a third party's pull
+ * request under automata's name.
+ *
+ * A failed lookup answers "foreign", because the cost of being wrong is
+ * asymmetric: a needless rescue branch is noise, a commit pushed into someone
+ * else's pull request is not undoable by the next tick.
+ */
+function agentOwnsBranch(branch: string, agentUser: string): boolean {
+  if (agentUser.length === 0) return false;
+  let open: PullRequestHeadRef | null;
+  try {
+    open = findOpenPr(branch);
+  } catch {
+    return false;
+  }
+  if (open === null) return true;
+  return open.author.toLowerCase() === agentUser.toLowerCase();
+}
+
 function detectRescueTarget(
-  baseBranch: string,
+  options: HygieneOptions,
   now: Date,
 ): { branch: string; createdBranch: boolean; source: string } {
   // `rev-parse --abbrev-ref HEAD` answers "HEAD" on a detached head, which has
   // no branch to commit onto — so it takes the same path as the base branch.
   const current = getCurrentBranch();
   const detached = current === "HEAD" || current.length === 0;
-  if (!detached && current !== baseBranch) {
+  if (!detached && current !== options.baseBranch && agentOwnsBranch(current, options.agentUser)) {
     return { branch: current, createdBranch: false, source: current };
   }
-  const source = detached ? "detached HEAD" : baseBranch;
-  const label = detached ? "detached" : flattenBranchName(baseBranch);
+  const source = detached ? "detached HEAD" : current === options.baseBranch ? options.baseBranch : current;
+  const label = detached ? "detached" : flattenBranchName(source);
   return {
     branch: `${RESCUE_BRANCH_PREFIX}${label}-${utcStamp(now)}`,
     createdBranch: true,
@@ -159,7 +191,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     return { kind: "clean" };
   }
 
-  const target = detectRescueTarget(options.baseBranch, now);
+  const target = detectRescueTarget(options, now);
 
   if (options.dryRun) {
     options.log(
@@ -194,7 +226,12 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
 
   const pushed = pushSetUpstream(target.branch);
   if (!pushed.ok) {
-    options.log(`  rescue    FAILED to push ${target.branch}: ${pushed.stderr}\n`);
+    // Naming the commit matters: the tree is *clean* now, so no later tick will
+    // rescue this again — it lives only in this checkout until someone pushes it.
+    options.log(
+      `  rescue    FAILED to push ${target.branch}: ${pushed.stderr}\n` +
+        `  rescue    the work is committed locally on ${target.branch}; push it by hand before it is lost\n`,
+    );
     return { kind: "failed", step: "push", detail: pushed.stderr };
   }
 

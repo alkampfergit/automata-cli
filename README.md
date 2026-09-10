@@ -129,7 +129,7 @@ See [docs/execute-prompt.md](docs/execute-prompt.md) for full details.
 
 ## `automata do-work`
 
-One tick of the autonomous loop: answer the open issues whose newest message from an authorized account the agent has not answered. Reference: [docs/do-work.md](docs/do-work.md). Process, trust model and setup: [the wiki](docs/wiki/Home.md).
+One tick of the autonomous loop: answer the open issues whose newest message from an authorized account the agent has not answered, then do the same for the open pull requests that close no issue of this repository. Reference: [docs/do-work.md](docs/do-work.md). Process, trust model and setup: [the wiki](docs/wiki/Home.md).
 
 ---
 

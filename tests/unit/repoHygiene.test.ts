@@ -69,12 +69,14 @@ function options(overrides: Record<string, unknown> = {}): {
   baseBranch: string;
   protectedBranches: string[];
   dryRun: boolean;
+  agentUser: string;
   log: (message: string) => void;
 } {
   return {
     baseBranch: "develop",
     protectedBranches: ["master", "develop"],
     dryRun: false,
+    agentUser: "automata-bot",
     log: (message: string) => logged.push(message),
     ...overrides,
   };
@@ -190,13 +192,92 @@ describe("rescue", () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     mockGetCurrentBranch.mockReturnValue("feature/x");
     mockListPullRequestsForHead.mockReturnValue([
-      { number: 12, url: "https://gh/pr/12", state: "OPEN", updatedAt: "2026-09-10T00:00:00Z" },
+      {
+        number: 12,
+        url: "https://gh/pr/12",
+        state: "OPEN",
+        updatedAt: "2026-09-10T00:00:00Z",
+        author: "automata-bot",
+      },
     ]);
     const { runRepoHygiene } = await hygiene();
     const report = runRepoHygiene(options(), NOW);
 
     expect(mockCreateDraftPullRequest).not.toHaveBeenCalled();
     expect(report.rescue).toMatchObject({ kind: "rescued", pr: 12, prCreated: false });
+  });
+
+  // Since the orphan pass a tick can end with the checkout sitting on a branch
+  // automata does not own — a dependency bump's, say. Committing a stray edit
+  // there would push it into a third party's pull request under automata's
+  // name, and the tree would be clean afterwards so nothing would ever undo it.
+  it("never commits onto a branch whose open pull request somebody else opened", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("dependabot/npm_and_yarn/lodash-4.17.21");
+    mockListPullRequestsForHead.mockReturnValue([
+      {
+        number: 61,
+        url: "https://gh/pr/61",
+        state: "OPEN",
+        updatedAt: "2026-09-10T00:00:00Z",
+        author: "dependabot[bot]",
+      },
+    ]);
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    const rescueBranch = "rescue/dependabot-npm_and_yarn-lodash-4.17.21-20260910T054512Z";
+    expect(mockCreateBranchAtHead).toHaveBeenCalledWith(rescueBranch);
+    expect(mockPushSetUpstream).toHaveBeenCalledWith(rescueBranch);
+    expect(mockPushSetUpstream).not.toHaveBeenCalledWith("dependabot/npm_and_yarn/lodash-4.17.21");
+    expect(report.rescue).toMatchObject({ kind: "rescued", branch: rescueBranch, createdBranch: true });
+  });
+
+  it("still commits onto a branch whose open pull request is the agent's own", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/031-update-all-npm");
+    mockListPullRequestsForHead.mockReturnValue([
+      {
+        number: 31,
+        url: "https://gh/pr/31",
+        state: "OPEN",
+        updatedAt: "2026-09-10T00:00:00Z",
+        author: "Automata-Bot",
+      },
+    ]);
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(mockCreateBranchAtHead).not.toHaveBeenCalled();
+    expect(report.rescue).toMatchObject({ kind: "rescued", branch: "feature/031-update-all-npm" });
+  });
+
+  // Asymmetric costs: a needless rescue branch is noise, a commit pushed into
+  // someone else's pull request is not undoable by the next tick.
+  it("treats an unreadable ownership lookup as foreign", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/031-update-all-npm");
+    mockListPullRequestsForHead.mockImplementation(() => {
+      throw new Error("gh: HTTP 502");
+    });
+    const { runRepoHygiene } = await hygiene();
+    runRepoHygiene(options(), NOW);
+
+    // The same unreadable lookup later costs the draft pull request, so the
+    // outcome is `failed/pr` — but the work is on a rescue branch of its own
+    // and the feature branch was never pushed, which is the point.
+    expect(mockCreateBranchAtHead).toHaveBeenCalledWith("rescue/feature-031-update-all-npm-20260910T054512Z");
+    expect(mockPushSetUpstream).not.toHaveBeenCalledWith("feature/031-update-all-npm");
+  });
+
+  it("says so when the work is committed but the push failed, since no later tick will retry", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/031-update-all-npm");
+    mockPushSetUpstream.mockReturnValue(bad("rejected"));
+    const { runRepoHygiene } = await hygiene();
+    runRepoHygiene(options(), NOW);
+
+    expect(logged.join("")).toContain("committed locally on feature/031-update-all-npm");
   });
 
   it("treats a detached HEAD like the base branch and never commits to the base branch", async () => {

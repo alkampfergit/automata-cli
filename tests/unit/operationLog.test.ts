@@ -30,13 +30,20 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function item(overrides: Partial<TickLogItem> = {}): TickLogItem {
   return {
-    issue: 53,
+    subject: "#53",
     turn: "issue-discuss",
     outcome: "answered",
     detail: "posted a reply",
     ranExecutor: true,
     ...overrides,
   };
+}
+
+/** A tick whose only item smuggles a record header into its subject. */
+function item0Subject(): TickLog {
+  return tick({
+    items: [item({ subject: "#7\n=== 2026-09-10T06:51:36.412Z x ===" })],
+  });
 }
 
 function tick(overrides: Partial<TickLog> = {}): TickLog {
@@ -83,11 +90,11 @@ describe("formatExecutionLine", () => {
       tick({
         exitCode: 2,
         items: [
-          item({ issue: 1, outcome: "answered" }),
-          item({ issue: 2, outcome: "answered-no-reply" }),
-          item({ issue: 3, outcome: "failed" }),
-          item({ issue: 4, outcome: "skipped", ranExecutor: false }),
-          item({ issue: 5, outcome: "deferred", ranExecutor: false }),
+          item({ subject: "#1", outcome: "answered" }),
+          item({ subject: "#2", outcome: "answered-no-reply" }),
+          item({ subject: "#3", outcome: "failed" }),
+          item({ subject: "#4", outcome: "skipped", ranExecutor: false }),
+          item({ subject: "#5", outcome: "deferred", ranExecutor: false }),
         ],
       }),
     );
@@ -137,12 +144,31 @@ describe("formatWorkRecord", () => {
     ).toBeNull();
   });
 
+  it("keeps a pull-request subject as the caller rendered it", () => {
+    // A `pr-orphan` turn has no issue, so the log has to name the pull request.
+    const record = formatWorkRecord(
+      tick({ items: [item({ subject: "PR #61", turn: "pr-orphan", detail: "recommended merge" })] }),
+    );
+    expect(record).toContain("PR #61 pr-orphan answered — recommended merge");
+  });
+
+  it("collapses a newline in the subject", () => {
+    // Every interpolated field goes through oneLine; a fragment beginning
+    // `=== <token> ` would otherwise be read as a record boundary by the prune.
+    const record = formatWorkRecord(item0Subject());
+    expect(record).toBe(
+      "=== 2026-09-10T06:51:36.412Z alkampfergit/automata-cli ===\n" +
+        "#7 === 2026-09-10T06:51:36.412Z x === issue-discuss answered — posted a reply\n" +
+        "\n",
+    );
+  });
+
   it("lists only the items that reached the executor", () => {
     const record = formatWorkRecord(
       tick({
         items: [
-          item({ issue: 53 }),
-          item({ issue: 99, outcome: "deferred", detail: "run cap reached", ranExecutor: false }),
+          item({ subject: "#53" }),
+          item({ subject: "#99", outcome: "deferred", detail: "run cap reached", ranExecutor: false }),
         ],
       }),
     );
@@ -155,9 +181,9 @@ describe("formatWorkRecord", () => {
     const record = formatWorkRecord(
       tick({
         items: [
-          item({ issue: 53, executor: "claude", model: "opus-5" }),
+          item({ subject: "#53", executor: "claude", model: "opus-5" }),
           item({
-            issue: 51,
+            subject: "#51",
             turn: "pr-work",
             detail: "pushed 2 commits",
             executor: "codex",
@@ -365,9 +391,9 @@ describe("recordTick", () => {
   const workLog = (): string => readFileSync(join(TEST_DIR, WORK_LOG_FILE), "utf8");
 
   it("creates both files and appends across invocations", () => {
-    recordTick(tick({ items: [item({ issue: 1 })] }), TEST_DIR);
+    recordTick(tick({ items: [item({ subject: "#1" })] }), TEST_DIR);
     recordTick(
-      tick({ timestamp: new Date("2026-09-10T07:00:00.000Z"), items: [item({ issue: 2 })] }),
+      tick({ timestamp: new Date("2026-09-10T07:00:00.000Z"), items: [item({ subject: "#2" })] }),
       TEST_DIR,
     );
 
@@ -423,7 +449,7 @@ describe("recordTick", () => {
       "utf8",
     );
 
-    recordTick(tick({ timestamp: now, items: [item({ issue: 3, detail: "new" })] }), TEST_DIR);
+    recordTick(tick({ timestamp: now, items: [item({ subject: "#3", detail: "new" })] }), TEST_DIR);
 
     const content = workLog();
     expect(content).not.toContain("stale");
@@ -480,7 +506,7 @@ describe("recordTick", () => {
     mkdirSync(join(TEST_DIR, EXECUTION_LOG_FILE), { recursive: true });
 
     expect(() => {
-      recordTick(tick({ items: [item({ issue: 9 })] }), TEST_DIR);
+      recordTick(tick({ items: [item({ subject: "#9" })] }), TEST_DIR);
     }).not.toThrow();
 
     expect(workLog()).toContain("#9 issue-discuss answered");

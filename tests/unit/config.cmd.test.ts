@@ -336,10 +336,16 @@ describe("automata config set do-work-*", () => {
     expect(readConfigFile().doWork).toEqual({ prompts: { prWork: "Fix the comments" } });
   });
 
+  it("sets the pr-orphan prompt", () => {
+    const output = run(["config", "set", "do-work-prompt", "pr-orphan", "orphan.md"]);
+    expect(output.trim()).toBe("do-work pr-orphan prompt set.");
+    expect(readConfigFile().doWork).toEqual({ prompts: { prOrphan: "orphan.md" } });
+  });
+
   it("rejects an unknown turn kind", () => {
     const errorOutput = runExpectingFailure(["config", "set", "do-work-prompt", "implement", "x.md"]);
     expect(errorOutput).toMatch(/invalid turn kind "implement"/);
-    expect(errorOutput).toMatch(/issue-discuss, pr-work/);
+    expect(errorOutput).toMatch(/issue-discuss, pr-work, pr-orphan/);
   });
 
   it("rejects an empty prompt", () => {
@@ -354,11 +360,12 @@ describe("automata config set do-work-*", () => {
     run(["config", "set", "do-work-model", "codex", "o3"]);
     run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
     run(["config", "set", "do-work-prompt", "pr-work", "pr.md"]);
+    run(["config", "set", "do-work-prompt", "pr-orphan", "orphan.md"]);
     expect(readConfigFile().doWork).toEqual({
       baseBranch: "main",
       executor: "codex",
       models: { codex: "o3" },
-      prompts: { issueDiscuss: "discuss.md", prWork: "pr.md" },
+      prompts: { issueDiscuss: "discuss.md", prWork: "pr.md", prOrphan: "orphan.md" },
     });
   });
 

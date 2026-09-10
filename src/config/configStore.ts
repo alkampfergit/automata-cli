@@ -11,8 +11,14 @@ export interface AutomataPrompts {
   checkIssue?: string;
 }
 
-/** The two kinds of turn `do-work` can run on an issue. */
-export type TurnKind = "issue-discuss" | "pr-work";
+/**
+ * The kinds of turn `do-work` can run.
+ *
+ * The first two are the issue lifecycle. `pr-orphan` is the second pass: an open
+ * pull request that closes no issue of this repository has no issue to discuss,
+ * so it gets its own turn on its head branch.
+ */
+export type TurnKind = "issue-discuss" | "pr-work" | "pr-orphan";
 
 export type Executor = "claude" | "codex";
 
@@ -24,6 +30,7 @@ export type Executor = "claude" | "codex";
 export interface DoWorkPrompts {
   issueDiscuss?: string;
   prWork?: string;
+  prOrphan?: string;
 }
 
 /**
@@ -138,6 +145,26 @@ export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
   "Reply on the pull request with a short summary of what you changed, or reply in the review thread when your answer belongs to a specific comment. " +
   "Always post a reply — silence looks like a crash.";
 
+/**
+ * Default instructions for a turn on a pull request that closes no issue.
+ *
+ * Says nothing about merging or closing, because `do-work` never does either. A
+ * repository that wants a superseded dependency bump closed automatically says
+ * so in its own `doWork.prompts.prOrphan`.
+ */
+export const DEFAULT_DO_WORK_PR_ORPHAN_PROMPT =
+  "You are the agent named in the context below, working on a pull request that is not linked to any issue — " +
+  "a dependency bump, or another change opened without one — together with the people allowed to instruct you. " +
+  "Work on the branch named below, which is already checked out and up to date.\n\n" +
+  "Address every message marked NEW and every unresolved review thread listed. " +
+  "Typical work here is finding out why the checks are failing, bringing the branch up to date with the base branch, " +
+  "and fixing whatever the change needs in order to be mergeable. " +
+  "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch.\n\n" +
+  "Do not merge the pull request, do not close it, and do not push to the base branch. " +
+  "If you conclude that it should be merged or closed, say so in your reply and leave the decision to the humans.\n\n" +
+  "Reply on the pull request with a short summary of what you did and what you recommend, or reply in the review thread " +
+  "when your answer belongs to a specific comment. Always post a reply — silence looks like a crash.";
+
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
 
@@ -216,6 +243,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.doWork?.prompts?.prWork) {
     config.doWork.prompts.prWork = resolvePromptRef(config.doWork.prompts.prWork, dir);
+  }
+  if (config.doWork?.prompts?.prOrphan) {
+    config.doWork.prompts.prOrphan = resolvePromptRef(config.doWork.prompts.prOrphan, dir);
   }
   return config;
 }
