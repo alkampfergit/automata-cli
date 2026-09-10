@@ -880,6 +880,32 @@ function repairIssueLink(item: WorkItem, baseBranch: string): boolean {
   }
 }
 
+/**
+ * Give up on an item after the `working…` marker is posted but before anything
+ * is invoked, replacing the marker with an explanation.
+ *
+ * Both callers refuse *after* the marker on purpose: the marker edit is what
+ * advances the answer boundary, so refusing before it would leave the offending
+ * message new forever and re-refuse it on every later tick instead of
+ * explaining itself once. Neither sets `ranExecutor` — nothing ran, so the item
+ * must not spend a slot from the run cap.
+ */
+function refuseBeforeRun(
+  base: Pick<ItemReport, "issue" | "title" | "turn">,
+  marker: MarkerRef,
+  detail: string,
+  markerText: string,
+): ItemReport {
+  progress(`  failed: ${detail}\n`);
+  inFlightMarker = null;
+  try {
+    updateMarker(marker, markerText);
+  } catch (err) {
+    progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
+  }
+  return { ...base, outcome: "failed", detail };
+}
+
 async function processItem(
   planned: WorkItem,
   settings: Settings,
@@ -975,42 +1001,27 @@ async function processItem(
 
   const oversized = describeOversizedPrompt(prompt);
   if (oversized !== null) {
-    const detail = oversized;
-    progress(`  failed: ${detail}\n`);
-    inFlightMarker = null;
-    try {
-      updateMarker(
-        marker,
-        `automata do-work: could not start a run because ${detail} ` +
-          "Summarise the discussion in a new issue, or shorten the thread, and try again.",
-      );
-    } catch (err) {
-      progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
-    }
-    return { ...base, outcome: "failed", detail };
+    return refuseBeforeRun(
+      base,
+      marker,
+      oversized,
+      `automata do-work: could not start a run because ${oversized} ` +
+        "Summarise the discussion in a new issue, or shorten the thread, and try again.",
+    );
   }
 
   // Resolved here, beside the oversized-prompt refusal, because both are
-  // pre-flight refusals that need the marker to already exist: refusing before
-  // it would leave the offending message new forever and re-refuse it on every
-  // later tick instead of explaining itself once.
+  // pre-flight refusals that need the marker to already exist.
   const resolved = resolveItemExecution(item, settings);
   if (!resolved.ok) {
     const detail = describeInvalidTool(resolved.invalidTool);
-    progress(`  failed: ${detail}\n`);
-    inFlightMarker = null;
-    try {
-      updateMarker(
-        marker,
-        `automata do-work: ${detail}. No run was started. ` +
-          "Reply here with a corrected directive, or none at all, to have another attempt made.",
-      );
-    } catch (err) {
-      progress(`  warning: could not update the marker comment: ${(err as Error).message}\n`);
-    }
-    // No `ranExecutor`: nothing was invoked, so the item must not spend a slot
-    // from the run cap.
-    return { ...base, outcome: "failed", detail };
+    return refuseBeforeRun(
+      base,
+      marker,
+      detail,
+      `automata do-work: ${detail}. No run was started. ` +
+        "Reply here with a corrected directive, or none at all, to have another attempt made.",
+    );
   }
   const execution = toExecution(resolved);
 

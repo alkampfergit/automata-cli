@@ -51,14 +51,14 @@ export type ResolveExecutionResult =
 export interface ResolveExecutionInput {
   directive: RunDirective;
   /** `--with`, already validated by the command. */
-  withOption?: Executor | undefined;
+  withOption?: Executor;
   /** `--model`, never validated. */
-  modelOption?: string | undefined;
-  configExecutor?: Executor | undefined;
-  configModels?: DoWorkModels | undefined;
+  modelOption?: string;
+  configExecutor?: Executor;
+  configModels?: DoWorkModels;
   /** `--effort`, already trimmed and rejected-if-empty by the command. */
-  effortOption?: string | undefined;
-  configEfforts?: DoWorkEffort | undefined;
+  effortOption?: string;
+  configEfforts?: DoWorkEffort;
   /** The built-in fallback, passed in rather than duplicated from `DEFAULT_DO_WORK`. */
   defaultExecutor: Executor;
 }
@@ -69,10 +69,13 @@ export interface ResolveExecutionInput {
  * read as directives. Only a value directly after the colon is captured: a
  * `tool:` followed by whitespace is a person trailing off, not a request to run
  * whatever word comes next.
+ *
+ * The classes name only the lower-case range because the `i` flag already
+ * matches the upper-case one; spelling out `A-Za-z` under `i` is a duplicate.
  */
-const TOOL_PATTERN = /(?<![A-Za-z0-9_:-])tool:([A-Za-z0-9._-]+)/gi;
+const TOOL_PATTERN = /(?<![a-z0-9_:-])tool:([a-z0-9._-]+)/gi;
 /** `/`, `+` and `@` too, for vendor-prefixed and dated model identifiers. */
-const MODEL_PATTERN = /(?<![A-Za-z0-9_:-])model:([A-Za-z0-9._/+@-]+)/gi;
+const MODEL_PATTERN = /(?<![a-z0-9_:-])model:([a-z0-9._/+@-]+)/gi;
 
 /** The last match of a global pattern, or undefined when it never matched. */
 function lastCapture(body: string, pattern: RegExp): string | undefined {
@@ -144,6 +147,16 @@ function isExecutor(value: string): value is Executor {
   return VALID_TOOLS.includes(value as Executor);
 }
 
+/** Where the executor would have come from had the message not named one. */
+function baselineExecutorSource(
+  withOption: Executor | undefined,
+  configExecutor: Executor | undefined,
+): ExecutionSource {
+  if (withOption !== undefined) return "option";
+  if (configExecutor !== undefined) return "config";
+  return "default";
+}
+
 /**
  * A per-executor default (`doWork.models`, `doWork.effort`) is validated as
  * non-empty when the config file is read, but nothing trims it — so `" high "`
@@ -195,8 +208,7 @@ export function resolveExecution(input: ResolveExecutionInput): ResolveExecution
   }
 
   const baseline: Executor = withOption ?? configExecutor ?? input.defaultExecutor;
-  const baselineSource: ExecutionSource =
-    withOption !== undefined ? "option" : configExecutor !== undefined ? "config" : "default";
+  const baselineSource = baselineExecutorSource(withOption, configExecutor);
 
   const executor: Executor = directive.tool ?? baseline;
   const executorSource: ExecutionSource = directive.tool === undefined ? baselineSource : "message";
@@ -235,8 +247,9 @@ export function describeExecution(execution: ResolvedExecution): string {
 
 /** What the marker comment says when a `tool:` value is not an executor. */
 export function describeInvalidTool(invalidTool: string): string {
+  const valid = VALID_TOOLS.map((tool) => `\`${tool}\``).join(" and ");
   return (
     `the newest message asks for \`tool:${invalidTool}\`, which is not an executor automata knows ` +
-    `(valid values are ${VALID_TOOLS.map((tool) => `\`${tool}\``).join(" and ")})`
+    `(valid values are ${valid})`
   );
 }

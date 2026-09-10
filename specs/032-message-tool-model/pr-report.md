@@ -39,8 +39,16 @@ every tick re-reads whatever message is newest then.
 - **Reporting**: the tick summary names the effective executor and model on every item line,
   adding `— from the message` when a directive supplied either; the `--dry-run` `Executor`
   header does the same and shows the refusal instead of a command for a refused item.
-- **`--json`**: `executor`, `model`, `executorSource` and `modelSource` on each completed
-  item, and on each entry of `runs` in a dry run, plus a `refusal` field there.
+- **`--json`**: `executor`, `model`, `effort`, `executorSource`, `modelSource` and
+  `effortSource` on each completed item, and on each entry of `runs` in a dry run, plus a
+  `refusal` field there.
+- **The reasoning effort follows the chosen executor** (added when this branch was rebased
+  onto the `--effort` work that landed on `develop` in the meantime). `doWork.effort` is keyed
+  per executor exactly as `doWork.models` is, so a `tool:` directive that switches executor
+  re-picks the level for the executor it asked for and drops `--effort` along with `--model`.
+  Without this, `tool:codex` on a Claude-defaulted config would have spawned codex with a
+  Claude level such as `max`. There is no `effort:` directive — the issue asked for the tool
+  and the model — so `effortSource` is only ever `option`, `config` or `none`.
 - **Docs**: a "Steering one turn from a message" section in `docs/do-work.md` with the
   precedence, the never-persists rule, the refusal text and the dry-run forms; the marker
   table and the `failed` exit-code row extended; cross-references from the `executor` and
@@ -50,9 +58,9 @@ every tick re-reads whatever message is newest then.
 
 - **`do-work --json` item shape**: `items[]` entries are now emitted through an explicit
   mapper and always carry `ranExecutor` (previously omitted when false) plus the four new
-  `executor` / `model` / `executorSource` / `modelSource` fields. Additive for any consumer
-  reading known keys; a consumer doing an exact-shape comparison needs updating. The one such
-  assertion in the repo's own suite was updated in this PR.
+  `executor` / `model` / `effort` / `executorSource` / `modelSource` / `effortSource` fields.
+  Additive for any consumer reading known keys; a consumer doing an exact-shape comparison
+  needs updating. The one such assertion in the repo's own suite was updated in this PR.
 
 ## Testing
 
@@ -70,8 +78,14 @@ every tick re-reads whatever message is newest then.
   header and both `--json` shapes report the origin; and for the refusal — nothing invoked,
   the marker text, `failed` + exit 2, a second issue in the tick still runs, the run cap is
   not consumed, and `--dry-run` shows the refusal with no command.
+- **Effort resolution (16 further cases, added on the rebase)**: the effort half of
+  `resolveExecution` — the configured per-executor default, `--effort` overriding it, a
+  configured level being trimmed, a whitespace-only one treated as unset, the re-pick and the
+  `--effort` drop on a switch, the flag surviving a no-op directive, and no resolution at all
+  behind an invalid `tool:`; the two new `describeExecution` renderings; and three
+  command-level cases pinning what actually reaches the spawned executor.
 - **Regression**: the whole pre-existing suite passes unmodified apart from the one
-  exact-shape `--json` assertion noted above. `npm test && npm run lint` green — 744 tests
+  exact-shape `--json` assertion noted above. `npm test && npm run lint` green — 799 tests
   across 28 files, `eslint src/` clean.
 - **Mutation check**: the run-cap guard was verified by making the refusal path set
   `ranExecutor: true` and confirming the suite went red, then restoring.
