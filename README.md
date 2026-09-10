@@ -158,7 +158,30 @@ Already cloned without `--recurse-submodules`? Fetch the vendored agent plugins 
 git submodule update --init --recursive
 ```
 
-`vendor/agent-plugins-base` is registered in `.claude/settings.json` as a project-scope Claude Code marketplace, and the `github-alk` plugin is enabled from it — so its skills load for anyone working in this repository. See [docs/plugins.md](docs/plugins.md).
+`vendor/agent-plugins-base` is registered in `.claude/settings.json` as a project-scope Claude Code marketplace, so its skills load for anyone working in this repository with no further setup.
+
+#### Importing the plugin at user scope
+
+The devcontainer does this for you on creation. Run it by hand to make the skills available in **every** project rather than just this one, or to reach Codex — which keeps marketplaces in `~/.codex/config.toml` and has no project-scoped equivalent, so it needs this step even inside this repository.
+
+```bash
+# from the repository root
+PLUGIN_ROOT="$(pwd)/vendor/agent-plugins-base"
+
+# Claude Code
+claude plugin marketplace add "$PLUGIN_ROOT" --scope user
+claude plugin install github-alk@agent-plugins-base --scope user --yes
+
+# Codex
+codex plugin marketplace add "$PLUGIN_ROOT"
+codex plugin add github-alk@agent-plugins-base
+```
+
+Both clients need an **absolute** path here. Verify with `claude plugin list` (expect `Scope: user`, enabled) and `codex plugin list`.
+
+To remove them again: `claude plugin uninstall github-alk@agent-plugins-base` and `codex plugin remove github-alk@agent-plugins-base`.
+
+Full reference, including how the two scopes interact: [docs/plugins.md](docs/plugins.md).
 
 ### Scripts
 
@@ -172,7 +195,7 @@ git submodule update --init --recursive
 | `npm run audit:prod` | Audit the dependencies that ship — also runs via `prepublishOnly`, so an advisory blocks publishing |
 | `npm run audit:all` | Audit the whole tree, dev toolchain included (advisory only) |
 
-Agent plugins are vendored as a submodule and registered with Claude Code — see [docs/plugins.md](docs/plugins.md).
+Agent plugins are vendored as a submodule and registered with both Claude Code and Codex — see [docs/plugins.md](docs/plugins.md).
 
 ### Maintenance
 
