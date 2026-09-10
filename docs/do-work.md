@@ -165,12 +165,14 @@ Every tick starts by putting the checkout into a known state, once, inside the r
 
 If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only `.automata/automata.lock` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
 
-- The checkout is **on a branch other than the base branch** → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
-- The checkout is **on the base branch, or on a detached HEAD** → a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is created at HEAD first, then committed, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
+- The checkout is **on a branch automata owns** — any branch other than the base branch whose open pull request, if it has one, was opened by `agentUser` → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
+- The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is created at HEAD first, then committed, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
+
+The ownership question exists because of the [orphan pass](#the-orphan-pull-request-pass): a tick can end with the checkout sitting on a dependency bump's branch, and a stray edit found there on the next tick must not be pushed into a third party's pull request under the agent's name. A lookup that fails answers "not owned" — a needless rescue branch is noise, a commit pushed into someone else's pull request is not something the next tick can undo.
 
 The commit message is `chore(automata): rescue uncommitted work from <source>`. The run lock is excluded from the commit, so a tick does not commit the lock file naming its own pid.
 
-Every step is additive, so a failure at any of them leaves the tree exactly as dirty as it was and discards nothing; the tick then continues with the pre-existing per-item `dirty-tree` skip.
+Every step is additive, so a failure at any of them leaves the tree exactly as dirty as it was and discards nothing; the tick then continues with the pre-existing per-item `dirty-tree` skip. One exception is worth knowing about: if the *commit* succeeded and only the push failed, the tree is clean, so no later tick will rescue it again — the work sits in this checkout alone until someone pushes it. The pre-flight says so on the line after the failure, naming the branch.
 
 ### 2. Check out and fast-forward the base branch
 
@@ -299,6 +301,8 @@ So in particular:
 - There is no "first touch" turn, and there is no re-trigger when the head SHA changes. If a force-push makes an earlier verdict stale, comment again — that comment is the trigger.
 - Because a human has to comment anyway, the label is not what *starts* the work. It only bounds how many pull-request conversations a tick fetches, so it can be added in the same action as the comment.
 
+**One gap to know about.** "Closes no issue of this repository" is decided on the closing reference, not on the state of what it points at. A pull request whose only closing reference is to an issue that has since been *closed* is therefore not an orphan — and the issue pass will not reach it either, since that pass lists only open issues. Neither pass touches it. `--pr <n>` does not reach it either: the number resolves to the issue pass, which answers "use `--issue <n>` instead", and that in turn skips a closed issue. To get the agent onto such a pull request, reopen the issue or remove the closing reference from the pull-request body.
+
 **Differences from a `pr-work` turn**, all of them consequences of there being no issue:
 
 - Nothing is assigned. The `working…` marker on the pull request is the claim.
@@ -322,6 +326,12 @@ Two extra skips exist for the moment between the plan and the run — the item i
 |---|---|
 | `pr-linked` | It gained a closing reference to an issue of this repository (someone added `Closes #N`). The issue pass owns it now, so this tick leaves it alone rather than answering with the wrong prompt. |
 | `pr-closed` | It was merged or closed. Its branch has landed or gone. |
+
+### One turn per head branch
+
+GitHub allows several open pull requests from one head branch to different bases, so the two passes — disjoint as *pull requests* — are not disjoint as *branches*. A GitFlow hotfix is the ordinary case: `fix/x -> main` carrying `Closes #42` belongs to the issue pass, `fix/x -> develop` closing nothing is an orphan, and both can have a new message on the same tick.
+
+Running both would put two model sessions on one checkout back to back, the second inheriting whatever the first left there. So at most one build turn per head branch runs per tick: the first in tick order keeps the branch — issues before orphans, so a dependency bump never displaces an issue — and the rest are skipped as `branch-busy`, naming the pull request that took it. They are picked up on the next tick. A discuss turn is unaffected: its branch is the base branch, which it reads and never writes.
 
 ### Targeting one pull request
 
@@ -406,12 +416,12 @@ The file is named for automata rather than for `do-work` so other long-running c
 |---|---|
 | `0` | The tick completed and every work item was answered. Also used for "nothing to do", "`--dry-run`", and "another instance is running". |
 | `2` | Also used when the run lock is held by a process that looks alive but has outlived `doWork.lockStaleMinutes` and whose identity cannot be verified. No work is attempted, but exiting 0 there would hide a loop that has quietly stopped — see [the lock](#the-run-lock). |
-| `1` | A precondition or configuration check failed. Nothing was attempted. |
+| `1` | A precondition or configuration check failed. Nothing was attempted — with one exception: `--pr <n>` is resolved out of the pull-request map, so refusing a number that is not an orphaned open pull request happens after the [pre-flight](#the-repository-hygiene-pre-flight) has already run. No work item is ever processed on this path, and the run lock is always released. |
 | `2` | The tick ran, but at least one item ended in any outcome other than `answered`. |
 
 Exit 2 means degraded, not broken. An item was:
 
-- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path only when the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed;
+- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one;
 - `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.

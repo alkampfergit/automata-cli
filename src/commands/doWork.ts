@@ -33,6 +33,7 @@ import {
   decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
+  skipDuplicateHeadBranches,
   type Decision,
   type IssueState,
   type WorkItem,
@@ -671,14 +672,18 @@ function discoverOrphanPrs(settings: Settings, linkMap: OpenPrLinkMap): OrphanPr
   const target = settings.onlyPr;
   const match = linkMap.orphans.find((candidate) => candidate.pr.number === target);
   if (match === undefined) {
+    // Thrown, not `fail()`ed: this runs inside the run lock and after the
+    // pre-flight, so `process.exit` here would skip the `finally` that releases
+    // the lock and leave every tick on another host idle until it goes stale.
+    // The caller turns this into the same `Error: …` on stderr and exit 1.
     const closes = issuesClosedBy(linkMap, target);
     if (closes.length > 0) {
-      fail(
+      throw new Error(
         `Pull request #${String(target)} closes issue #${String(closes[0])} of this repository, so it is not ` +
           `orphaned and the issue pass owns it. Use \`--issue ${String(closes[0])}\` instead.`,
       );
     }
-    fail(
+    throw new Error(
       `#${String(target)} is not an open pull request of this repository. ` +
         "The orphan pass only ever works on open pull requests; use `--issue` for an issue.",
     );
@@ -1548,6 +1553,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     baseBranch: settings.baseBranch,
     protectedBranches: settings.protectedBranches,
     dryRun: options.dryRun === true,
+    agentUser: settings.participants.agentUser,
     log: progress,
   });
 
@@ -1562,12 +1568,12 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // Issues first, then the orphan pull requests, and the ordering is load
   // bearing: the two passes share one run cap, so a pile of dependency-bump
   // pull requests must not be able to starve the issues.
-  const decisions = [
+  const decisions = skipDuplicateHeadBranches([
     ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
     ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
       decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
     ),
-  ];
+  ]);
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 
   const planText = `Work plan (${String(items.length)} of ${String(decisions.length)} candidates need an answer):\n${describePlan(decisions)}`;

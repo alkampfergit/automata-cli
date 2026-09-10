@@ -184,6 +184,23 @@ describe("preparePrBranch", () => {
     expect(mockResetHardTo).toHaveBeenCalledWith("refs/remotes/origin/dependabot/bump");
   });
 
+  // Distinct shas on purpose: the canonical Dependabot case has both refs at the
+  // same commit, which makes `toHaveBeenCalledWith("old", "old")` above true
+  // whichever way round the arguments go. The precondition is directional — it
+  // must be "the local tip is contained in the remote as last seen", never the
+  // reverse — so one case has to pin the order from the safe side too.
+  it("resets when the local tip is a strict ancestor of the remote tip last seen", async () => {
+    mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+    mockRevParse.mockImplementation((ref: string) =>
+      ref === "refs/remotes/origin/dependabot/bump" ? "prev-remote-tip" : "local-behind",
+    );
+    mockIsAncestorCommit.mockReturnValue(true);
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("dependabot/bump")).toEqual({ ok: true, branch: "dependabot/bump" });
+    expect(mockIsAncestorCommit).toHaveBeenCalledWith("local-behind", "prev-remote-tip");
+    expect(mockResetHardTo).toHaveBeenCalledWith("refs/remotes/origin/dependabot/bump");
+  });
+
   it("keeps a local branch whose tip the remote never had", async () => {
     mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
     mockRevParse.mockImplementation((ref: string) =>

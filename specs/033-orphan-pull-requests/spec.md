@@ -124,6 +124,17 @@ issues.
   directive applies, because it is read from the triggering message and an orphan turn has one.
 - **No orphan pull requests at all.** The pass reports nothing and the tick behaves as it does
   today, at exit 0 when the issue pass was clean.
+- **Two open pull requests from one head branch.** A GitFlow hotfix `fix/x` can have `fix/x -> main`
+  carrying `Closes #42` and `fix/x -> develop` closing nothing, so the issue pass and the orphan
+  pass name the same branch on the same tick. Only the first runs; the second is skipped as
+  `branch-busy`, because two model sessions on one checkout would have the second inherit the
+  first's leftovers.
+- **An orphan pull request that does not target the configured base branch.** Dependabot targets the
+  repository default branch, which under the shipped defaults is not `doWork.baseBranch`. The turn
+  is told the pull request's own base branch, so it does not integrate the wrong one.
+- **A tick ending on a branch automata does not own.** After an orphan turn the checkout sits on a
+  third party's branch. Uncommitted changes found there by the next tick's hygiene pre-flight go to
+  a `rescue/` branch of their own rather than being committed and pushed into that pull request.
 
 ## Requirements *(mandatory)*
 
@@ -183,7 +194,18 @@ issues.
   request (`PR #61`) rather than by a non-existent issue number.
 - **FR-018**: An orphan pull request MUST NOT be worked on when it is also reachable through the
   issue pass — the two passes MUST be disjoint by construction, since a pull request with a closing
-  reference to an issue of this repository is never an orphan candidate.
+  reference to an issue of this repository is never an orphan candidate. That disjointness holds
+  for *pull requests*, not for *branches*; see FR-019.
+- **FR-019**: At most one build turn per head branch MUST run in a tick. GitHub allows several open
+  pull requests from one head branch to different bases, so two items — one from each pass, or two
+  orphans — can name the same branch. The first in tick order (issues before orphans) keeps it; the
+  rest MUST be skipped as `branch-busy`, naming the pull request that took the branch, and MUST be
+  reconsidered on the next tick. A discuss turn is exempt: its branch is the base branch, which it
+  reads and never writes.
+- **FR-020**: The base branch reported to a turn MUST be the pull request's own base branch when the
+  item has a pull request, and the configured `doWork.baseBranch` otherwise. An orphan pull request
+  targets whatever its author chose — a dependency bump usually the repository default branch — so
+  naming the configured branch would instruct the turn to integrate the wrong one.
 
 ### Key Entities
 

@@ -37,7 +37,9 @@ export type SkipReason =
   /** The pull request was closed or merged since the plan was built. */
   | "pr-closed"
   /** It gained a closing reference, so the issue pass owns it now. */
-  | "pr-linked";
+  | "pr-linked"
+  /** Another pull request in the same tick already works on this head branch. */
+  | "branch-busy";
 
 export interface WorkItem {
   /** Null only on a `pr-orphan` turn: such a pull request has no issue. */
@@ -401,6 +403,46 @@ export function decideOrphanPrWork(
       ambiguousPrs: [],
     },
   };
+}
+
+/**
+ * Let at most one build turn per tick own a head branch.
+ *
+ * `decideWork` already refuses to run two turns for one issue whose pull
+ * requests would write to the same branch, but that guard cannot see across
+ * items — and nothing stops two *different* subjects sharing a head. GitHub
+ * allows several open pull requests from one branch to different bases, which
+ * GitFlow makes routine: `fix/x -> main` carrying `Closes #42` is an issue-pass
+ * item, `fix/x -> develop` closing nothing is an orphan, and both can have a new
+ * message on the same tick. Running both would put two model sessions on one
+ * checkout back to back, the second inheriting whatever the first left there.
+ *
+ * The first item in tick order keeps the branch — issues before orphans, so a
+ * dependency bump never displaces an issue. A discuss turn is left alone: its
+ * `branch` is the base branch, which it reads and never writes.
+ */
+export function skipDuplicateHeadBranches(decisions: Decision[]): Decision[] {
+  const owners = new Map<string, PullRequestRef>();
+  return decisions.map((decision) => {
+    if (decision.kind !== "work") return decision;
+    const { item } = decision;
+    if (item.turn === "issue-discuss" || item.pr === null) return decision;
+
+    const owner = owners.get(item.branch);
+    if (owner === undefined) {
+      owners.set(item.branch, item.pr);
+      return decision;
+    }
+    return {
+      kind: "skip",
+      issue: item.issue,
+      pr: item.pr,
+      reason: "branch-busy",
+      detail:
+        `pull request #${String(item.pr.number)} shares its head branch (${item.branch}) with ` +
+        `pull request #${String(owner.number)}, which this tick works on first`,
+    };
+  });
 }
 
 /** Pick the pull request to work on when an issue has several open linked ones. */

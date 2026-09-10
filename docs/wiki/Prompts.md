@@ -37,6 +37,8 @@ Each turn's prompt is built from two parts, in this order:
 └──────────────────────────────────────────────┘
 ```
 
+`Base branch` is the branch this turn must integrate with and must not push to: the pull request's own base when the item has one, and `doWork.baseBranch` otherwise. The two agree on a pull request automata opened, but an orphan targets whatever its author chose — a dependency bump usually goes to the repository default branch, which need not be the configured one.
+
 **automata guarantees** the context block: the identities, the branch state (the branch named is already checked out and up to date), the new messages, the filtered conversation, and the review threads. It also guarantees what is *absent* — nothing from an unauthorized account is ever included. On a `pr-orphan` turn there is no issue, so every issue line is omitted rather than left empty.
 
 **Your frame is responsible for** everything else: what to do, what not to touch, where to reply, and which skill to use.

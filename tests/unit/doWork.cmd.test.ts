@@ -2019,6 +2019,52 @@ describe("do-work orphan pull-request pass", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
   });
 
+  // `--limit` is `gh issue list --limit`: it bounds how many *issues* are
+  // fetched and says nothing about the orphan pass, which reads candidates out
+  // of a link map that is paged exhaustively for correctness anyway. Pinned
+  // because it is documented, and a later `.slice(0, limit)` would look tidy.
+  it("does not bound the orphan pass by --limit", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "main",
+      orphans: [
+        orphanCandidate({ number: 61, headRefName: "dependabot/a" }),
+        orphanCandidate({ number: 62, headRefName: "dependabot/b" }),
+        orphanCandidate({ number: 63, headRefName: "dependabot/c" }),
+      ],
+    });
+    gh.getPrSurface.mockImplementation((n: number) =>
+      orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: `dependabot/${String(n)}` } }),
+    );
+    mockPreparePrBranch.mockImplementation((branch: string) => ({ ok: true, branch }));
+    await runDoWork(["--limit", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(3);
+  });
+
+  // GitHub allows two open pull requests from one head branch to different
+  // bases. Running both in a tick would put two model sessions on the same
+  // checkout back to back, the second inheriting the first's leftovers.
+  it("works one pull request per head branch, keeping the issue pass's", async () => {
+    const shared = "fix/x";
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [{ ...ORPHAN_PR, number: 57, headRefName: shared }]]]),
+      defaultBranch: "main",
+      orphans: [orphanCandidate({ number: 62, headRefName: shared })],
+    });
+    gh.getPrSurface.mockImplementation((n: number) =>
+      orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: shared } }),
+    );
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared });
+    await runDoWork();
+
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(gh.postMarker).toHaveBeenCalledWith("pr", 57, expect.stringContaining("working"));
+    expect(gh.postMarker).not.toHaveBeenCalledWith("pr", 62, expect.anything());
+    expect(stdout).toMatch(/PR #62 nothing to do/);
+    expect(stdout).toMatch(/shares its head branch \(fix\/x\) with pull request #57/);
+  });
+
   it("matches the label case-insensitively", async () => {
     gh.getOpenPrLinkMap.mockReturnValue({
       byIssue: new Map(),
@@ -2249,6 +2295,24 @@ describe("do-work --pr", () => {
     await runDoWork(["--pr", "61junk"]);
     expect(exitCode).toBe(1);
     expect(stderr).toMatch(/--pr must be a positive integer/);
+  });
+
+  // Both refusals are resolved out of the link map, so they happen *inside* the
+  // run lock. Exiting the process there would skip the release and leave every
+  // tick on another host reporting "another instance is already running" until
+  // the lock went stale — up to two hours by default, for a typo.
+  it.each([
+    ["a number that is no pull request here", ["--pr", "999"]],
+    ["a number the issue pass owns", ["--pr", "57"]],
+  ])("releases the run lock when it refuses %s", async (_what, args) => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map([[42, [{ ...ORPHAN_PR, number: 57 }]]]),
+      defaultBranch: "main",
+      orphans: [orphanCandidate()],
+    });
+    await runDoWork(args);
+    expect(exitCode).toBe(1);
+    expect(mockRelease).toHaveBeenCalled();
   });
 
   it("runs both passes restricted when --issue is given too", async () => {

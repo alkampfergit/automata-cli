@@ -249,6 +249,31 @@ describe("getOpenPrLinkMap", () => {
     expect([...getOpenPrLinkMap().byIssue.keys()]).toEqual([]);
   });
 
+  // The two sides have different provenance: GitHub answers with the canonical
+  // casing, ours is whatever the `origin` URL spells. A literal comparison
+  // discards *every* closing reference on such a remote — which both starts a
+  // competing implementation on issues that already have one and pushes those
+  // very pull requests into the orphan pass.
+  it("matches this repository whatever case the origin remote is written in", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("git@github.com:Acme/Widget.git\n")).mockReturnValueOnce(
+      json({
+        data: {
+          repository: {
+            defaultBranchRef: { name: "main" },
+            pullRequests: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [prNode(57, "2026-01-05T00:00:00Z", 42, "acme/widget")],
+            },
+          },
+        },
+      }),
+    );
+    const { getOpenPrLinkMap } = await import("../../src/github/ghWorkService.js");
+    const { byIssue, orphans } = getOpenPrLinkMap();
+    expect(byIssue.get(42)?.map((pr) => pr.number)).toEqual([57]);
+    expect(orphans).toEqual([]);
+  });
+
   it("follows every page, because callers treat the map as authoritative", async () => {
     // A truncated map makes do-work start a competing implementation on an issue
     // that already has a pull request.
@@ -771,18 +796,33 @@ describe("listPullRequestsForHead", () => {
   it("asks for every state for the named head and sorts newest update first", async () => {
     mockSpawnSync.mockReturnValueOnce(
       json([
-        { number: 7, url: "https://gh/pr/7", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+        {
+          number: 7,
+          url: "https://gh/pr/7",
+          state: "CLOSED",
+          updatedAt: "2026-09-01T00:00:00Z",
+          author: { login: "dependabot[bot]" },
+        },
+        // No `author` at all: `gh` reports null for a deleted account, and the
+        // rescue's ownership check must read that as "not the agent" rather
+        // than crash on it.
         { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z" },
       ]),
     );
     const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
     expect(listPullRequestsForHead("fix/wip")).toEqual([
-      { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z" },
-      { number: 7, url: "https://gh/pr/7", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+      { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z", author: "" },
+      {
+        number: 7,
+        url: "https://gh/pr/7",
+        state: "CLOSED",
+        updatedAt: "2026-09-01T00:00:00Z",
+        author: "dependabot[bot]",
+      },
     ]);
     expect(calls()[0]).toEqual({
       cmd: "gh",
-      args: ["pr", "list", "--head", "fix/wip", "--state", "all", "--json", "number,state,url,updatedAt"],
+      args: ["pr", "list", "--head", "fix/wip", "--state", "all", "--json", "number,state,url,updatedAt,author"],
     });
   });
 

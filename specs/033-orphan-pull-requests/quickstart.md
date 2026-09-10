@@ -82,7 +82,7 @@ Expected: `PR #61 nothing to do — nothing new on pull request #61`, exit 0, no
 |---|---|
 | `automata do-work --pr <a PR from a fork>` | skipped, `unsafe-pr-branch`: its head branch is not in this repository |
 | `automata do-work --pr <a develop → main release PR>` | skipped, `unsafe-pr-branch`: protected head |
-| `automata do-work --pr <a PR whose body says `Closes #42`>` | exit 1, "closes issue #42 of this repository … use `--issue 42`" |
+| `automata do-work --pr <a PR whose body says "Closes #42">` | exit 1, "closes issue #42 of this repository … use `--issue 42`" |
 | `automata do-work --pr 999999` | exit 1, "not an open pull request of this repository" |
 | `automata do-work --pr 61` where 61 lacks the label | a note on stderr, then processed anyway |
 

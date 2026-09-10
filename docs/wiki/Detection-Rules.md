@@ -94,9 +94,14 @@ For a pull request that closes no issue of this repository:
 | open | no | — | not a candidate; nothing is fetched for it |
 | open | yes | ≥ 1 | **`pr-orphan`** on the PR's head branch |
 | open | yes | 0 | skip `no-new-messages` |
-| open, fork or protected head | yes | ≥ 1 | skip `unsafe-pr-branch` |
+| open, fork or protected head | yes | — | skip `unsafe-pr-branch` |
 | merged / closed | — | — | skip `pr-closed` |
 | linked since the plan was built | — | — | skip `pr-linked` |
+| head branch already taken this tick | yes | ≥ 1 | skip `branch-busy` |
+
+The branch refusals are decided before the messages are read, so a fork or a protected head reports `unsafe-pr-branch` whether or not anything new was said on it — never `no-new-messages`.
+
+`branch-busy` is what keeps two build turns off one checkout: GitHub allows several open pull requests from one head branch to different bases, so the two passes are disjoint as pull requests but not as branches. The first item in tick order — issues before orphans — keeps the branch; the rest wait for the next tick.
 
 When several open pull requests close the same issue, the most recently updated one is used and the others are named in the prompt and the work plan.
 

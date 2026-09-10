@@ -355,7 +355,14 @@ function indexPullRequest(
     // issue 42, linking an unrelated pull request to it. The same line decides
     // orphanhood: a pull request closing only another repository's issue closes
     // nothing *here*, so it belongs to the orphan pass.
-    if (issue.repository.nameWithOwner !== nameWithOwner) continue;
+    //
+    // Case-insensitively, because the two sides have different provenance:
+    // `nameWithOwner` is GitHub's canonical casing, while ours is whatever the
+    // `origin` URL happens to spell. Comparing them literally would discard
+    // *every* closing reference on a remote written `Alkampfer/Automata-CLI` —
+    // starting a competing implementation on issues that already have a pull
+    // request, and sending each of those pull requests through the orphan pass.
+    if (issue.repository.nameWithOwner.toLowerCase() !== nameWithOwner.toLowerCase()) continue;
     closedAnyHere = true;
     const existing = map.get(issue.number);
     if (existing) {
@@ -691,6 +698,8 @@ export interface PullRequestHeadRef {
   url: string;
   state: "OPEN" | "CLOSED" | "MERGED";
   updatedAt: string;
+  /** The login that opened it, or "" when `gh` reported none (a deleted account). */
+  author: string;
 }
 
 interface RawHeadPr {
@@ -698,6 +707,7 @@ interface RawHeadPr {
   url: string;
   state: string;
   updatedAt: string;
+  author?: { login?: string } | null;
 }
 
 function toHeadState(state: string): PullRequestHeadRef["state"] {
@@ -713,7 +723,7 @@ function toHeadState(state: string): PullRequestHeadRef["state"] {
  */
 export function listPullRequestsForHead(branch: string): PullRequestHeadRef[] {
   const raw = ghJson<RawHeadPr[]>(
-    ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,updatedAt"],
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,updatedAt,author"],
     `list pull requests for branch ${branch}`,
   );
   return raw
@@ -722,6 +732,7 @@ export function listPullRequestsForHead(branch: string): PullRequestHeadRef[] {
       url: pr.url,
       state: toHeadState(pr.state),
       updatedAt: pr.updatedAt,
+      author: pr.author?.login ?? "",
     }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }

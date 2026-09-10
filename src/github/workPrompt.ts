@@ -15,9 +15,26 @@ export interface PromptInput {
   item: WorkItem;
   repo: { owner: string; repo: string };
   agentUser: string;
+  /** The configured base branch, used only when the item has no pull request. */
   baseBranch: string;
   /** The resolved configured prompt for this turn kind. */
   frame: string;
+}
+
+/**
+ * The branch this turn must integrate with and must not push to.
+ *
+ * A pull request's own `baseRefName` wins over the configured `doWork.baseBranch`
+ * whenever it is known. For a turn on a pull request automata opened the two
+ * agree, but an orphan pull request targets whatever its author chose — a
+ * dependency bump goes to the repository default branch, which under the shipped
+ * defaults (`baseBranch: develop`) is *not* the configured one. Naming the
+ * configured branch there tells the turn to merge `develop` into a branch whose
+ * pull request proposes it into `main`.
+ */
+export function promptBaseBranch(item: WorkItem, configuredBaseBranch: string): string {
+  const prBase = item.pr?.baseRefName ?? "";
+  return prBase.length > 0 ? prBase : configuredBaseBranch;
 }
 
 function formatThreads(threads: ReviewThread[]): string {
@@ -45,7 +62,7 @@ export function composePrompt(input: PromptInput): string {
     `Repository: ${repo.owner}/${repo.repo}`,
     `You are: ${agentUser}`,
     `Turn: ${item.turn}`,
-    `Base branch: ${baseBranch}`,
+    `Base branch: ${promptBaseBranch(item, baseBranch)}`,
   ];
 
   // A `pr-orphan` turn has no issue, so every issue line is omitted rather than

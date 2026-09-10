@@ -4,6 +4,8 @@ import {
   decideWork,
   selectLinkedPr,
   agentAnsweredAfter,
+  skipDuplicateHeadBranches,
+  type Decision,
   type IssueState,
   type OrphanPrState,
 } from "../../src/github/workDetection.js";
@@ -703,5 +705,76 @@ describe("decideOrphanPrWork — the orphan pull-request decision table", () => 
       { baseBranch: BASE },
     );
     expect(decision).toMatchObject({ kind: "skip", reason: "no-new-messages" });
+  });
+});
+
+// GitHub allows several open pull requests from one head branch to different
+// bases, so the two `do-work` passes — disjoint at pull-request granularity —
+// are *not* disjoint at branch granularity. Two build turns on one checkout
+// would have the second inherit whatever the first left behind.
+describe("skipDuplicateHeadBranches — one build turn per head branch per tick", () => {
+  function work(prNumber: number, branch: string, turn: "pr-work" | "pr-orphan"): Decision {
+    const pr = pullRequest({ number: prNumber, headRefName: branch });
+    return {
+      kind: "work",
+      item: {
+        issue: turn === "pr-work" ? ISSUE : null,
+        turn,
+        pr,
+        branch,
+        needsAssignment: false,
+        issueAnalysis: { messages: [], newMessages: [], newMessageCount: 0, hasNewMessage: false, lastAgentAt: null },
+        prAnalysis: null,
+        actionableThreads: [],
+        reason: "reason",
+        ambiguousPrs: [],
+      },
+    };
+  }
+
+  it("keeps the first build turn on a branch and skips the later one", () => {
+    const kept = work(61, "fix/x", "pr-work");
+    const [first, second] = skipDuplicateHeadBranches([kept, work(62, "fix/x", "pr-orphan")]);
+
+    expect(first).toBe(kept);
+    expect(second).toMatchObject({ kind: "skip", reason: "branch-busy" });
+    if (second.kind !== "skip") return;
+    expect(second.detail).toContain("fix/x");
+    // The skip has to name the pull request that took the branch, or the plan
+    // reads as an unexplained refusal.
+    expect(second.detail).toContain("#61");
+    expect(second.pr?.number).toBe(62);
+  });
+
+  it("skips a second orphan sharing a head with the first", () => {
+    const decisions = skipDuplicateHeadBranches([
+      work(70, "chore/bump", "pr-orphan"),
+      work(71, "chore/bump", "pr-orphan"),
+    ]);
+    expect(decisions.map((d) => d.kind)).toEqual(["work", "skip"]);
+  });
+
+  it("leaves build turns on distinct branches alone", () => {
+    const decisions = skipDuplicateHeadBranches([
+      work(61, "fix/x", "pr-work"),
+      work(62, "fix/y", "pr-orphan"),
+    ]);
+    expect(decisions.every((d) => d.kind === "work")).toBe(true);
+  });
+
+  // A discuss turn's `branch` is the base branch, which it reads and never
+  // writes — every issue without a pull request shares it, and always has.
+  it("never skips a discuss turn, however many share the base branch", () => {
+    const discuss = (n: number): Decision => ({
+      ...work(n, BASE, "pr-work"),
+      item: { ...work(n, BASE, "pr-work").item, turn: "issue-discuss", pr: null },
+    });
+    const decisions = skipDuplicateHeadBranches([discuss(1), discuss(2), discuss(3)]);
+    expect(decisions.every((d) => d.kind === "work")).toBe(true);
+  });
+
+  it("passes skips through untouched", () => {
+    const skip: Decision = { kind: "skip", issue: ISSUE, pr: null, reason: "issue-closed", detail: "closed" };
+    expect(skipDuplicateHeadBranches([skip])).toEqual([skip]);
   });
 });

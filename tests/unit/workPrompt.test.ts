@@ -22,6 +22,7 @@ const PR: PullRequestRef = {
   url: "https://gh/pr/57",
   title: "Add a flag",
   headRefName: "feature/042-flag",
+  baseRefName: "develop",
   state: "OPEN",
   isDraft: false,
   updatedAt: "2026-01-05T00:00:00Z",
@@ -110,6 +111,22 @@ describe("composePrompt — context", () => {
     expect(prompt).toContain("Pull request #57: Add a flag");
     expect(prompt).toContain("Pull request URL: https://gh/pr/57");
     expect(prompt).toContain("Branch: feature/042-flag (checked out and up to date)");
+  });
+
+  // A turn on a pull request must be told the branch *that pull request*
+  // targets, not the configured one. They differ by construction on the orphan
+  // pass: a dependency bump targets the repository default branch, so naming
+  // `develop` here would have the turn merge `develop` into a branch whose pull
+  // request proposes it into `main`.
+  it("names the pull request's own base branch, not the configured one", () => {
+    const prompt = compose(prItem({ turn: "pr-orphan", pr: { ...PR, baseRefName: "main" } }));
+    expect(prompt).toContain("Base branch: main");
+    expect(prompt).not.toContain("Base branch: develop");
+  });
+
+  it("falls back to the configured base branch when the pull request's is unknown", () => {
+    const prompt = compose(prItem({ pr: { ...PR, baseRefName: "" } }));
+    expect(prompt).toContain("Base branch: develop");
   });
 
   it("renders the new messages under their own heading", () => {
