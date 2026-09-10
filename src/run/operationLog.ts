@@ -223,7 +223,9 @@ export function pruneOldRecords(content: string, now: Date, maxAgeMs: number): s
       // An undatable record is kept: this must never throw, and silently
       // deleting content automata cannot interpret would turn a formatting bug
       // into data loss.
-      return Number.isNaN(parsed) || parsed > cutoff;
+      // `>=`, not `>`: the rule is "more than 30 days old", so a record landing
+      // exactly on the cut-off is still inside the window and survives.
+      return Number.isNaN(parsed) || parsed >= cutoff;
     })
     .map((group) => group.lines.join("\n") + "\n")
     .join("");

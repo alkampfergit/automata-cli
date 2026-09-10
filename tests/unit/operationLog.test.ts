@@ -250,6 +250,21 @@ describe("pruneOldRecords", () => {
     expect(pruned).not.toContain("old");
   });
 
+  // "Older than 30 days" is exclusive: a record landing exactly on the cut-off
+  // is still inside the window. Pruning it would make the retained span depend
+  // on sub-millisecond scheduling for any tick that runs at a round interval.
+  it("keeps a record sitting exactly on the cut-off", () => {
+    const boundary = new Date(NOW.getTime() - MAX_AGE).toISOString();
+    const content = record(boundary, "#1 issue-discuss answered — boundary");
+    expect(pruneOldRecords(content, NOW, MAX_AGE)).toBe(content);
+  });
+
+  it("drops a record one millisecond past the cut-off", () => {
+    const justPast = new Date(NOW.getTime() - MAX_AGE - 1).toISOString();
+    const content = record(justPast, "#1 issue-discuss answered — expired");
+    expect(pruneOldRecords(content, NOW, MAX_AGE)).toBe("");
+  });
+
   it("keeps a record whose header timestamp does not parse", () => {
     const broken = "=== not-a-date owner/name ===\n#1 issue-discuss answered — kept\n\n";
     const old = record("2026-08-01T00:00:00.000Z", "#2 pr-work answered — dropped");
