@@ -2099,6 +2099,14 @@ describe("do-work orphan pull-request pass", () => {
     expect(stdout).toContain("Assign       pull request #61 not claimed (orphan pass)");
   });
 
+  it("says so on the plan line too, where silence would read as 'already assigned'", async () => {
+    // The plan is printed on every tick, not only on a dry run, so it is where
+    // an operator reading cron mail sees the orphan pass claim nothing.
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toMatch(/PR #61 pr-orphan on .* — .*, pull request not claimed \(orphan pass\)/);
+    expect(stdout).not.toMatch(/PR #61 pr-orphan[^\n]*will assign/);
+  });
+
   it("does nothing when no authorized account has posted", async () => {
     // A freshly opened Dependabot pull request: the label alone is not work.
     gh.getPrSurface.mockReturnValue(

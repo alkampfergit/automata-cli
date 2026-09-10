@@ -404,11 +404,13 @@ The update deliberately does not claim that nothing changed: a run can commit an
 
 The two surfaces are decided independently, so an issue a human owns can still have its pull request claimed, and vice versa.
 
-A **`pr-orphan` turn is the one exception: it claims nothing.** There is no issue to assign, and the orphan pass discovers candidates by the pull request's *own* labels, assignees or title — so with `issueDiscoveryTechnique: assignee`, claiming an unassigned orphan would make it match the filter on every later tick, and the agent would permanently own a pull request the operator never opted in. The `working…` marker on the pull request is the claim there. A build turn is not affected: it reaches its pull request through an issue that matched the filter, not through the pull request's assignees. `--dry-run` prints `pull request #N not claimed (orphan pass)` rather than staying silent.
+A **`pr-orphan` turn is the one exception: it claims nothing.** There is no issue to assign, and the orphan pass discovers candidates by the pull request's *own* labels, assignees or title — so with `issueDiscoveryTechnique: assignee`, claiming an unassigned orphan would make it match the filter on every later tick, and the agent would permanently own a pull request the operator never opted in. The `working…` marker on the pull request is the claim there. A build turn is not affected: it reaches its pull request through an issue that matched the filter, not through the pull request's assignees. The work plan and `--dry-run` both say `pull request not claimed (orphan pass)` rather than staying silent: on that one surface, silence would read as "somebody is already on it" when in fact nobody is and nobody ever will be.
 
 Both claims require the agent account to have write access on the repository. If a claim fails, a warning is printed and the turn still runs to completion with its normal outcome and exit code: assignment is signalling and does not affect correctness. The underlying calls (`gh issue edit --add-assignee`, `gh pr edit --add-assignee`) are additive, so a human assigning themselves in the same seconds is never overwritten.
 
 `--dry-run` reports both planned claims per item and performs neither; `--dry-run --json` carries them as `needsAssignment` and `prNeedsAssignment` per plan entry.
+
+The two views differ on purpose. A plan line names only what the tick would *do* — `, will assign the issue and the pull request to the agent` — plus any surface the rule exempts; a surface somebody already owns is left unsaid, because the plan is one line per candidate and the absence of `will assign` is the answer. The per-item `Assign` line of a dry run names **every** surface in whichever state it is in (`issue already assigned · would assign pull request #57 to automata-bot`), since that block has the width for it and an operator auditing one item should not have to read silence.
 
 ---
 

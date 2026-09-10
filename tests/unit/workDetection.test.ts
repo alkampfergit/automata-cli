@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  claimStates,
   decideOrphanPrWork,
   decideWork,
   selectLinkedPr,
@@ -8,6 +9,7 @@ import {
   type Decision,
   type IssueState,
   type OrphanPrState,
+  type WorkItem,
 } from "../../src/github/workDetection.js";
 import type { Participants, RawMessage } from "../../src/github/conversation.js";
 import type { IssueSurface, PrSurface, PullRequestRef, ReviewThread } from "../../src/github/ghWorkService.js";
@@ -517,6 +519,64 @@ describe("decideWork — assignment and ambiguity", () => {
     if (decision.kind !== "work") return;
     expect(decision.item.pr?.number).toBe(58);
     expect(decision.item.ambiguousPrs.map((pr) => pr.number)).toEqual([57]);
+  });
+});
+
+// The one place that answers "what does the tick say about assignment?", so the
+// plan line and the dry-run block cannot drift apart again.
+describe("claimStates — what the claim rule says per surface", () => {
+  function itemOf(decision: Decision): WorkItem {
+    if (decision.kind !== "work") throw new Error("expected a work decision");
+    return decision.item;
+  }
+
+  const PR_MESSAGE = [message("alice", "2026-01-07T00:00:00Z", "pr-comment")];
+
+  it("names only the issue on a discuss turn, where no pull request exists yet", () => {
+    const claims = claimStates(itemOf(decideWork(state(), P, { baseBranch: BASE })));
+    expect(claims).toEqual([{ surface: "issue", number: 42, state: "would-claim" }]);
+  });
+
+  it("names both surfaces on a build turn, each with its own state", () => {
+    const claims = claimStates(
+      itemOf(
+        decideWork(state({
+            issueSurface: issueSurface({ assignees: ["alice"] }),
+            linkedPrs: [pullRequest()],
+            prSurface: prSurface({ assignees: [], messages: PR_MESSAGE }),
+          }), P, { baseBranch: BASE }),
+      ),
+    );
+    expect(claims).toEqual([
+      { surface: "issue", number: 42, state: "already-assigned" },
+      { surface: "pull request", number: 57, state: "would-claim" },
+    ]);
+  });
+
+  it("reports 'already-assigned' for a pull request somebody owns", () => {
+    const claims = claimStates(
+      itemOf(
+        decideWork(state({
+            linkedPrs: [pullRequest()],
+            prSurface: prSurface({ assignees: ["bob"], messages: PR_MESSAGE }),
+          }), P, { baseBranch: BASE }),
+      ),
+    );
+    expect(claims[1]).toEqual({ surface: "pull request", number: 57, state: "already-assigned" });
+  });
+
+  // The distinction the plan line exists to make: nobody is assigned, and
+  // nobody ever will be, so "already-assigned" would be a lie and silence
+  // would be read as one.
+  it("reports the orphan pull request as rule-exempt, not as already assigned", () => {
+    const decision = decideOrphanPrWork(
+      { prSurface: { pr: pullRequest({ number: 61 }), assignees: [], messages: PR_MESSAGE, threads: [] } },
+      P,
+      { baseBranch: BASE },
+    );
+    expect(claimStates(itemOf(decision))).toEqual([
+      { surface: "pull request", number: 61, state: "rule-exempt" },
+    ]);
   });
 });
 

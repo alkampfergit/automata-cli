@@ -496,3 +496,54 @@ export function agentAnsweredAfter(
       message.createdAt > marker.createdAt,
   );
 }
+
+/** What the claim rule says about one surface of a work item. */
+export type ClaimState =
+  /** No assignee at all: the tick would add the agent. */
+  | "would-claim"
+  /** Somebody is already on it, so the tick leaves the list untouched. */
+  | "already-assigned"
+  /** The rule forbids the claim whatever the assignee list says. */
+  | "rule-exempt";
+
+export interface SurfaceClaim {
+  surface: "issue" | "pull request";
+  /** So a caller can name the surface without reaching back into the item. */
+  number: number;
+  state: ClaimState;
+}
+
+/**
+ * The claim decision per surface, one entry per surface the item actually has.
+ *
+ * The single source of truth for everything a tick *says* about assignment. The
+ * plan line and the per-item dry-run block each used to derive it from the two
+ * booleans themselves, and they drifted: the dry-run block named the
+ * `pr-orphan` exemption while the plan stayed silent on it, which an operator
+ * reads as "already assigned" rather than "never claimed here".
+ */
+export function claimStates(item: WorkItem): SurfaceClaim[] {
+  const states: SurfaceClaim[] = [];
+  if (item.issue !== null) {
+    states.push({
+      surface: "issue",
+      number: item.issue.number,
+      state: item.needsAssignment ? "would-claim" : "already-assigned",
+    });
+  }
+  if (item.pr !== null) {
+    states.push({
+      surface: "pull request",
+      number: item.pr.number,
+      // An exemption is a rule, not a state, so it outranks the assignee list:
+      // an orphan pull request with nobody on it is still not claimed.
+      state: prClaimState(item),
+    });
+  }
+  return states;
+}
+
+function prClaimState(item: WorkItem): ClaimState {
+  if (item.turn === "pr-orphan") return "rule-exempt";
+  return item.prNeedsAssignment ? "would-claim" : "already-assigned";
+}
