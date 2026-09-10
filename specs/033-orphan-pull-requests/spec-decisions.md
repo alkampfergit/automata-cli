@@ -72,6 +72,12 @@
   makes for `executor`/`model`. **Alternatives considered**: an `orphanPr` field on orphan entries
   only.
 
+- **The pull-request conversation analysis is extracted into one shared helper** rather than copied
+  into the orphan decision. **Rationale**: "what counts as answered on a pull request" — including
+  folding the agent's own review-thread replies into the boundary — is the rule two rounds of review
+  fixes already landed on; two copies could drift so that the same feedback was new on one turn and
+  answered on the other. **Alternatives considered**: reimplementing it in `decideOrphanPrWork`.
+
 - **Project structure**: no new module and no new directory. Discovery stays in
   `src/github/ghWorkService.ts` (the only module holding the private `spawnSync` runner), the pure
   decision in `src/github/workDetection.ts`, prompt assembly in `src/github/workPrompt.ts`,
