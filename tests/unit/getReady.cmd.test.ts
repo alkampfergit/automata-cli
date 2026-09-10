@@ -27,6 +27,7 @@ describe("automata implement-next (CLI smoke)", () => {
     expect(output).toContain("--no-claude");
     expect(output).toContain("--with");
     expect(output).toContain("--model");
+    expect(output).toContain("--effort");
     expect(output).toContain("--silent");
     expect(output).toContain("--query-only");
     expect(output).toContain("--yolo");
@@ -344,6 +345,67 @@ describe("getReady command: Claude Code invocation", () => {
     expect(claudeCall).toBeDefined();
     const claudeArgs = claudeCall![1] as string[];
     expect(claudeArgs).toEqual(["--model", "claude-opus-4-6", "-p", expect.stringContaining("Use a model.")]);
+
+    vi.restoreAllMocks();
+  });
+
+  it("passes --effort through to Claude", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 9, title: "Effort issue", body: "Think hard.", url: "https://github.com/o/r/issues/9" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent", "--effort", "high"], { from: "user" });
+
+    const claudeCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    expect(claudeCall).toBeDefined();
+    const claudeArgs = claudeCall![1] as string[];
+    expect(claudeArgs).toEqual(["--effort", "high", "-p", expect.stringContaining("Think hard.")]);
+
+    vi.restoreAllMocks();
+  });
+
+  it("passes --effort through to Codex as a -c model_reasoning_effort override", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({
+      remoteType: "gh",
+      issueDiscoveryTechnique: "label",
+      issueDiscoveryValue: "ready",
+    });
+
+    const issue = { number: 10, title: "Codex effort", body: "Think hard.", url: "https://github.com/o/r/issues/10" };
+
+    mockSpawnSync.mockReturnValueOnce({ stdout: JSON.stringify([issue]), stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--with", "codex", "--effort", "high"], { from: "user" });
+
+    const codexCall = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("codex"));
+    expect(codexCall).toBeDefined();
+    const codexArgs = codexCall![1] as string[];
+    expect(codexArgs).toEqual([
+      "exec",
+      "-c",
+      'model_reasoning_effort="high"',
+      expect.stringContaining("Think hard."),
+    ]);
 
     vi.restoreAllMocks();
   });

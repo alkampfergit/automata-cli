@@ -234,6 +234,54 @@ describe("execute-prompt sonar command", () => {
     expect(options.yolo).toBe(true);
   });
 
+  it("forwards --effort to Claude invocation", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "sonar",
+      "--with",
+      "claude",
+      "--effort",
+      "high",
+    ]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { effort?: string }];
+    expect(options.effort).toBe("high");
+  });
+
+  it("forwards --effort to Codex invocation", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync([
+      "node",
+      "execute-prompt",
+      "sonar",
+      "--with",
+      "codex",
+      "--effort",
+      "medium",
+    ]);
+
+    const [, options] = mockInvokeCodexCode.mock.calls[0] as [string, { effort?: string }];
+    expect(options.effort).toBe("medium");
+  });
+
+  it("passes no effort when --effort is absent", async () => {
+    mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
+    mockInvokeClaudeCode.mockResolvedValueOnce(undefined);
+
+    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
+    await executePromptCommand.parseAsync(["node", "execute-prompt", "sonar", "--with", "claude"]);
+
+    const [, options] = mockInvokeClaudeCode.mock.calls[0] as [string, { effort?: string }];
+    expect(options.effort).toBeUndefined();
+  });
+
   it("forwards --model to Claude invocation", async () => {
     mockGetPrInfo.mockResolvedValueOnce(OPEN_PR_WITH_SONAR);
     mockInvokeClaudeCode.mockResolvedValueOnce(undefined);

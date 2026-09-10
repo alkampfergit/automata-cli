@@ -37,3 +37,23 @@ export function handleExitCode(status: number | null, toolName: string): void {
     process.exit(status);
   }
 }
+
+/**
+ * Normalise an `--effort` option value.
+ *
+ * The level itself is deliberately not checked against a list: the valid set is
+ * executor- *and* model-specific (`claude`: low|medium|high|xhigh|max; `codex`:
+ * minimal|low|medium|high, plus xhigh on max-class models) and changes between
+ * executor releases, so an allow-list here would reject a level the installed
+ * binary accepts until automata cut a release of its own. Only an empty value
+ * is refused, because it would emit a flag with no operand.
+ */
+export function resolveEffortOption(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    process.stderr.write("Error: --effort must be a non-empty level.\n");
+    process.exit(1);
+  }
+  return trimmed;
+}

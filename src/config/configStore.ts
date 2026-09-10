@@ -36,6 +36,16 @@ export interface DoWorkModels {
   codex?: string;
 }
 
+/**
+ * Default reasoning effort per executor. Keyed the same way as `DoWorkModels`
+ * and for the same reason: the two CLIs accept different level names, so one
+ * shared field would silently pass nonsense when the executor changes.
+ */
+export interface DoWorkEffort {
+  claude?: string;
+  codex?: string;
+}
+
 export interface AutomataDoWorkConfig {
   baseBranch?: string;
   /**
@@ -47,6 +57,7 @@ export interface AutomataDoWorkConfig {
   protectedBranches?: string[];
   executor?: Executor;
   models?: DoWorkModels;
+  effort?: DoWorkEffort;
   /** 0 means unlimited. */
   maxRunsPerTick?: number;
   lockStaleMinutes?: number;

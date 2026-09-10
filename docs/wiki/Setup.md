@@ -139,6 +139,8 @@ The built-in prompts work out of the box and name no skill. To change how the ag
 | `doWork.executor` | no (`claude`) | `config set do-work-executor` |
 | `doWork.models.claude` | no | `config set do-work-model claude <id>` |
 | `doWork.models.codex` | no | `config set do-work-model codex <id>` |
+| `doWork.effort.claude` | no | `config set do-work-effort claude <level>` |
+| `doWork.effort.codex` | no | `config set do-work-effort codex <level>` |
 | `doWork.maxRunsPerTick` | no (`0` = unlimited) | `config set do-work-max-runs` |
 | `doWork.lockStaleMinutes` | no (`120`) | `config set do-work-lock-stale-minutes` |
 | `doWork.prompts.*` | no (built-in) | `config set do-work-prompt <turn-kind> <value>` |

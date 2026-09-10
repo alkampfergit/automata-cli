@@ -45,7 +45,7 @@ import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/
 import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
-import { shellQuote } from "../cli/spawnUtils.js";
+import { shellQuote, resolveEffortOption } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
 
@@ -60,6 +60,7 @@ let inFlightMarker: { marker: MarkerRef; item: WorkItem } | null = null;
 interface DoWorkOptions {
   with?: string;
   model?: string;
+  effort?: string;
   issue?: string;
   limit: string;
   maxRuns?: string;
@@ -73,6 +74,7 @@ interface Settings {
   protectedBranches: string[];
   executor: Executor;
   model: string | undefined;
+  effort: string | undefined;
   maxRuns: number;
   lockStaleMinutes: number;
   limit: number;
@@ -184,6 +186,13 @@ function resolveSettings(options: DoWorkOptions): Settings {
     executor,
     // --model wins; otherwise take the default for the executor in use.
     model: options.model ?? doWork.models?.[executor],
+    // Same precedence for the reasoning effort, but both candidates go through
+    // the one normaliser: a config value is validated as non-empty when the
+    // file is read, yet nothing trims it, so `" high "` would otherwise reach
+    // the executor with its padding and be silently ignored as an unknown
+    // level. `??` keeps the flag winning — an empty `--effort` is not nullish,
+    // so it is still rejected rather than falling through to the default.
+    effort: resolveEffortOption(options.effort ?? doWork.effort?.[executor]),
     maxRuns:
       options.maxRuns !== undefined
         ? parsePositiveInt(options.maxRuns, "--max-runs")
@@ -278,8 +287,13 @@ function planRun(item: WorkItem, settings: Settings): PlannedRun {
   // child stays cancellable; `--silent` suppresses printing, not the flags.
   const args =
     settings.executor === "codex"
-      ? buildCodexArgs(prompt, { yolo: true, model: settings.model })
-      : buildClaudeArgs(prompt, { yolo: true, verbose: true, model: settings.model });
+      ? buildCodexArgs(prompt, { yolo: true, model: settings.model, effort: settings.effort })
+      : buildClaudeArgs(prompt, {
+          yolo: true,
+          verbose: true,
+          model: settings.model,
+          effort: settings.effort,
+        });
 
   return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
 }
@@ -296,6 +310,7 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
       ? `pull request #${String(item.pr.number)}`
       : `issue #${String(item.issue.number)}`;
   const modelNote = settings.model === undefined ? " (no model override)" : ` · model ${settings.model}`;
+  const effortNote = settings.effort === undefined ? "" : ` · effort ${settings.effort}`;
   const lines = [
     rule,
     `Issue #${String(item.issue.number)} — ${item.issue.title}`,
@@ -305,7 +320,7 @@ function describePlannedRun(item: WorkItem, settings: Settings, run: PlannedRun)
     `  Branch       ${item.branch} (would check out${branchAction})`,
     `  Assign       ${assignment}`,
     `  Marker       would post on ${markerTarget}`,
-    `  Executor     ${settings.executor}${modelNote}`,
+    `  Executor     ${settings.executor}${modelNote}${effortNote}`,
     "  Permissions  bypassed (do-work always runs unattended)",
     `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
     "",
@@ -378,6 +393,7 @@ function validateDoWorkConfig(section: unknown): void {
 
   validateProtectedBranches(section["protectedBranches"]);
   validateSettingContainer(section["models"], "models", ["claude", "codex"]);
+  validateSettingContainer(section["effort"], "effort", ["claude", "codex"]);
   validateSettingContainer(section["prompts"], "prompts", ["issueDiscuss", "prWork"]);
 }
 
@@ -737,10 +753,10 @@ async function invokeExecutor(prompt: string, settings: Settings, silent: boolea
   // throw instead of exiting, so a failed run reconciles its marker and the tick
   // continues with the next item.
   if (settings.executor === "codex") {
-    await runCodex(prompt, { model: settings.model });
+    await runCodex(prompt, { model: settings.model, effort: settings.effort });
     return;
   }
-  await runClaude(prompt, { model: settings.model, printSteps: !silent });
+  await runClaude(prompt, { model: settings.model, effort: settings.effort, printSteps: !silent });
 }
 
 /**
@@ -975,6 +991,10 @@ export const doWorkCommand = new Command("do-work")
   )
   .option("--with <executor>", "Executor to use: claude or codex (default: from config, else claude)")
   .option("--model <string>", "Model identifier to pass to the executor, overriding the configured default for it")
+  .option(
+    "--effort <level>",
+    "Reasoning effort to pass to the executor, overriding the configured default for it",
+  )
   .option("--issue <number>", "Restrict the tick to a single issue")
   .option("--limit <n>", "Maximum number of issues to fetch", "10")
   .option("--max-runs <n>", "Maximum number of model runs this tick")
@@ -1207,6 +1227,7 @@ function reportDryRun(
             turn: describable[index].turn,
             executor: settings.executor,
             model: settings.model ?? null,
+            effort: settings.effort ?? null,
             bin: run.bin,
             args: run.args,
             command: run.command,

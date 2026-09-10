@@ -132,6 +132,10 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
       "claude": "claude-opus-4-6",
       "codex": "o3"
     },
+    "effort": {
+      "claude": "high",
+      "codex": "medium"
+    },
     "maxRunsPerTick": 0,
     "lockStaleMinutes": 120,
     "prompts": {
@@ -149,6 +153,8 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `executor` | `claude` | Which AI executor to invoke: `claude` or `codex`. |
 | `models.claude` | *(none)* | Default model when the executor is Claude; blank means the executor's own default. |
 | `models.codex` | *(none)* | Default model when the executor is Codex. |
+| `effort.claude` | *(none)* | Default reasoning effort when the executor is Claude; blank means the executor's own default. |
+| `effort.codex` | *(none)* | Default reasoning effort when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
@@ -162,6 +168,8 @@ automata config set do-work-protected-branches main,master
 automata config set do-work-executor codex
 automata config set do-work-model claude claude-opus-4-6
 automata config set do-work-model codex o3
+automata config set do-work-effort claude high
+automata config set do-work-effort codex medium
 automata config set do-work-max-runs 2
 automata config set do-work-lock-stale-minutes 45
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
@@ -169,6 +177,34 @@ automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 ```
 
 `do-work-prompt` takes the turn kind (`issue-discuss` or `pr-work`) followed by prompt text or a `.md` filename. `do-work-model` takes the executor (`claude` or `codex`) followed by the model identifier — the defaults are kept per executor because a model identifier is only valid for the executor it belongs to, so one shared field would send nonsense the moment you switched executor. `--model` on the command line overrides whichever default applies.
+
+`do-work-effort` works the same way: the executor, then the level. It is keyed per executor for the same reason — the two CLIs accept different level names, so a level that is valid for one is not necessarily valid for the other. `--effort` on the command line overrides whichever default applies.
+
+The level is **not** validated by automata. The valid set is both executor- and model-specific — `claude` takes `low`, `medium`, `high`, `xhigh` or `max`; `codex` takes `minimal`, `low`, `medium` or `high`, plus `xhigh` on max-class models — and it changes between executor releases, so an allow-list here would reject a level your installed executor accepts. Whatever you set is forwarded unchanged apart from surrounding whitespace, which is trimmed off both the configured default and `--effort`; only an empty value is refused.
+
+**Neither executor errors on an unknown level**, so a typo is quiet rather than fatal: `claude` prints `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` and carries on, and `codex` forwards the value to the API and shows it as `reasoning effort: <x>` in its session header. Check that header, or Claude's warning, if a level does not seem to be taking effect.
+
+A worked example, Claude on high and Codex on its own terra-class model:
+
+```bash
+automata config set do-work-executor claude
+automata config set do-work-model claude claude-opus-5
+automata config set do-work-effort claude high
+automata config set do-work-model codex gpt-5.1-codex-terra
+automata config set do-work-effort codex high
+```
+
+which produces:
+
+```json
+{
+  "doWork": {
+    "executor": "claude",
+    "models": { "claude": "claude-opus-5", "codex": "gpt-5.1-codex-terra" },
+    "effort": { "claude": "high", "codex": "high" }
+  }
+}
+```
 
 ### The turn prompts
 
@@ -185,4 +221,4 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
-The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.
+The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.

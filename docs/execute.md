@@ -17,6 +17,7 @@ automata execute --with <executor> [prompt source] [options]
 | `--file-prompt <path>` | No† | Path to a file whose content is used as the prompt |
 | `--silent` | No | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--model <string>` | No | Model identifier forwarded to the executor CLI |
+| `--effort <level>` | No | Reasoning effort forwarded to the executor CLI |
 
 † Provide either `--prompt`, `--file-prompt`, or piped stdin. `--prompt` and `--file-prompt` are mutually exclusive. Piped stdin is used only when neither explicit option is provided.
 
@@ -59,6 +60,7 @@ cat prompt.md | automata execute --with codex
 4. Claude verbose mode streams step-by-step progress to stderr and the final result to stdout.
 5. With `--silent`, Claude step-by-step output is suppressed; Codex currently ignores this flag.
 6. When `--model` is provided, the model string is forwarded to the executor CLI via its `--model` flag.
+7. When `--effort` is provided, the level is forwarded to the executor: `claude` receives `--effort <level>`, `codex` receives `-c model_reasoning_effort="<level>"` because it has no effort flag of its own.
 
 ## Output (default verbose mode — Claude)
 
@@ -88,6 +90,7 @@ automata execute --with claude --prompt "review src/ for security issues"
 
 # Use Codex with a specific model
 automata execute --with codex --model o3 --prompt "fix TypeScript errors"
+automata execute --with claude --effort high --prompt "fix TypeScript errors"
 
 # Run silently and capture the result
 result=$(automata execute --with claude --silent --prompt "summarise changes in git diff HEAD~1")

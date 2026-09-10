@@ -10,6 +10,7 @@ import { getIssueConversation, postComment, type IssueConversation } from "../co
 import { analyzeConversation, formatConversation } from "../github/issueConversation.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
+import { resolveEffortOption } from "../cli/spawnUtils.js";
 
 const PUSH_INSTRUCTION =
   "Once all changes are complete, stage every modified file, create a single commit with a clear and descriptive commit message that summarises what was fixed, and push the branch to the remote.";
@@ -29,6 +30,7 @@ function pluralSuffix(count: number): string {
 type ExecutePromptAiOptions = {
   with: string;
   model?: string;
+  effort?: string;
   silent?: boolean;
   push?: boolean;
 };
@@ -39,6 +41,7 @@ function addAiOptions(cmd: Command): Command {
   return cmd
     .requiredOption("--with <executor>", "Executor to use: claude or codex")
     .option("--model <string>", "Model identifier to pass to the executor")
+    .option("--effort <level>", "Reasoning effort to pass to the executor")
     .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
     .option("--push", "Append instruction to commit and push changes after the AI finishes")
 }
@@ -53,12 +56,19 @@ function resolveExecutor(withOption: string): Executor {
 }
 
 function invokeSelectedExecutor(prompt: string, executor: Executor, options: ExecutePromptAiOptions): Promise<void> | void {
+  const effort = resolveEffortOption(options.effort);
+
   if (executor === "codex") {
-    invokeCodexCode(prompt, { yolo: true, model: options.model });
+    invokeCodexCode(prompt, { yolo: true, model: options.model, effort });
     return;
   }
 
-  return invokeClaudeCode(prompt, { yolo: true, verbose: !options.silent, model: options.model });
+  return invokeClaudeCode(prompt, {
+    yolo: true,
+    verbose: !options.silent,
+    model: options.model,
+    effort,
+  });
 }
 
 const executeSonarCmd = addAiOptions(

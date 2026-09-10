@@ -2,6 +2,10 @@
 
 AI-powered prompt execution commands. These commands look up context from the remote — the current branch's pull request (a SonarCloud analysis URL, open review comments) or a named issue's conversation — and invoke an AI assistant with a pre-configured prompt.
 
+All three subcommands share the same executor options: `--with`, `--model`, `--effort`, `--silent` and `--push`.
+
+`--effort <level>` is forwarded to the executor unchanged, but the two express it differently: `claude` receives `--effort <level>`, while `codex` — which has no effort flag — receives `-c model_reasoning_effort="<level>"`. automata does not validate the level, because the valid set is executor- and model-specific and moves between executor releases; only an empty value is refused. Note that neither executor errors on an unknown level — `claude` warns and falls back to its default, and `codex` forwards it to the API — so a typo is quiet rather than fatal. Unlike `do-work`, these subcommands have no configured default, for either the model or the effort.
+
 ---
 
 ## `automata execute-prompt sonar`
@@ -11,6 +15,7 @@ Check the current branch's pull request for a SonarCloud analysis and invoke the
 ```bash
 automata execute-prompt sonar --with claude
 automata execute-prompt sonar --with codex --model o3
+automata execute-prompt sonar --with claude --effort high
 automata execute-prompt sonar --with claude --silent
 automata execute-prompt sonar --with claude --push
 ```
@@ -21,6 +26,7 @@ automata execute-prompt sonar --with claude --push
 |---|---|
 | `--with <executor>` | Required executor selector: `claude` or `codex` |
 | `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--effort <level>` | Reasoning effort forwarded to the selected executor CLI |
 | `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--push` | Append instruction to commit and push changes after the AI finishes |
 
@@ -69,6 +75,7 @@ automata execute-prompt fix-comments --with claude --push
 |---|---|
 | `--with <executor>` | Required executor selector: `claude` or `codex` |
 | `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--effort <level>` | Reasoning effort forwarded to the selected executor CLI |
 | `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--push` | Append instruction to commit and push changes after the AI finishes |
 
@@ -117,6 +124,7 @@ automata execute-prompt check-issue 34 --with claude --push
 |---|---|
 | `--with <executor>` | Required executor selector: `claude` or `codex` |
 | `--model <string>` | Model identifier forwarded to the selected executor CLI |
+| `--effort <level>` | Reasoning effort forwarded to the selected executor CLI |
 | `--silent` | Suppress step-by-step Claude output; Codex ignores this flag |
 | `--push` | Append instruction to commit and push changes after the AI finishes |
 | `--force` | Skip the new-message check and invoke the AI directly |

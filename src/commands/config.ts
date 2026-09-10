@@ -172,6 +172,32 @@ const configSetDoWorkModel = new Command("do-work-model")
     process.stdout.write(`do-work ${executor} model set to: ${model}\n`);
   });
 
+const configSetDoWorkEffort = new Command("do-work-effort")
+  .description("Set the default reasoning effort `do-work` passes to one executor")
+  .argument("<executor>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
+  .argument("<value>", "Effort level, forwarded to the executor unchanged")
+  .action((executor: string, value: string) => {
+    if (!VALID_EXECUTORS.includes(executor as Executor)) {
+      process.stderr.write(
+        `Error: invalid executor "${executor}". Must be one of: ${VALID_EXECUTORS.join(", ")}\n`,
+      );
+      process.exit(1);
+    }
+    // No allow-list of levels on purpose: the valid set is model-specific and
+    // moves between executor releases, so an allow-list here would reject a
+    // level the installed executor accepts. Note neither executor errors on an
+    // unknown level — claude warns and falls back, codex forwards it — so this
+    // trades a typo being caught for not blocking a newly-shipped level.
+    const effort = value.trim();
+    if (effort.length === 0) {
+      process.stderr.write("Error: do-work-effort requires a non-empty effort level.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeDoWork({ effort: { ...current.doWork?.effort, [executor as Executor]: effort } });
+    process.stdout.write(`do-work ${executor} effort set to: ${effort}\n`);
+  });
+
 const configSetDoWorkMaxRuns = new Command("do-work-max-runs")
   .description("Set the maximum number of model runs `do-work` performs per tick (0 = unlimited)")
   .argument("<value>", "Non-negative integer")
@@ -235,6 +261,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkProtectedBranches)
   .addCommand(configSetDoWorkExecutor)
   .addCommand(configSetDoWorkModel)
+  .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
   .addCommand(configSetDoWorkPrompt);

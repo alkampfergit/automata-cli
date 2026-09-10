@@ -46,6 +46,35 @@ describe("claudeService.invokeClaudeCode (sync mode)", () => {
     expect(args).toEqual(["--dangerously-skip-permissions", "-p", "hello world"]);
   });
 
+  it("passes --effort when effort is specified", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeClaudeCode } = await import("../../src/claude/claudeService.js");
+    invokeClaudeCode("hello world", { effort: "high" });
+
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["--effort", "high", "-p", "hello world"]);
+  });
+
+  it("passes both --model and --effort when both are specified", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+
+    const { invokeClaudeCode } = await import("../../src/claude/claudeService.js");
+    invokeClaudeCode("hello world", { model: "claude-opus-5", effort: "xhigh" });
+
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(["--model", "claude-opus-5", "--effort", "xhigh", "-p", "hello world"]);
+  });
+
+  it("emits no effort argument when effort is absent or empty", async () => {
+    const { buildClaudeArgs } = await import("../../src/claude/claudeService.js");
+
+    expect(buildClaudeArgs("p")).toEqual(["-p", "p"]);
+    // An empty level must emit nothing rather than a bare `--effort` that would
+    // swallow the next argument.
+    expect(buildClaudeArgs("p", { effort: "" })).toEqual(["-p", "p"]);
+  });
+
   it("passes --model when model is specified", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
 
