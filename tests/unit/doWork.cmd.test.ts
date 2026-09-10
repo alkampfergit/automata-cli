@@ -1792,7 +1792,7 @@ describe("do-work operation log", () => {
     exitCode: number;
     note?: string;
     items: {
-      issue: number;
+      subject: string;
       turn: string | null;
       outcome: string;
       detail: string;
@@ -1825,7 +1825,7 @@ describe("do-work operation log", () => {
     expect(tick.note).toBeUndefined();
     expect(tick.items).toHaveLength(1);
     expect(tick.items[0]).toMatchObject({
-      issue: 42,
+      subject: "#42",
       turn: "issue-discuss",
       ranExecutor: true,
       executor: "claude",
@@ -2325,5 +2325,17 @@ describe("do-work --pr", () => {
     await runDoWork(["--issue", "42"]);
     expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
     expect(mockInvokeClaude.mock.calls[0][0]).toContain("Issue #42");
+  });
+
+  // The work log identifies an item by number. An orphan turn has no issue, so
+  // a bare `#61` there would read as issue 61 to whoever greps the log — and in
+  // a tick that ran both passes the two kinds sit on adjacent lines.
+  it("names an orphan by its pull request in the operation log", async () => {
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as { items: { subject: string; turn: string }[] };
+    expect(tick.items.map((i) => [i.subject, i.turn])).toEqual([
+      ["#42", "issue-discuss"],
+      ["PR #61", "pr-orphan"],
+    ]);
   });
 });

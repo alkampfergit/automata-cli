@@ -128,19 +128,27 @@ interface ItemReport {
 }
 
 /**
- * How an item or a skip is named in the plan, the progress lines and the summary.
+ * How an item or a skip is named in the plan, the progress lines, the summary
+ * and the work log.
  *
  * A `pr-orphan` item has no issue, and a bare `#61` would be indistinguishable
- * from issue 61 in a log an operator reads out of cron mail.
+ * from issue 61 in a log an operator reads out of cron mail. The work log takes
+ * the label from here rather than formatting its own, so a line in
+ * `automata-work.log` names an item exactly as the tick's stdout did.
  */
-function subjectLabel(issue: { number: number } | null, pr: { number: number } | null): string {
-  if (issue !== null) return `#${String(issue.number)}`;
+function subjectLabel(issue: number | null, pr: number | null): string {
+  if (issue !== null) return `#${String(issue)}`;
   // Every decision carries one or the other; the last branch keeps this total.
-  return pr === null ? "#?" : `PR #${String(pr.number)}`;
+  return pr === null ? "#?" : `PR #${String(pr)}`;
 }
 
 function itemLabel(item: WorkItem): string {
-  return subjectLabel(item.issue, item.pr);
+  return subjectLabel(item.issue?.number ?? null, item.pr?.number ?? null);
+}
+
+/** The same label for a finished item, whose numbers are already flattened. */
+function reportLabel(report: ItemReport): string {
+  return subjectLabel(report.issue, report.pr);
 }
 
 /** The item's own title: the issue's, or the pull request's when there is none. */
@@ -712,7 +720,9 @@ function buildIssueState(issue: GitHubIssue, linkMap: OpenPrLinkMap): IssueState
 function describePlan(decisions: Decision[]): string {
   const lines = decisions.map((decision) => {
     if (decision.kind === "skip") {
-      return `  ${subjectLabel(decision.issue, decision.pr)} nothing to do — ${decision.detail}`;
+      return (
+        `  ${subjectLabel(decision.issue?.number ?? null, decision.pr?.number ?? null)} nothing to do — ${decision.detail}`
+      );
     }
     const item = decision.item;
     const claim = item.needsAssignment ? ", will assign to the agent" : "";
@@ -1313,11 +1323,7 @@ function summarize(reports: ItemReport[]): void {
     // absent field would be ambiguous between "no directive" and "an older
     // automata" when read back out of a cron log.
     const ran = report.execution === undefined ? "" : ` · ${describeExecution(report.execution)}`;
-    const label = subjectLabel(
-      report.issue === null ? null : { number: report.issue },
-      report.pr === null ? null : { number: report.pr },
-    );
-    out(`  ${label} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
+    out(`  ${reportLabel(report)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
   }
 }
 
@@ -1449,7 +1455,7 @@ export const doWorkCommand = new Command("do-work")
 /** An item report as the operation log wants it, mirroring `toItemJson`. */
 function toTickLogItem(report: ItemReport): TickLogItem {
   return {
-    issue: report.issue,
+    subject: reportLabel(report),
     turn: report.turn,
     outcome: report.outcome,
     detail: report.detail,

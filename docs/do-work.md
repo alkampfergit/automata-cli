@@ -347,6 +347,9 @@ automata do-work --issue 42 --pr 61   # both passes, each restricted
 - the number is not an open pull request here → exit 1;
 - it is an orphan but does not match the discovery filter → a note on stderr, and it is processed anyway.
 
+Both refusals are raised after the tick has begun, so they release the run lock and write an
+`items=0 exit=1` line to [the execution log](#automata-executionlog) rather than exiting silently.
+
 ---
 
 ## Detection rules
@@ -477,6 +480,11 @@ A line can read `exit=2` with every outcome bucket at zero: that is a tick whose
 was processed. The pre-flight's own outcome is not broken out into fields here — use the
 tick's stdout, or `--json`, for that detail.
 
+`items=0 exit=1` with **no** `note` is the third shape: the tick began and then aborted —
+in practice a [`--pr <n>`](#targeting-one-pull-request) that named no orphaned
+open pull request. `note=config-error` is the same exit code refused *before* the tick began,
+which is why the two are distinguishable here.
+
 Useful queries:
 
 ```sh
@@ -497,13 +505,16 @@ One record per invocation in which the executor was actually invoked for at leas
 === 2026-09-10T06:51:36.412Z acme/widget ===
 #53 issue-discuss answered [claude model=opus-5] — posted a reply
 #51 pr-work answered [codex effort=high] — pushed 2 commits
+PR #61 pr-orphan answered [claude model=opus-5] — recommended merge
 
 === 2026-09-10T07:34:11.902Z acme/widget ===
 #57 issue-discuss failed [claude] — the executor exited with status 1
 
 ```
 
-A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the issue number, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set) and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the subject, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set) and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+
+The subject is `#<issue>` for an issue turn and `PR #<number>` for a [`pr-orphan`](#turn-kinds) turn, which has no issue — the same label the tick printed on stdout, so `grep '#53' ../automata-work.log` cannot confuse issue 53 with pull request 53.
 
 On append, records whose header timestamp is more than 30 days old are dropped. A rolling 30 days, not the previous calendar month: a calendar boundary would delete four weeks of history in one step on the first.
 

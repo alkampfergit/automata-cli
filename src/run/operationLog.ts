@@ -57,7 +57,12 @@ const OUTCOMES: readonly OperationOutcome[] = [
 ];
 
 export interface TickLogItem {
-  issue: number;
+  /**
+   * How the item is named — `#42` for an issue, `PR #61` for a `pr-orphan`
+   * turn, which has no issue. Rendered by the caller so that a work-log line
+   * and the tick's own stdout can never name the same item differently.
+   */
+  subject: string;
   turn: string | null;
   outcome: OperationOutcome;
   detail: string;
@@ -175,7 +180,7 @@ export function formatWorkRecord(tick: TickLog): string | null {
   const header = `=== ${tick.timestamp.toISOString()} ${repoField(tick.repo)} ===\n`;
   const lines = ran.map(
     (item) =>
-      `#${String(item.issue)} ${item.turn === null ? "-" : oneLine(item.turn)} ${item.outcome}` +
+      `${oneLine(item.subject)} ${item.turn === null ? "-" : oneLine(item.turn)} ${item.outcome}` +
       `${describeItemExecution(item)} — ${briefDetail(item.detail)}\n`,
   );
   return header + lines.join("") + "\n";
