@@ -641,3 +641,149 @@ describe("marker comments", () => {
     );
   });
 });
+
+describe("listPullRequestsForHead", () => {
+  it("asks for every state for the named head and sorts newest update first", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json([
+        { number: 7, url: "https://gh/pr/7", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+        { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z" },
+      ]),
+    );
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")).toEqual([
+      { number: 9, url: "https://gh/pr/9", state: "MERGED", updatedAt: "2026-09-08T00:00:00Z" },
+      { number: 7, url: "https://gh/pr/7", state: "CLOSED", updatedAt: "2026-09-01T00:00:00Z" },
+    ]);
+    expect(calls()[0]).toEqual({
+      cmd: "gh",
+      args: ["pr", "list", "--head", "fix/wip", "--state", "all", "--json", "number,state,url,updatedAt"],
+    });
+  });
+
+  it("returns an empty list for a head with no pull request", async () => {
+    mockSpawnSync.mockReturnValueOnce(json([]));
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")).toEqual([]);
+  });
+
+  // The prune step keeps a branch when the lookup fails, so the failure has to
+  // reach it as a throw rather than as "no pull requests".
+  it("throws when gh fails", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "gh: HTTP 502\n", status: 1 });
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(() => listPullRequestsForHead("fix/wip")).toThrow("gh: HTTP 502");
+  });
+
+  it("maps an unexpected state onto CLOSED rather than widening the union", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json([{ number: 1, url: "https://gh/pr/1", state: "LOCKED", updatedAt: "2026-09-01T00:00:00Z" }]),
+    );
+    const { listPullRequestsForHead } = await import("../../src/github/ghWorkService.js");
+    expect(listPullRequestsForHead("fix/wip")[0].state).toBe("CLOSED");
+  });
+});
+
+describe("isMissingLabelError", () => {
+  it.each([
+    "could not add label: 'rescue' not found",
+    "Could not resolve to a Label with the name 'rescue'.",
+    "the label rescue does not exist in this repository",
+    "GraphQL: labels not found",
+  ])("recognises a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(true);
+  });
+
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+    "pull request already exists",
+    "",
+  ])("does not treat an unrelated failure as a missing label: %s", async (stderr) => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(false);
+  });
+});
+
+describe("createDraftPullRequest", () => {
+  const input = {
+    head: "rescue/develop-20260910T054512Z",
+    base: "develop",
+    title: "rescue: uncommitted work from develop",
+    body: "body",
+    label: "rescue",
+  };
+
+  it("creates a draft against the named head and base, and reads the number off the URL", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("https://github.com/acme/widget/pull/51\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(createDraftPullRequest(input)).toEqual({
+      number: 51,
+      url: "https://github.com/acme/widget/pull/51",
+    });
+    expect(calls()[0]).toEqual({
+      cmd: "gh",
+      args: [
+        "pr", "create", "--draft",
+        "--head", input.head,
+        "--base", "develop",
+        "--title", input.title,
+        "--body", "body",
+        "--label", "rescue",
+      ],
+    });
+  });
+
+  // The label is cosmetic; a repository that has not defined it must still get
+  // the pull request, which is the whole reason the rescue exists.
+  it("retries exactly once without --label when the label does not exist", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "could not add label: 'rescue' not found\n", status: 1 })
+      .mockReturnValueOnce(ok("https://github.com/acme/widget/pull/52\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(createDraftPullRequest(input).number).toBe(52);
+    const attempts = calls();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].args).not.toContain("--label");
+    expect(attempts[1].args).not.toContain("rescue");
+  });
+
+  it("does not retry a failure unrelated to the label", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "pull request already exists\n", status: 1 });
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest(input)).toThrow("pull request already exists");
+    expect(calls()).toHaveLength(1);
+  });
+
+  // Merely mentioning a label is not a missing label. Retrying these dropped
+  // `--label` for a reason that had nothing to do with it, and reported the
+  // second, identical failure in place of the real one.
+  it.each([
+    "HTTP 403: Resource not accessible by integration (https://api.github.com/repos/acme/widget/issues/51/labels)",
+    "API rate limit exceeded while adding labels",
+    "GraphQL: Label already exists on this issue",
+  ])("does not retry a non-label failure that mentions labels: %s", async (stderr) => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: `${stderr}\n`, status: 1 });
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest(input)).toThrow(stderr);
+    expect(calls()).toHaveLength(1);
+  });
+
+  it("skips the labelled attempt entirely when no label is asked for", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("https://github.com/acme/widget/pull/53\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    createDraftPullRequest({ ...input, label: undefined });
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0].args).not.toContain("--label");
+  });
+
+  it("throws when the created pull request's number cannot be read back", async () => {
+    mockSpawnSync.mockReturnValueOnce(ok("Warning: something\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(() => createDraftPullRequest({ ...input, label: undefined })).toThrow(
+      "could not read its number",
+    );
+  });
+});

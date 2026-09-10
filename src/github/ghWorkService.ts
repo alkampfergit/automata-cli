@@ -624,3 +624,141 @@ export function deleteMarker(marker: MarkerRef): void {
     throw new Error(stderr.trim() || `Failed to delete comment ${marker.commentId}.`);
   }
 }
+
+/* -------------------------------------------------------------------------- *
+ * Repository hygiene
+ *
+ * The two `gh` questions `do-work`'s pre-flight asks about a *named head
+ * branch*. Both use `--head`, so neither needs the branch checked out — which
+ * is what lets the prune step decide about a branch without moving the working
+ * tree.
+ * -------------------------------------------------------------------------- */
+
+/** A pull request seen from its head branch, in any state. */
+export interface PullRequestHeadRef {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  updatedAt: string;
+}
+
+interface RawHeadPr {
+  number: number;
+  url: string;
+  state: string;
+  updatedAt: string;
+}
+
+function toHeadState(state: string): PullRequestHeadRef["state"] {
+  return state === "OPEN" || state === "MERGED" ? state : "CLOSED";
+}
+
+/**
+ * Every pull request for a head branch, in any state, newest update first.
+ *
+ * `gh pr list` rather than `gh pr view`: the prune decision needs *all* states
+ * for a named head, while `pr view` resolves only the default pull request and
+ * reports "none" by way of English stderr text.
+ */
+export function listPullRequestsForHead(branch: string): PullRequestHeadRef[] {
+  const raw = ghJson<RawHeadPr[]>(
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,url,updatedAt"],
+    `list pull requests for branch ${branch}`,
+  );
+  return raw
+    .map((pr) => ({
+      number: pr.number,
+      url: pr.url,
+      state: toHeadState(pr.state),
+      updatedAt: pr.updatedAt,
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export interface DraftPullRequestInput {
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  /** Applied best-effort; a repository that has not defined it still gets the PR. */
+  label?: string;
+}
+
+/**
+ * Patterns `gh` uses when the *only* thing wrong with `pr create` is that the
+ * repository has not defined the label we asked for.
+ *
+ * Narrow on purpose. Testing the whole of stderr for `label` also swallowed
+ * failures that merely mention one — a 403 whose URL ends `/labels`, a rate
+ * limit hit while labelling — and retrying those without `--label` reported a
+ * label problem for something else entirely, or hid a real error behind a
+ * second identical failure. Anything not listed here is re-thrown as it is.
+ */
+const MISSING_LABEL_PATTERNS = [
+  // gh's own message: `could not add label: 'rescue' not found`.
+  /could not add label/i,
+  // The GraphQL error it wraps, seen directly on some gh versions.
+  /could not resolve to a label/i,
+  /\blabels?\b[^\n]*\b(?:not found|does not exist)\b/i,
+];
+
+/** True when stderr says the label is missing, and nothing else went wrong. */
+export function isMissingLabelError(stderr: string): boolean {
+  return MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr));
+}
+
+/**
+ * Open a draft pull request for a head branch.
+ *
+ * Draft on purpose: these are opened unattended to stop work being lost, not
+ * because anything is ready for review, so they must not enter a review queue.
+ *
+ * The label is cosmetic, so `--label` naming a label the repository has not
+ * defined must not cost us the pull request — hence the single retry without
+ * it, gated on {@link isMissingLabelError}. Creating the label instead would be
+ * a write to repository settings this command was never asked to make.
+ */
+export function createDraftPullRequest(input: DraftPullRequestInput): { number: number; url: string } {
+  const base = [
+    "pr",
+    "create",
+    "--draft",
+    "--head",
+    input.head,
+    "--base",
+    input.base,
+    "--title",
+    input.title,
+    "--body",
+    input.body,
+  ];
+
+  if (input.label !== undefined && input.label.length > 0) {
+    const labelled = run("gh", [...base, "--label", input.label]);
+    if (labelled.status === 0) return parseCreatedPrUrl(labelled.stdout, input.head);
+    if (!isMissingLabelError(labelled.stderr)) {
+      throw new Error(
+        labelled.stderr.trim() || `Failed to open a draft pull request for ${input.head}.`,
+      );
+    }
+  }
+
+  const { stdout, stderr, status } = run("gh", base);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to open a draft pull request for ${input.head}.`);
+  }
+  return parseCreatedPrUrl(stdout, input.head);
+}
+
+/**
+ * `gh pr create` prints the new pull request's URL, not JSON, so the number is
+ * read back off the URL rather than asked for in a second call.
+ */
+function parseCreatedPrUrl(stdout: string, head: string): { number: number; url: string } {
+  const url = stdout.trim().split("\n").pop()?.trim() ?? "";
+  const match = /\/pull\/(\d+)\s*$/.exec(url);
+  if (!match) {
+    throw new Error(`Opened a pull request for ${head} but could not read its number from: ${url}`);
+  }
+  return { number: Number(match[1]), url };
+}
