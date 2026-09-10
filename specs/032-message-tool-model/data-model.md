@@ -55,7 +55,8 @@ comment can quote it back to the maintainer.
 | `withOption` | `Executor \| undefined` | `--with`, already validated by the command. |
 | `modelOption` | `string \| undefined` | `--model`, never validated. |
 | `configExecutor` | `Executor \| undefined` | `doWork.executor`. |
-| `configModels` | `Partial<Record<Executor, string>> \| undefined` | `doWork.models`. |
+| `configModels` | `DoWorkModels \| undefined` | `doWork.models`. |
+| `defaultExecutor` | `Executor` | The built-in fallback, passed in rather than duplicated from `DEFAULT_DO_WORK`. Required. |
 
 ## Precedence, as a table
 

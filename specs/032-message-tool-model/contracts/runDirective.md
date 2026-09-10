@@ -27,7 +27,9 @@ export interface ResolveExecutionInput {
   withOption?: Executor | undefined;
   modelOption?: string | undefined;
   configExecutor?: Executor | undefined;
-  configModels?: Partial<Record<Executor, string>> | undefined;
+  configModels?: DoWorkModels | undefined;
+  /** The built-in fallback, passed in rather than duplicated from `DEFAULT_DO_WORK`. */
+  defaultExecutor: Executor;
 }
 
 /** The newest authorized message this turn is answering, or null if there is none. */

@@ -404,7 +404,7 @@ function describeRefusedRun(item: WorkItem, refusal: string): string {
       `  Turn         ${item.turn}`,
       `  Why          ${item.reason}`,
       `  Executor     refused — ${refusal}`,
-      "  Command      none; a real tick would post nothing but the refusal on the marker",
+      "  Command      none; a real tick would post the working marker and then replace it with this refusal",
       "",
     ].join("\n") + "\n"
   );
