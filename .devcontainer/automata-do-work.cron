@@ -1,0 +1,2 @@
+# Run one Automata work tick every minute inside the dev container.
+* * * * * node /usr/local/bin/automata-do-work-cron >> /home/node/.local/state/automata-do-work/cron.log 2>&1
