@@ -102,21 +102,71 @@ describe("createBranchAtHead", () => {
   });
 });
 
+describe("pathIsIgnored", () => {
+  it("asks check-ignore, which consults the index, so a tracked path is not ignored", async () => {
+    mockSpawnSync.mockReturnValue(ok());
+    const { pathIsIgnored } = await service();
+    expect(pathIsIgnored(".automata/automata.lock")).toBe(true);
+    expect(lastArgs()).toEqual(["check-ignore", "-q", "--", ".automata/automata.lock"]);
+  });
+
+  it("answers false for anything but a clean exit 0, so a broken git keeps the exclusion", async () => {
+    mockSpawnSync.mockReturnValue(bad("fatal: not a git repository", 128));
+    const { pathIsIgnored } = await service();
+    expect(pathIsIgnored(".automata/automata.lock")).toBe(false);
+  });
+});
+
 describe("stageAllExcept", () => {
+  /** check-ignore answers `ignored` for the listed paths; everything else succeeds. */
+  function ignoring(ignored: string[]): void {
+    mockSpawnSync.mockImplementation((_cmd: unknown, args: string[]) =>
+      args[0] === "check-ignore" ? (ignored.includes(args[3]) ? ok() : bad("", 1)) : ok(),
+    );
+  }
+
   // -A is the only form that stages untracked files, which is the whole point:
   // anything hasUncommittedChanges counts and this misses leaves the tree dirty.
   it("stages everything with -A and excludes the given paths by pathspec", async () => {
-    mockSpawnSync.mockReturnValue(ok());
+    ignoring([]);
     const { stageAllExcept } = await service();
     stageAllExcept([".automata/automata.lock"]);
     expect(lastArgs()).toEqual(["add", "-A", "--", ".", ":(exclude).automata/automata.lock"]);
   });
 
   it("omits the pathspec entirely when nothing is excluded", async () => {
-    mockSpawnSync.mockReturnValue(ok());
+    ignoring([]);
     const { stageAllExcept } = await service();
     stageAllExcept([]);
     expect(lastArgs()).toEqual(["add", "-A"]);
+  });
+
+  // The reported defect: naming an ignored path in a pathspec makes `git add`
+  // exit 1 — after staging everything correctly — so the rescue aborted work it
+  // had in fact completed. Bare `-A` never stages an ignored path anyway.
+  it("drops an exclusion the repository already ignores, falling back to bare -A", async () => {
+    ignoring([".automata/automata.lock"]);
+    const { stageAllExcept } = await service();
+    const result = stageAllExcept([".automata/automata.lock"]);
+    expect(lastArgs()).toEqual(["add", "-A"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps the exclusions that are not ignored when only some are", async () => {
+    ignoring([".automata/automata.lock"]);
+    const { stageAllExcept } = await service();
+    stageAllExcept([".automata/automata.lock", "scratch/notes.md"]);
+    expect(lastArgs()).toEqual(["add", "-A", "--", ".", ":(exclude)scratch/notes.md"]);
+  });
+
+  // check-ignore reports a tracked path as not ignored even when a pattern
+  // matches it, and that is the safety property: a lock the repository tracks
+  // must never be swept into the rescue commit.
+  it("keeps the exclusion for a tracked path, so the run lock is never committed", async () => {
+    ignoring([]);
+    const { stageAllExcept } = await service();
+    stageAllExcept([".automata/automata.lock"]);
+    expect(lastArgs()).toEqual(["add", "-A", "--", ".", ":(exclude).automata/automata.lock"]);
   });
 });
 

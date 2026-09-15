@@ -57,7 +57,12 @@ import {
   type AnswerAnalysis,
 } from "../github/markerReconciliation.js";
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
-import { runRepoHygiene, type HygieneReport, type PruneOutcome } from "../git/repoHygiene.js";
+import {
+  describePreflightFailures,
+  runRepoHygiene,
+  type HygieneReport,
+  type PruneOutcome,
+} from "../git/repoHygiene.js";
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import { recordTick, type TickLogItem } from "../run/operationLog.js";
@@ -1195,10 +1200,23 @@ function refuseBeforeRun(
   return { ...base, outcome: "failed", detail };
 }
 
+/**
+ * Why the tick's pre-flight could not put the repository right, as a suffix for
+ * the per-item skip that is its consequence — empty when the pre-flight worked.
+ *
+ * A dirty tree and a base branch that will not fast-forward are what an item
+ * *observes*; the pre-flight already knows *why*, and without this the operator
+ * reads a run of `skipped: dirty-tree` lines that name neither cause.
+ */
+function preflightSuffix(causes: string[]): string {
+  return causes.length === 0 ? "" : ` [pre-flight: ${causes.join("; ")}]`;
+}
+
 async function processItem(
   planned: WorkItem,
   settings: Settings,
   silent: boolean,
+  preflightCauses: string[],
 ): Promise<ItemReport> {
   progress(`\n${itemLabel(planned)} ${planned.turn}: ${planned.reason}\n`);
 
@@ -1235,8 +1253,13 @@ async function processItem(
   const prepared =
     item.turn === "issue-discuss" ? prepareBaseBranch(item.branch) : preparePrBranch(item.branch);
   if (!prepared.ok) {
-    progress(`  skipped: ${prepared.reason} — ${prepared.detail}\n`);
-    return { ...base, outcome: "skipped", detail: `${prepared.reason}: ${prepared.detail}` };
+    const why = preflightSuffix(preflightCauses);
+    progress(`  skipped: ${prepared.reason} — ${prepared.detail}${why}\n`);
+    return {
+      ...base,
+      outcome: "skipped",
+      detail: `${prepared.reason}: ${prepared.detail}${why}`,
+    };
   }
 
   claimIssue(item, settings);
@@ -1674,6 +1697,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // perform none while actionable work waits.
   const reports: ItemReport[] = [];
   const deferred: WorkItem[] = [];
+  const preflightCauses = describePreflightFailures(hygiene);
   let runsUsed = 0;
 
   for (const item of items) {
@@ -1687,7 +1711,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     // items that had already run.
     let report: ItemReport;
     try {
-      report = await processItem(item, settings, options.silent === true);
+      report = await processItem(item, settings, options.silent === true, preflightCauses);
     } catch (err) {
       progress(`  failed: ${(err as Error).message}\n`);
       report = {

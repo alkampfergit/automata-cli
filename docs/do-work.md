@@ -172,11 +172,36 @@ The ownership question exists because of the [orphan pass](#the-orphan-pull-requ
 
 The commit message is `chore(automata): rescue uncommitted work from <source>`. The run lock is excluded from the commit, so a tick does not commit the lock file naming its own pid.
 
+The exclusion is dropped when the repository already ignores the lock. Naming an ignored path in a pathspec makes `git add` exit non-zero — *after* staging everything correctly — so a checkout that lists `.automata/automata.lock` in its `.gitignore` would otherwise see every rescue fail at the staging step and every item skip with `dirty-tree`. A bare `git add -A` never stages an ignored path, so dropping the exclusion changes nothing but the exit status. An exclusion for a path the repository *tracks* is always kept, even when a `.gitignore` pattern also matches it, so the lock is never committed.
+
+Staging happens before the `rescue/…` branch is created, so a staging failure leaves no empty branch behind. A branch the rescue *did* create is exempt from step 3's pruning for the rest of that tick — otherwise a rescue that failed before its commit would leave an empty branch that the prune step, correctly applying its own rules, would then delete, and the log would name a recovery branch that no longer exists. The next tick prunes it under the ordinary rules if it really is abandoned.
+
 Every step is additive, so a failure at any of them leaves the tree exactly as dirty as it was and discards nothing; the tick then continues with the pre-existing per-item `dirty-tree` skip. One exception is worth knowing about: if the *commit* succeeded and only the push failed, the tree is clean, so no later tick will rescue it again — the work sits in this checkout alone until someone pushes it. The pre-flight says so on the line after the failure, naming the branch.
 
 ### 2. Check out and fast-forward the base branch
 
 `git checkout <base>` then `git pull --ff-only`, on every tick — a tick with nothing to do still leaves the checkout on the base branch at the remote's tip. A base branch that has diverged fails the pull loudly rather than being merged, rebased or reset.
+
+#### Recovering a base branch that will not fast-forward
+
+```text
+  base      FAILED to pull develop: fatal: Not possible to fast-forward, aborting.
+```
+
+The local base branch has at least one commit `origin` does not. `do-work` will not resolve that on its own: merging, rebasing or resetting would each be a judgement about somebody's commit, and an unattended tool has no business making it. Every item in the tick is then skipped as `pull-failed`, and the skip line names this pre-flight failure as its cause.
+
+Look at what is actually there:
+
+```sh
+git log --oneline origin/develop..develop     # commits only this checkout has
+git log --oneline develop..origin/develop     # commits only the remote has
+```
+
+Then pick one:
+
+- **The local commits are wanted.** Move them off the base branch and open a pull request — `git switch -c fix/keep-this`, `git push -u origin fix/keep-this`, then `git switch develop && git reset --hard origin/develop`.
+- **The local commits are unwanted** — a generated file committed by a tool, say. Drop them: `git reset --hard origin/develop`. Confirm the first command's output is only commits you are willing to lose; this discards them.
+- **Both sides have real work.** Reconcile it yourself with a merge or a rebase; `do-work` picks up again on the next tick once `git pull --ff-only` succeeds.
 
 ### 3. Prune dead local branches
 
@@ -221,7 +246,15 @@ Pre-flight:
   prune  rescued wip/scratch (pushed, draft PR #52)
 ```
 
-Under `--json` the same information is a `preflight` object alongside `plan` and `items`. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
+When a pre-flight step failed, every item the failure went on to block repeats the cause on its own skip line, so the tick can be diagnosed from the item output alone:
+
+```text
+  skipped: dirty-tree — the working tree has uncommitted changes; commit or stash them yourself and re-run [pre-flight: the rescue failed at the stage step (the work is on rescue/develop-20260915T191357Z): error: pathspec did not match; the base branch pull failed: fatal: Not possible to fast-forward, aborting.]
+```
+
+The rescue and the base branch are always reported as two separate causes: they fail for unrelated reasons and want unrelated fixes, and a tick can easily have both. The same text appears in the tick summary's detail for that item and in the operation log. An item skipped after a clean pre-flight carries no such suffix.
+
+Under `--json` the same information is a `preflight` object alongside `plan` and `items`. A failed rescue that got as far as creating a recovery branch also names it there, as `rescue.createdBranch`. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
 
 A pre-flight step that failed makes an otherwise-healthy tick **exit 2** — see [exit codes](#exit-codes).
 
@@ -441,7 +474,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 
 Exit 2 means degraded, not broken. An item was:
 
-- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one;
+- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one. When a pre-flight step is the cause, the skip line names it (see [reporting](#reporting));
 - `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
