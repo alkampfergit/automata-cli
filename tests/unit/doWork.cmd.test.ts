@@ -63,11 +63,14 @@ vi.mock("../../src/git/workspaceService.js", () => ({
 
 const mockRunRepoHygiene = vi.fn();
 
-// The pre-flight has its own suite (repoHygiene.test.ts); here it is mocked so
-// these tests assert only what the command does with its report.
-vi.mock("../../src/git/repoHygiene.js", () => ({
-  runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a),
-}));
+// The pre-flight has its own suite (repoHygiene.test.ts); here only the tick
+// entry point is mocked, so these tests assert what the command does with its
+// report. `describePreflightFailures` is a pure reading of that report and is
+// kept real, so the wording these tests pin is the wording operators see.
+vi.mock("../../src/git/repoHygiene.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/git/repoHygiene.js")>();
+  return { ...actual, runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a) };
+});
 
 const CLEAN_HYGIENE = {
   rescue: { kind: "clean" },
@@ -570,6 +573,66 @@ describe("do-work discuss turn", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/dirty-tree/);
+  });
+
+  // Issue #69: every item said `skipped: dirty-tree` while the pre-flight had
+  // already failed with the precise reason a line earlier. The per-item line is
+  // where operators look, so the cause has to be on it.
+  it("names the pre-flight rescue failure on the skip it caused", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "stage", detail: "paths are ignored by .gitignore" },
+      base: { ok: true },
+      prunes: [],
+      degraded: true,
+    });
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    // Both surfaces: the live progress line and the tick summary's recorded detail.
+    expect(stderr).toMatch(
+      /skipped: dirty-tree — uncommitted changes \[pre-flight: the rescue failed at the stage step: paths are ignored by \.gitignore\]/,
+    );
+    expect(stdout).toMatch(
+      /skipped — dirty-tree: uncommitted changes \[pre-flight: the rescue failed at the stage step: paths are ignored by \.gitignore\]/,
+    );
+  });
+
+  // Two causes, reported as two: a diverged base branch is a different problem
+  // with a different fix from a rescue that could not stage.
+  it("reports a failed base fast-forward separately from the rescue failure", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "stage", detail: "paths are ignored" },
+      base: { ok: false, step: "pull", detail: "Not possible to fast-forward, aborting." },
+      prunes: [],
+      degraded: true,
+    });
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    expect(stdout).toMatch(/the rescue failed at the stage step: paths are ignored/);
+    expect(stdout).toMatch(/the base branch pull failed: Not possible to fast-forward/);
+  });
+
+  it("leaves the skip wording alone when the pre-flight worked", async () => {
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    expect(stderr).toMatch(/skipped: dirty-tree — uncommitted changes\n/);
+    expect(stdout).toMatch(/skipped — dirty-tree: uncommitted changes\n/);
+    expect(stdout).not.toMatch(/\[pre-flight:/);
+    expect(stderr).not.toMatch(/\[pre-flight:/);
   });
 });
 
