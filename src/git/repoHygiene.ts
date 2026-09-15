@@ -63,6 +63,24 @@ export interface HygieneOptions {
 
 export type RescueStep = "branch" | "stage" | "commit" | "push" | "pr";
 
+export interface RescueFailure {
+  kind: "failed";
+  step: RescueStep;
+  detail: string;
+  /**
+   * The branch the rescue was committing onto, once it exists in the checkout —
+   * absent for a failure that happened before that point, which leaves nothing
+   * to name. Reported so an operator reading only the tick summary can still
+   * find what the rescue did and did not manage to do.
+   */
+  branch?: string;
+  /**
+   * Set when `branch` is one this rescue created, rather than one it found. Used
+   * to keep the same tick's prune phase off it.
+   */
+  createdBranch?: string;
+}
+
 export type RescueOutcome =
   | { kind: "clean" }
   | {
@@ -75,12 +93,7 @@ export type RescueOutcome =
       prCreated: boolean;
     }
   | { kind: "would-rescue"; branch: string; createdBranch: boolean }
-  /**
-   * `createdBranch` names the recovery branch this failed rescue left in the
-   * checkout, when it got far enough to create one. Reported so an operator can
-   * find it, and used to keep the same tick's prune phase off it.
-   */
-  | { kind: "failed"; step: RescueStep; detail: string; createdBranch?: string };
+  | RescueFailure;
 
 export type BaseOutcome = { ok: true } | { ok: false; step: "checkout" | "pull"; detail: string };
 
@@ -229,12 +242,23 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     }
   }
 
-  const leftBehind = target.createdBranch ? { createdBranch: target.branch } : {};
+  // From here on the target branch exists in the checkout — the rescue either
+  // just made it or found it — so every failure below names it. Without this a
+  // tick whose items were all refreshed away reports a bare "commit failed" and
+  // the recovery branch is left in the checkout with nothing pointing at it.
+  const left: Pick<RescueFailure, "branch" | "createdBranch"> = target.createdBranch
+    ? { branch: target.branch, createdBranch: target.branch }
+    : { branch: target.branch };
 
   const committed = commitStaged(`chore(automata): rescue uncommitted work from ${target.source}`);
   if (!committed.ok) {
-    options.log(`  rescue    FAILED to commit: ${committed.stderr}\n`);
-    return { kind: "failed", step: "commit", detail: committed.stderr, ...leftBehind };
+    options.log(`  rescue    FAILED to commit on ${target.branch}: ${committed.stderr}\n`);
+    if (target.createdBranch) {
+      options.log(
+        `  rescue    ${target.branch} was created by this rescue and carries none of the work; it is left in the checkout\n`,
+      );
+    }
+    return { kind: "failed", step: "commit", detail: committed.stderr, ...left };
   }
 
   const pushed = pushSetUpstream(target.branch);
@@ -245,7 +269,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
       `  rescue    FAILED to push ${target.branch}: ${pushed.stderr}\n` +
         `  rescue    the work is committed locally on ${target.branch}; push it by hand before it is lost\n`,
     );
-    return { kind: "failed", step: "push", detail: pushed.stderr, ...leftBehind };
+    return { kind: "failed", step: "push", detail: pushed.stderr, ...left };
   }
 
   // Pushed, so the work is safe from here on: a pull-request failure below is
@@ -257,7 +281,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     options.log(
       `  rescue    committed and pushed ${target.branch}, but could not check for an open PR: ${(err as Error).message}\n`,
     );
-    return { kind: "failed", step: "pr", detail: (err as Error).message, ...leftBehind };
+    return { kind: "failed", step: "pr", detail: (err as Error).message, ...left };
   }
 
   if (existing !== null) {
@@ -297,7 +321,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     options.log(
       `  rescue    committed and pushed ${target.branch}, but could not open a draft PR: ${(err as Error).message}\n`,
     );
-    return { kind: "failed", step: "pr", detail: (err as Error).message, ...leftBehind };
+    return { kind: "failed", step: "pr", detail: (err as Error).message, ...left };
   }
 }
 
@@ -554,14 +578,37 @@ function rescueCreatedBranch(rescue: RescueOutcome): string | null {
 export function describePreflightFailures(report: HygieneReport): string[] {
   const causes: string[] = [];
   if (report.rescue.kind === "failed") {
-    const left =
-      report.rescue.createdBranch === undefined
-        ? ""
-        : ` (the work is on ${report.rescue.createdBranch})`;
-    causes.push(`the rescue failed at the ${report.rescue.step} step${left}: ${report.rescue.detail}`);
+    causes.push(
+      `the rescue failed at the ${report.rescue.step} step (${describeRescueRemains(report.rescue)}): ${report.rescue.detail}`,
+    );
   }
   if (!report.base.ok) {
     causes.push(`the base branch ${report.base.step} failed: ${report.base.detail}`);
   }
   return causes;
+}
+
+/**
+ * What a failed rescue left behind, in the operator's words — where the work is
+ * and which branch, if any, is now sitting in the checkout.
+ *
+ * Shared by the per-item skip suffix and the tick summary so the two cannot
+ * drift, and because each is the *only* report the operator gets in some tick:
+ * the summary is all there is when no item was blocked (or every item was
+ * refreshed away), so a branch it cannot name is a branch nobody looks for.
+ *
+ * The answer depends on the step because the steps are additive: a commit that
+ * failed left the work in the tree, a push that failed left it in a commit only
+ * this checkout has.
+ */
+export function describeRescueRemains(rescue: RescueFailure): string {
+  if (rescue.branch === undefined) return "the tree is still dirty";
+  switch (rescue.step) {
+    case "push":
+      return `the work is committed on ${rescue.branch} but not pushed`;
+    case "pr":
+      return `the work is committed and pushed on ${rescue.branch}, without a draft pull request`;
+    default:
+      return `the tree is still dirty and ${rescue.branch} carries none of it`;
+  }
 }

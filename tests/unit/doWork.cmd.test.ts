@@ -625,10 +625,10 @@ describe("do-work discuss turn", () => {
 
     // Both surfaces: the live progress line and the tick summary's recorded detail.
     expect(stderr).toMatch(
-      /skipped: dirty-tree — uncommitted changes \[pre-flight: the rescue failed at the stage step: paths are ignored by \.gitignore\]/,
+      /skipped: dirty-tree — uncommitted changes \[pre-flight: the rescue failed at the stage step \(the tree is still dirty\): paths are ignored by \.gitignore\]/,
     );
     expect(stdout).toMatch(
-      /skipped — dirty-tree: uncommitted changes \[pre-flight: the rescue failed at the stage step: paths are ignored by \.gitignore\]/,
+      /skipped — dirty-tree: uncommitted changes \[pre-flight: the rescue failed at the stage step \(the tree is still dirty\): paths are ignored by \.gitignore\]/,
     );
   });
 
@@ -648,7 +648,7 @@ describe("do-work discuss turn", () => {
     });
     await runDoWork();
 
-    expect(stdout).toMatch(/the rescue failed at the stage step: paths are ignored/);
+    expect(stdout).toMatch(/the rescue failed at the stage step \(the tree is still dirty\): paths are ignored/);
     expect(stdout).toMatch(/the base branch pull failed: Not possible to fast-forward/);
   });
 

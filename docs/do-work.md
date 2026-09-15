@@ -166,7 +166,7 @@ Every tick starts by putting the checkout into a known state, once, inside the r
 If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only `.automata/automata.lock` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
 
 - The checkout is **on a branch automata owns** — any branch other than the base branch whose open pull request, if it has one, was opened by `agentUser` → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
-- The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is created at HEAD first, then committed, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
+- The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → the changes are staged, a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is then created at HEAD, and the staged changes are committed onto it, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
 
 The ownership question exists because of the [orphan pass](#the-orphan-pull-request-pass): a tick can end with the checkout sitting on a dependency bump's branch, and a stray edit found there on the next tick must not be pushed into a third party's pull request under the agent's name. A lookup that fails answers "not owned" — a needless rescue branch is noise, a commit pushed into someone else's pull request is not something the next tick can undo.
 
@@ -188,7 +188,16 @@ Every step is additive, so a failure at any of them leaves the tree exactly as d
   base      FAILED to pull develop: fatal: Not possible to fast-forward, aborting.
 ```
 
-The local base branch has at least one commit `origin` does not. `do-work` will not resolve that on its own: merging, rebasing or resetting would each be a judgement about somebody's commit, and an unattended tool has no business making it. Every item in the tick is then skipped as `pull-failed`, and the skip line names this pre-flight failure as its cause.
+The local base branch has at least one commit `origin` does not. `do-work` will not resolve that on its own: merging, rebasing or resetting would each be a judgement about somebody's commit, and an unattended tool has no business making it.
+
+Which items this stops depends on the turn, because each turn prepares the branch *it* needs:
+
+| Turn | Branch it prepares | Effect of a base branch that will not fast-forward |
+|---|---|---|
+| `issue-discuss` | the base branch | Skipped as `pull-failed`, with this pre-flight failure named on the skip line. |
+| `pr-work`, `pr-orphan` | the pull request's head branch | Unaffected — they fetch and check out their own head branch, so they still run. |
+
+So a diverged base branch is not a reason to expect the whole tick to stop; if a `pr-work` item was skipped too, look for a cause on *its* head branch instead.
 
 Look at what is actually there:
 
@@ -249,12 +258,14 @@ Pre-flight:
 When a pre-flight step failed, every item the failure went on to block repeats the cause on its own skip line, so the tick can be diagnosed from the item output alone:
 
 ```text
-  skipped: dirty-tree — the working tree has uncommitted changes; commit or stash them yourself and re-run [pre-flight: the rescue failed at the stage step (the work is on rescue/develop-20260915T191357Z): error: pathspec did not match; the base branch pull failed: fatal: Not possible to fast-forward, aborting.]
+  skipped: dirty-tree — the working tree has uncommitted changes; commit or stash them yourself and re-run [pre-flight: the rescue failed at the commit step (the tree is still dirty and rescue/develop-20260915T191357Z carries none of it): nothing to commit; the base branch pull failed: fatal: Not possible to fast-forward, aborting.]
 ```
 
 The rescue and the base branch are always reported as two separate causes: they fail for unrelated reasons and want unrelated fixes, and a tick can easily have both. The same text appears in the tick summary's detail for that item and in the operation log. An item skipped after a clean pre-flight carries no such suffix.
 
-Under `--json` the same information is a `preflight` object alongside `plan` and `items`. A failed rescue that got as far as creating a recovery branch also names it there, as `rescue.createdBranch`. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
+The parenthetical says where the rescue actually left things, and it differs by step: a failure at `stage` or `branch` has no branch to name at all, a failure at `commit` names a branch that carries none of the work, and a failure at `push` or `pr` names the branch the work is committed on. The same clause is repeated in the tick summary's `rescue` line, which is the only place the pre-flight shows up when no item was blocked.
+
+Under `--json` the same information is a `preflight` object alongside `plan` and `items`. A failed rescue names the branch it was committing onto there as `rescue.branch`, and repeats it as `rescue.createdBranch` when that branch is one the rescue itself created. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
 
 A pre-flight step that failed makes an otherwise-healthy tick **exit 2** — see [exit codes](#exit-codes).
 

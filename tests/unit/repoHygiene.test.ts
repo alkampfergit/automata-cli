@@ -332,6 +332,7 @@ describe("rescue", () => {
       kind: "failed",
       step: "pr",
       detail: "gh: HTTP 502",
+      branch: "rescue/develop-20260910T054512Z",
       createdBranch: "rescue/develop-20260910T054512Z",
     });
     expect(report.degraded).toBe(true);
@@ -349,6 +350,7 @@ describe("rescue", () => {
       kind: "failed",
       step: "pr",
       detail: "gh: HTTP 403",
+      branch: "rescue/develop-20260910T054512Z",
       createdBranch: "rescue/develop-20260910T054512Z",
     });
     expect(mockCreateDraftPullRequest).not.toHaveBeenCalled();
@@ -369,6 +371,45 @@ describe("rescue", () => {
     expect(report.rescue).toEqual({ kind: "failed", step: "stage", detail: "permission denied" });
   });
 
+  // A failed commit is the step where naming the branch matters most and was
+  // hardest to see: the branch exists, carries nothing, and is exempt from this
+  // tick's prune, so an operator who is told only "commit failed" is left with a
+  // branch in the checkout that nothing in the output accounts for.
+  it("names the branch a failed commit left in the checkout, on the log and in the outcome", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockCommitStaged.mockReturnValue(bad("nothing to commit"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "commit",
+      detail: "nothing to commit",
+      branch: "rescue/develop-20260910T054512Z",
+      createdBranch: "rescue/develop-20260910T054512Z",
+    });
+    expect(logged.join("")).toContain("FAILED to commit on rescue/develop-20260910T054512Z");
+    expect(logged.join("")).toContain("was created by this rescue and carries none of the work");
+  });
+
+  // Committing onto a branch that already existed: it is named too, since the
+  // operator still has to be told which branch the tick was working on — but it
+  // is not reported as one this rescue created, so the prune rules still apply.
+  it("names an existing target branch without claiming the rescue created it", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/x");
+    mockCommitStaged.mockReturnValue(bad("nothing to commit"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "commit",
+      detail: "nothing to commit",
+      branch: "feature/x",
+    });
+  });
+
   it("names the recovery branch it left behind when the failure came after creating it", async () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     mockPushSetUpstream.mockReturnValue(bad("rejected"));
@@ -379,6 +420,7 @@ describe("rescue", () => {
       kind: "failed",
       step: "push",
       detail: "rejected",
+      branch: "rescue/develop-20260910T054512Z",
       createdBranch: "rescue/develop-20260910T054512Z",
     });
   });
@@ -869,7 +911,9 @@ describe("describePreflightFailures", () => {
     const { runRepoHygiene, describePreflightFailures } = await hygiene();
     const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
 
-    expect(causes).toEqual(["the rescue failed at the stage step: The following paths are ignored"]);
+    expect(causes).toEqual([
+      "the rescue failed at the stage step (the tree is still dirty): The following paths are ignored",
+    ]);
   });
 
   it("names the recovery branch a failed rescue left behind", async () => {
@@ -878,7 +922,9 @@ describe("describePreflightFailures", () => {
     const { runRepoHygiene, describePreflightFailures } = await hygiene();
     const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
 
-    expect(causes[0]).toContain("the work is on rescue/develop-20260910T054512Z");
+    expect(causes[0]).toContain(
+      "the work is committed on rescue/develop-20260910T054512Z but not pushed",
+    );
   });
 
   // The second half of issue #69: a base branch that will not fast-forward must
@@ -891,7 +937,7 @@ describe("describePreflightFailures", () => {
     const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
 
     expect(causes).toEqual([
-      "the rescue failed at the stage step: ignored path",
+      "the rescue failed at the stage step (the tree is still dirty): ignored path",
       "the base branch pull failed: fatal: Not possible to fast-forward, aborting.",
     ]);
   });
@@ -904,5 +950,40 @@ describe("describePreflightFailures", () => {
     expect(causes).toEqual([
       "the base branch checkout failed: error: pathspec 'develop' did not match",
     ]);
+  });
+});
+
+// ── Where a failed rescue left the work ──────────────────────────────────────
+
+// The steps are additive, so "what is left behind" is different at each of
+// them. Both reporting surfaces read this, which is why it is pinned directly:
+// the tick summary is the only place the pre-flight appears when no item was
+// blocked, and it must not say "the tree is still dirty" about a rescue that
+// got as far as committing and pushing.
+describe("describeRescueRemains", () => {
+  it.each([
+    [
+      { kind: "failed", step: "stage", detail: "x" },
+      "the tree is still dirty",
+    ],
+    [
+      { kind: "failed", step: "branch", detail: "x" },
+      "the tree is still dirty",
+    ],
+    [
+      { kind: "failed", step: "commit", detail: "x", branch: "rescue/a", createdBranch: "rescue/a" },
+      "the tree is still dirty and rescue/a carries none of it",
+    ],
+    [
+      { kind: "failed", step: "push", detail: "x", branch: "rescue/a", createdBranch: "rescue/a" },
+      "the work is committed on rescue/a but not pushed",
+    ],
+    [
+      { kind: "failed", step: "pr", detail: "x", branch: "feature/x" },
+      "the work is committed and pushed on feature/x, without a draft pull request",
+    ],
+  ] as const)("describes the $step step", async (rescue, expected) => {
+    const { describeRescueRemains } = await hygiene();
+    expect(describeRescueRemains(rescue)).toBe(expected);
   });
 });
