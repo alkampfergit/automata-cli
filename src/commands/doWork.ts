@@ -57,6 +57,7 @@ import {
 import { prepareBaseBranch, preparePrBranch } from "../git/workspaceService.js";
 import {
   describePreflightFailures,
+  describeRescueRemains,
   runRepoHygiene,
   type HygieneReport,
   type PruneOutcome,
@@ -1828,7 +1829,7 @@ function describeRescue(rescue: HygieneReport["rescue"]): string {
     case "would-rescue":
       return `would rescue onto ${rescue.branch}`;
     case "failed":
-      return `${rescue.step} failed — ${rescue.detail}; the tree is still dirty and nothing was discarded`;
+      return `${rescue.step} failed — ${rescue.detail}; ${describeRescueRemains(rescue)}; nothing was discarded`;
   }
 }
 

@@ -27,8 +27,16 @@ failures onto the per-item skip lines so the two causes can be read apart.
 - **Prune protection**: the branch the rescue created — or, in a dry run, would create — is off limits
   to the same tick's prune phase. Previously an empty branch left by a failed rescue read as "nothing
   outside the base branch" and was deleted while the work it was made for was still uncommitted.
-- **`RescueOutcome`**: the `failed` variant gained an optional `createdBranch`, so a failure after the
-  branch was made names it — in the log, in the `--json` `preflight` object, and in the per-item skip.
+- **`RescueOutcome`**: the `failed` variant became a named `RescueFailure` interface carrying an
+  optional `branch` — the branch the rescue was committing onto, once it exists in the checkout — and
+  an optional `createdBranch`, set when that branch is one the rescue itself created. A failure past
+  that point names the branch in the log, in the `--json` `preflight` object, in the tick summary and
+  in the per-item skip.
+- **`describeRescueRemains(rescue)`**: new export saying where a failed rescue left the work, per step
+  — the tree for a `stage`, `branch` or `commit` failure, a local commit for a `push` failure, an
+  unreviewed pushed branch for a `pr` failure. Shared by the skip suffix and the tick summary so the
+  two cannot drift, and so the summary stops claiming "the tree is still dirty" about a rescue that
+  had in fact committed and pushed.
 - **`describePreflightFailures(report)`**: new export returning the rescue failure and the
   base-preparation failure as two independent, human-readable causes.
 - **Per-item skips in `do-work`**: when the pre-flight failed, the skip progress line, the tick
@@ -57,7 +65,9 @@ failures onto the per-item skip lines so the two causes can be read apart.
 - **Unit (`tests/unit/doWork.cmd.test.ts`)**: a skipped item's progress line and summary detail carry
   the rescue cause, carry both causes when the base pull also failed, and are byte-for-byte unchanged
   after a clean pre-flight.
-- **Full suite**: `npm test` (1051 tests, 33 files) and `npm run lint` pass; `npm run build` succeeds.
+- **Unit (`describeRescueRemains`)**: every step's wording pinned directly, since the tick summary is
+  the only report an operator gets when no item was blocked.
+- **Full suite**: `npm test` (1058 tests, 33 files) and `npm run lint` pass; `npm run build` succeeds.
 
 ## Notes
 
@@ -67,3 +77,10 @@ failures onto the per-item skip lines so the two causes can be read apart.
 - `PrepareFailureReason` was left a closed union on purpose; the pre-flight cause is appended to the
   existing reasons rather than introducing a new one, since the JSON output and the operation log
   consume those values.
+- Review round (Copilot on PR #70), all three addressed: the commit-step failure now names its branch
+  on the log line and in the summary, not only in the skip suffix; the `docs/do-work.md` branch-
+  selection bullet and the skip-line example were corrected to match the stage-before-branch ordering
+  (the old example showed a `stage` failure naming a branch, which that ordering makes impossible);
+  and the diverged-base-branch section now says which turns are actually stopped — `issue-discuss`
+  items prepare the base branch and skip, while `pr-work` and `pr-orphan` items prepare their own head
+  branch and still run.
