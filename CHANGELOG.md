@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-16
+
 ### Added
 
 - `do-work` claims an issue and its pull request only when they are unassigned, so a human already working on an item

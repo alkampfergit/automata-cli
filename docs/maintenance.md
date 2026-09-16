@@ -141,6 +141,9 @@ no bullet.
 2. Add a fresh, empty `## [Unreleased]` above it.
 3. Commit, then run `automata git publish-release X.Y.Z`.
 
+Steps 1 and 2 may also land in the last pull request merged before the cut, which is the same thing once it reaches
+`develop` — `0.7.0` was rolled that way, in the branch that rebuilt this file.
+
 ### Why it exists alongside the GitHub release notes
 
 The CI `release` job creates the GitHub release with `generate_release_notes: true`, so a per-commit list is already
