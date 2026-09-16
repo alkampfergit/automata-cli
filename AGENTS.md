@@ -22,6 +22,7 @@ A command-line interface tool built with TypeScript and commander.js.
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
 - After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
+- A user-visible change (command, flag, config key, output format, install requirement) gets a bullet under `## [Unreleased]` in `CHANGELOG.md`, in the same commit. Internal refactors, test-only changes and spec-kit artifacts do not. The format, the categories and what a release does to `Unreleased` are in `docs/maintenance.md`.
 
 ## Documentation Convention
 

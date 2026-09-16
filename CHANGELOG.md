@@ -1,6 +1,145 @@
 # Changelog
 
-## [0.1.0] - Initial Release
+All notable changes to `automata-cli`, newest first. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-- Initial project setup
-- Basic CLI structure with commander.js
+The version headings come from the git tags on `master`, not from `package.json` — that field stays at `0.1.0` and is
+rewritten by CI at publish time. Entries for `0.2.0` through `0.6.0` were reconstructed from git history after the fact;
+see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this file current from here on.
+
+## [Unreleased]
+
+### Added
+
+- `do-work` claims an issue and its pull request only when they are unassigned, so a human already working on an item
+  is never taken over.
+
+### Fixed
+
+- `do-work` pre-flight rescue no longer gives up when a stale run lock is ignored, and now reports what each pre-flight
+  step actually did instead of failing silently.
+- The rescue branch is named consistently in the output, the operation log and the docs.
+- The `do-work` plan line now says explicitly that an orphan pull request is not claimed.
+
+### Changed
+
+- Dependabot is restricted to security updates only. There is deliberately no `.github/dependabot.yml`: version
+  updates re-proposed the majors this project holds back on purpose.
+
+## [0.6.0] - 2026-09-10
+
+### Added
+
+- `do-work` gained a pre-flight repository hygiene pass — rescue an abandoned branch, pull, prune merged branches —
+  before it picks up work.
+- `do-work` writes an operation log, so a tick's decisions can be reconstructed afterwards.
+- `do-work` handles orphaned pull requests: open PRs that close no issue in the repository are picked up as their own
+  turn kind.
+- `--effort` on every AI-invoking command, plus a `doWork.effort` config key.
+- The executor and the model can be chosen from the triggering message, so a comment can ask for Codex or a specific
+  model.
+
+### Changed
+
+- **Node.js 22.12 or newer is required.** Earlier releases documented Node 18+/20+; the dependency refresh moved the
+  floor, set by `commander@15` and `ink@7`. See [docs/maintenance.md](docs/maintenance.md#supported-nodejs-versions).
+- All direct dependencies were refreshed and the plugin and devcontainer setup was updated.
+
+### Fixed
+
+- The Codex TOML override is escaped correctly, configured effort is trimmed, and the test stubs were hardened.
+
+### Security
+
+- All 9 outstanding dependency advisories were cleared, and the SonarCloud security findings and code smells — including
+  the duplicated `curl` TLS flags — were resolved.
+- The supported-versions section of the security policy was revised.
+
+## [0.5.0] - 2026-09-09
+
+### Added
+
+- `do-work`, the autonomous orchestrator: one tick finds the open issues whose newest authorized message has not been
+  answered and answers them.
+- `execute-prompt check-issue`, which reports whether an issue has new messages to respond to.
+
+### Changed
+
+- Spec Kit was updated, and the Claude skills under `.claude/skills/` are now exposed to Codex through symlinks so both
+  agents see the same set.
+
+## [0.4.0] - 2026-04-08
+
+### Added
+
+- `implement-next` selects across multiple issues, with `--take-first` and `--limit`.
+- `execute` replaced the `test` command group and gained `--with`, `--silent` and `--model`.
+
+### Changed
+
+- The AI options (`--with`, `--model`, `--silent`, `--push`) are unified across every AI-invoking command.
+- `execute-prompt` parameters were normalized so all prompts take the same shape.
+- An issue and the pull request that implements it are linked and tracked together.
+
+### Fixed
+
+- Review feedback on the AI options and on the PR-linking feature was addressed.
+- The test phase was sped up.
+
+## [0.3.0] - 2026-04-01
+
+### Added
+
+- A `test` command group that invokes Claude Code.
+- `--codex` on `implement-next`, and a `test codex` command, so Codex can be used as the executor.
+- SonarCloud integration, an expanded config wizard and the `execute-prompt` command.
+- `get-pr-info` reports actionable SonarCloud failure detail: gate violations, issues, and security hotspots with
+  location, rule and remediation.
+- A security policy (`SECURITY.md`).
+
+### Changed
+
+- Prompt configuration is stored as `.md` file references under `.automata/` instead of inline strings, so prompts can
+  be edited as ordinary files.
+- The checkout action in CI was bumped to v6.
+
+### Fixed
+
+- The test suite no longer deletes a real `.automata` configuration.
+- Several `implement-next` bugs.
+
+## [0.2.2] - 2026-03-31
+
+### Security
+
+- Published artifacts carry build provenance attestation.
+
+## [0.2.1] - 2026-03-31
+
+### Changed
+
+- A clearer readme for the npm package page.
+
+## [0.2.0] - 2026-03-31
+
+### Added
+
+- `config` — an ink-based configuration wizard, plus `config set type`.
+- `git get-pr-info` and `git finish-feature`.
+- `git get-pr-comments`, listing the open GitHub review comments.
+- `git publish-release`, the full GitFlow release sequence.
+- `get-ready`, which discovers a GitHub issue and hands it to Claude Code.
+- `get-pr-info` lists each check with its pass/fail status and the failure detail.
+- Azure DevOps remotes are recognised, with the gaps documented in [docs/azdo-gap.md](docs/azdo-gap.md).
+
+### Fixed
+
+- Version calculation when the repository has no tags yet.
+
+## [0.1.0] - 2026-03-29
+
+### Added
+
+- Initial project setup.
+- Basic CLI structure with commander.js.
