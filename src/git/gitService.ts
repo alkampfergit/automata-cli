@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readConfig } from "../config/configStore.js";
 import * as azdoService from "../config/azdoService.js";
 
@@ -949,14 +950,49 @@ export function describeDivergence(upstream: string, head: string): DivergenceRe
   return { commits, merges: count };
 }
 
-/** `git rebase <ref>` — replay the current branch onto `ref`. */
+/**
+ * `git rebase <ref>` — replay the current branch onto `ref`.
+ *
+ * Unlike the other wrappers this reports stdout *and* stderr. git writes the
+ * `CONFLICT (content): Merge conflict in <file>` lines — the only part of the
+ * output that names what actually failed — to stdout, so a caller reporting
+ * `stderr` alone would tell the operator a rebase conflicted and nothing more.
+ */
 export function rebaseOnto(ref: string): GitCommandResult {
-  return gitCommand(["rebase", ref]);
+  const { stdout, stderr, status } = run("git", ["rebase", ref]);
+  const detail = [stdout.trim(), stderr.trim()].filter((part) => part.length > 0).join("\n");
+  return { ok: status === 0, stderr: detail };
 }
 
 /** `git rebase --abort` — back to the tip the branch was on before the rebase. */
 export function abortRebase(): GitCommandResult {
   return gitCommand(["rebase", "--abort"]);
+}
+
+/** The git state directories that exist only while a rebase is halted mid-way. */
+const REBASE_STATE_DIRS = ["rebase-merge", "rebase-apply"];
+
+/**
+ * Is a rebase halted part-way through in this checkout?
+ *
+ * `git rebase` exits non-zero for two unrelated situations: a replayed commit
+ * conflicted, which leaves the rebase in progress to be resolved or aborted;
+ * or git refused before replaying anything — a pre-rebase hook that rejected
+ * it, a locked ref, an upstream that cannot be read. Only the first is a
+ * conflict, and only the first has anything to abort.
+ *
+ * `rebase-merge` is the state directory of the merge-based rebase and
+ * `rebase-apply` of the `am`-based one. `git rev-parse --git-path` resolves
+ * both against the real git directory, which a linked worktree does not share
+ * with the main checkout.
+ */
+export function isRebaseInProgress(): boolean {
+  return REBASE_STATE_DIRS.some((name) => {
+    const { stdout, status } = run("git", ["rev-parse", "--git-path", name]);
+    if (status !== 0) return false;
+    const path = stdout.trim();
+    return path.length > 0 && existsSync(path);
+  });
 }
 
 export function fetchPrune(): void {

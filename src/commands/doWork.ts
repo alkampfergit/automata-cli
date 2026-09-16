@@ -82,6 +82,15 @@ type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferr
  */
 let inFlightMarker: { marker: MarkerRef; item: WorkItem } | null = null;
 
+/**
+ * How the item currently running got its branch synchronised, so a throw after
+ * the branch was already moved still reaches the operation log. `runTick`
+ * catches an exception from `processItem` and builds its own report, which
+ * cannot see the one being assembled inside — and a reset or a rebase that
+ * happened is exactly what an operator reading the log afterwards needs.
+ */
+let inFlightSync: string | null = null;
+
 interface DoWorkOptions {
   with?: string;
   model?: string;
@@ -1225,6 +1234,7 @@ async function processItem(
   preflightCauses: string[],
 ): Promise<ItemReport> {
   progress(`\n${itemLabel(planned)} ${planned.turn}: ${planned.reason}\n`);
+  inFlightSync = null;
 
   // The tick's plan was built before any model ran, and an earlier item can take
   // a long time. Re-read this issue now, so a message that arrived in the
@@ -1271,6 +1281,7 @@ async function processItem(
   // Carried on `base`, so every later return — answered, failed or skipped for
   // another reason — records how the branch got here.
   base.sync = prepared.strategy;
+  inFlightSync = prepared.strategy;
   // Only the recoveries are announced. A fast-forward is what happens on nearly
   // every item, and a line per item saying so would bury the ones that matter.
   if (prepared.strategy !== "fast-forward" && prepared.strategy !== "tracking-branch") {
@@ -1739,6 +1750,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
         turn: item.turn,
         outcome: "failed",
         detail: (err as Error).message,
+        sync: inFlightSync ?? undefined,
       };
     }
     // The cap counts model runs. An item that failed before reaching the

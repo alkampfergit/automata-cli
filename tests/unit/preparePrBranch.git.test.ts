@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { preparePrBranch } from "../../src/git/workspaceService.js";
+import { isRebaseInProgress } from "../../src/git/gitService.js";
 
 /**
  * The end-to-end proof for issue #73, against a real `git` and a real remote.
@@ -114,6 +115,24 @@ describe("preparePrBranch against a real git remote", () => {
     expect(sha("HEAD")).toBe(unpushed);
   });
 
+  it("reports a rebase git refused to start as pull-failed, without moving the branch", () => {
+    // The branch qualifies for the rebase, but git never replays anything: the
+    // pre-rebase hook rejects it. There is then no halted rebase to abort and
+    // no conflict to resolve, so calling it `rebase-conflict` would describe
+    // something that did not happen.
+    divergeEquivalently();
+    const before = sha("HEAD");
+    writeFileSync(join(repo, ".git", "hooks", "pre-rebase"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    expect(preparePrBranch(BRANCH)).toMatchObject({
+      ok: false,
+      reason: "pull-failed",
+      detail: expect.stringContaining("the rebase never started"),
+    });
+    expect(sha("HEAD")).toBe(before);
+    expect(isRebaseInProgress()).toBe(false);
+  });
+
   it("refuses a dirty tree before touching anything", () => {
     divergeEquivalently();
     const before = sha("HEAD");
@@ -140,5 +159,28 @@ describe("preparePrBranch against a real git remote", () => {
     expect(preparePrBranch(other)).toMatchObject({ ok: true, branch: other });
     expect(sha("HEAD")).toBe(tip);
     expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(other);
+  });
+});
+
+/**
+ * The primitive that tells the two non-zero `git rebase` exits apart. Only a
+ * real git can produce a halted rebase, and the whole distinction rests on the
+ * state directory it leaves behind.
+ */
+describe("isRebaseInProgress against a real git", () => {
+  it("is false with no rebase, true while one is halted, false again after the abort", () => {
+    expect(isRebaseInProgress()).toBe(false);
+
+    // Two branches editing the same line: replaying one onto the other stops
+    // on the conflict and leaves the rebase in progress.
+    git(repo, "checkout", "--quiet", "-b", "theirs");
+    commit("theirs", "c.txt", "theirs\n");
+    git(repo, "checkout", "--quiet", BRANCH);
+    commit("ours", "c.txt", "ours\n");
+    expect(() => git(repo, "rebase", "theirs")).toThrow();
+
+    expect(isRebaseInProgress()).toBe(true);
+    git(repo, "rebase", "--abort");
+    expect(isRebaseInProgress()).toBe(false);
   });
 });
