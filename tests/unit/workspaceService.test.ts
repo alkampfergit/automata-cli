@@ -45,7 +45,12 @@ beforeEach(() => {
   mockCreateTrackingBranch.mockReturnValue(ok());
   mockFetchBranch.mockReturnValue(ok());
   mockPullFastForwardOnly.mockReturnValue(ok());
-  mockRevParse.mockReturnValue(null);
+  // Two different questions go through `revParse`: where the remote-tracking
+  // ref was (unknown by default) and whether the local branch already exists
+  // (it does, so the ordinary case is a fast-forward and not a first sighting).
+  mockRevParse.mockImplementation((ref: string) =>
+    ref.startsWith("refs/heads/") ? "localsha" : null,
+  );
   mockIsAncestorCommit.mockReturnValue(false);
   mockResetHardTo.mockReturnValue(ok());
   // Null is "nothing could be established", which is the answer that makes
@@ -53,9 +58,10 @@ beforeEach(() => {
   mockDescribeDivergence.mockReturnValue(null);
   mockRebaseOnto.mockReturnValue(ok());
   mockAbortRebase.mockReturnValue(ok());
-  // A failing `git rebase` that left state behind is the conflict case; the
-  // tests that exercise a refusal before the replay set this to false.
-  mockIsRebaseInProgress.mockReturnValue(true);
+  // Nothing halted in the checkout: this is asked once before the replay, to
+  // establish that any state found afterwards is ours, and once after a failure
+  // to tell a conflict from a rebase git refused to start.
+  mockIsRebaseInProgress.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -153,6 +159,34 @@ describe("preparePrBranch", () => {
     expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
   });
 
+  it("reports a branch git guessed into existence as a first sighting, not a fast-forward", async () => {
+    // After the fetch there is exactly one remote carrying the branch, so
+    // `git checkout <branch>` creates the local ref and succeeds. Nothing was
+    // fast-forwarded: the branch did not exist a moment earlier, and the
+    // operation log has to say which of the two happened.
+    mockRevParse.mockReturnValue(null);
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    expect(preparePrBranch("feature/042")).toEqual({
+      ok: true,
+      branch: "feature/042",
+      strategy: "tracking-branch",
+    });
+    expect(mockCheckoutBranch).toHaveBeenCalledWith("feature/042");
+    expect(mockCreateTrackingBranch).not.toHaveBeenCalled();
+  });
+
+  it("reads the local ref before the checkout that can create it", async () => {
+    const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+    preparePrBranch("feature/042");
+    const localRead = mockRevParse.mock.calls.findIndex(
+      (call) => call[0] === "refs/heads/feature/042",
+    );
+    expect(localRead).toBeGreaterThanOrEqual(0);
+    expect(mockRevParse.mock.invocationCallOrder[localRead]).toBeLessThan(
+      mockCheckoutBranch.mock.invocationCallOrder[0],
+    );
+  });
+
   it("reports a failure to create the branch", async () => {
     mockCheckoutBranch.mockReturnValue(fail("no local branch"));
     mockCreateTrackingBranch.mockReturnValue(fail("fatal: 'origin/feature/042' is not a commit"));
@@ -177,6 +211,10 @@ describe("preparePrBranch", () => {
     // commit this checkout made and never pushed. Nothing may be discarded.
     mockRevParse.mockReturnValue("aaa");
     mockIsAncestorCommit.mockReturnValue(false);
+    mockDescribeDivergence.mockReturnValue({
+      commits: [{ sha: "ffffff1", alreadyUpstream: false }],
+      merges: 0,
+    });
     const { preparePrBranch } = await import("../../src/git/workspaceService.js");
     expect(preparePrBranch("feature/042")).toMatchObject({
       ok: false,
@@ -283,12 +321,25 @@ describe("preparePrBranch", () => {
     // every tick forever.
     function divergedWithAllCommitsUpstream(): void {
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      // The local branch exists and the remote-tracking ref was never seen
+      // before the fetch; once the rebase has run, both refs read the same tip,
+      // which is what replaying nothing but already-upstream commits produces.
+      mockRevParse.mockImplementation((ref: string) => {
+        if (mockRebaseOnto.mock.calls.length > 0) return "remotesha";
+        return ref.startsWith("refs/heads/") ? "localsha" : null;
+      });
       mockDescribeDivergence.mockReturnValue({
         commits: [{ sha: "32d7a0c", alreadyUpstream: true }],
         merges: 0,
       });
     }
+
+    /** Nothing halted before the replay, a halted rebase after it: ours. */
+    function ourRebaseHalts(stderr: string): void {
+      mockRebaseOnto.mockReturnValue(fail(stderr));
+      mockIsRebaseInProgress.mockReturnValueOnce(false).mockReturnValue(true);
+    }
+
 
     it("rebases onto the remote when every local-only commit is already upstream", async () => {
       divergedWithAllCommitsUpstream();
@@ -317,7 +368,9 @@ describe("preparePrBranch", () => {
 
     it("refuses when even one local-only commit is not upstream", async () => {
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue({
         commits: [
           { sha: "32d7a0c", alreadyUpstream: true },
@@ -339,7 +392,9 @@ describe("preparePrBranch", () => {
       // The singular and the plural are separate branches of the message, and
       // an operator reads this line out of cron mail.
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue({
         commits: [
           { sha: "ffffff1", alreadyUpstream: false },
@@ -361,7 +416,9 @@ describe("preparePrBranch", () => {
       mockPullFastForwardOnly.mockReturnValue(
         fail("fatal: Unable to create '.git/index.lock': File exists."),
       );
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue({ commits: [], merges: 0 });
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
       const result = preparePrBranch("feature/042");
@@ -382,7 +439,9 @@ describe("preparePrBranch", () => {
       // `git cherry` cannot compute a patch-id for a merge and omits it, so a
       // listing that looks entirely already-upstream can still be hiding work.
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue({
         commits: [{ sha: "32d7a0c", alreadyUpstream: true }],
         merges: 1,
@@ -394,20 +453,28 @@ describe("preparePrBranch", () => {
 
     it("refuses when the divergence could not be read at all", async () => {
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue(null);
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
-      expect(preparePrBranch("feature/042")).toMatchObject({
-        ok: false,
-        reason: "pull-failed",
-        detail: expect.stringContaining("could not be listed"),
-      });
+      const result = preparePrBranch("feature/042");
+      expect(result).toMatchObject({ ok: false, reason: "pull-failed" });
+      const detail = (result as { detail: string }).detail;
+      // Nothing was read, so nothing may be asserted: neither a divergence nor
+      // `git reset --hard` as the remedy for one that was never established.
+      expect(detail).toContain("could not be established");
+      expect(detail).toContain("feature/042 is untouched");
+      expect(detail).not.toContain("has diverged");
+      expect(detail).not.toContain("git reset --hard");
       expect(mockRebaseOnto).not.toHaveBeenCalled();
     });
 
     it("refuses when there is no local-only commit to explain the divergence", async () => {
       mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
-      mockRevParse.mockReturnValue(null);
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/remotes/") ? null : "localsha",
+      );
       mockDescribeDivergence.mockReturnValue({ commits: [], merges: 0 });
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
       expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "pull-failed" });
@@ -418,7 +485,7 @@ describe("preparePrBranch", () => {
       // Leaving the rebase in progress would make the next tick see a conflicted
       // index — a dirty tree — and refuse every item, not just this one.
       divergedWithAllCommitsUpstream();
-      mockRebaseOnto.mockReturnValue(fail("CONFLICT (content): Merge conflict in f.txt"));
+      ourRebaseHalts("CONFLICT (content): Merge conflict in f.txt");
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
       expect(preparePrBranch("feature/042")).toEqual({
         ok: false,
@@ -436,7 +503,6 @@ describe("preparePrBranch", () => {
       // operator looking for one.
       divergedWithAllCommitsUpstream();
       mockRebaseOnto.mockReturnValue(fail("error: cannot lock ref 'refs/heads/feature/042'"));
-      mockIsRebaseInProgress.mockReturnValue(false);
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
       expect(preparePrBranch("feature/042")).toEqual({
         ok: false,
@@ -447,9 +513,63 @@ describe("preparePrBranch", () => {
       expect(mockAbortRebase).not.toHaveBeenCalled();
     });
 
+    it("refuses a rebase already in progress instead of aborting someone else's", async () => {
+      // The checkout can hold a halted rebase with a clean tree — a paused
+      // manual one, an `--exec` that failed, an earlier session that stopped.
+      // git then refuses ours on account of it, and treating that refusal as
+      // our own conflict would abort work automata never started.
+      divergedWithAllCommitsUpstream();
+      mockIsRebaseInProgress.mockReturnValue(true);
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      const result = preparePrBranch("feature/042");
+      expect(result).toMatchObject({ ok: false, reason: "pull-failed" });
+      expect((result as { detail: string }).detail).toContain("automata did not start it");
+      expect(mockRebaseOnto).not.toHaveBeenCalled();
+      expect(mockAbortRebase).not.toHaveBeenCalled();
+    });
+
+    it("asks whether a rebase is in progress before starting one", async () => {
+      // The order is the whole argument for the abort being safe: nothing was
+      // halted beforehand, so whatever is halted afterwards is ours.
+      divergedWithAllCommitsUpstream();
+      ourRebaseHalts("CONFLICT (content): Merge conflict in f.txt");
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      preparePrBranch("feature/042");
+      expect(mockIsRebaseInProgress.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRebaseOnto.mock.invocationCallOrder[0],
+      );
+      expect(mockAbortRebase.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockRebaseOnto.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("refuses when a successful rebase did not land on the remote tip", async () => {
+      // Every local-only commit was already upstream, so the replay has to end
+      // on the remote tip. A success that ends anywhere else left a commit
+      // behind: the branch is still divergent, and reporting it synchronized
+      // would send the loop round the same failure on every later tick.
+      divergedWithAllCommitsUpstream();
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/heads/") ? "localsha" : "remotesha",
+      );
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      const result = preparePrBranch("feature/042");
+      expect(result).toMatchObject({ ok: false, reason: "pull-failed" });
+      expect((result as { detail: string }).detail).toContain("did not land on the remote tip");
+    });
+
+    it("says so when the branch after the rebase cannot be read at all", async () => {
+      divergedWithAllCommitsUpstream();
+      mockRevParse.mockImplementation((ref: string) =>
+        ref.startsWith("refs/heads/") && mockRebaseOnto.mock.calls.length > 0 ? null : "remotesha",
+      );
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      expect(preparePrBranch("feature/042")).toMatchObject({ ok: false, reason: "pull-failed" });
+    });
+
     it("says so when even the abort failed", async () => {
       divergedWithAllCommitsUpstream();
-      mockRebaseOnto.mockReturnValue(fail("CONFLICT"));
+      ourRebaseHalts("CONFLICT");
       mockAbortRebase.mockReturnValue(fail("fatal: no rebase in progress"));
       const { preparePrBranch } = await import("../../src/git/workspaceService.js");
       expect(preparePrBranch("feature/042")).toMatchObject({
