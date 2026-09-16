@@ -1998,6 +1998,61 @@ describe("gitService branch primitives", () => {
     expect(checkoutBranch("nope")).toEqual({ ok: false, stderr: "fatal: nope" });
   });
 
+  it("checkoutAndPull names --ff-only on the command line", async () => {
+    // A bare `git pull` here would take its strategy from the machine's
+    // `pull.rebase` / `pull.ff`, and on a machine with neither it fails outright
+    // with "Need to specify how to reconcile divergent branches". The strategy
+    // is part of this command's contract, so it is asserted rather than left to
+    // the calling tests, which only observe that a pull happened.
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { checkoutAndPull } = await import("../../src/git/gitService.js");
+    checkoutAndPull("develop");
+    expect(mockSpawnSync).toHaveBeenNthCalledWith(
+      1,
+      "git",
+      ["checkout", "develop"],
+      expect.anything(),
+    );
+    expect(mockSpawnSync).toHaveBeenNthCalledWith(2, "git", ["pull", "--ff-only"], expect.anything());
+  });
+
+  it("checkoutAndPull reports a pull that could not fast-forward", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(ok(""))
+      .mockReturnValueOnce(fail("fatal: Not possible to fast-forward, aborting.\n"));
+    const { checkoutAndPull } = await import("../../src/git/gitService.js");
+    expect(() => {
+      checkoutAndPull("develop");
+    }).toThrow("Failed to pull develop: fatal: Not possible to fast-forward, aborting.");
+  });
+
+  it("rebaseOnto reports stdout as well as stderr", async () => {
+    // git writes `CONFLICT (content): …` — the only part naming what failed —
+    // to stdout, so a diagnostic built from stderr alone tells the operator a
+    // rebase conflicted and nothing else.
+    mockSpawnSync.mockReturnValue({
+      stdout: "CONFLICT (content): Merge conflict in f.txt\n",
+      stderr: "error: could not apply 32d7a0c\n",
+      status: 1,
+    });
+    const { rebaseOnto } = await import("../../src/git/gitService.js");
+    expect(rebaseOnto("refs/remotes/origin/feature/042")).toEqual({
+      ok: false,
+      stderr: "CONFLICT (content): Merge conflict in f.txt\nerror: could not apply 32d7a0c",
+    });
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "git",
+      ["rebase", "refs/remotes/origin/feature/042"],
+      expect.anything(),
+    );
+  });
+
+  it("rebaseOnto keeps a one-sided diagnostic on one line", async () => {
+    mockSpawnSync.mockReturnValue(fail("fatal: invalid upstream\n"));
+    const { rebaseOnto } = await import("../../src/git/gitService.js");
+    expect(rebaseOnto("nope")).toEqual({ ok: false, stderr: "fatal: invalid upstream" });
+  });
+
   it("revParse returns the sha of an existing ref", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "deadbeef\n", stderr: "", status: 0 });
     const { revParse } = await import("../../src/git/gitService.js");

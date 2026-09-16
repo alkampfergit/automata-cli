@@ -23,7 +23,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 - A new `rebase-conflict` skip reason for a pull-request branch whose automatic rebase conflicted. The rebase is
   aborted first, so the branch is back on the tip it started from and the next tick does not see a conflicted index as
-  a dirty working tree.
+  a dirty working tree. It means a conflict and nothing else: a `git rebase` that git refused before replaying
+  anything — a pre-rebase hook, a locked ref — is reported as `pull-failed` with `the rebase never started`, since
+  there is no conflict to resolve and nothing to abort. The conflict detail carries git's stdout as well as its
+  stderr, so the `CONFLICT (content): Merge conflict in <file>` lines reach the operator.
+- The operation log keeps the synchronization strategy on an item that failed *after* its branch was moved, so a
+  reset or a rebase is never lost from the log because a later GitHub call threw.
 - The operation log records how each branch was synchronized: a `sync=` field per item in `automata-work.log`, and a
   `sync=<strategy>:<count>` summary in `automata-execution.log` whenever an item needed more than a fast-forward or
   could not be synchronized at all.

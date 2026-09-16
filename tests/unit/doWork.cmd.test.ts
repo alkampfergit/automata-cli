@@ -964,6 +964,27 @@ describe("do-work build turn", () => {
     );
   });
 
+  it("keeps the strategy in the log when a later step throws the item out", async () => {
+    // The branch has already been moved by the time an exception escapes
+    // `processItem`; the tick catches it and builds its own report, which would
+    // otherwise drop the one fact an operator needs to understand the checkout
+    // they are looking at.
+    let prepared = false;
+    mockPreparePrBranch.mockImplementation(() => {
+      prepared = true;
+      return { ok: true, branch: "feature/042", strategy: "reset-to-remote" };
+    });
+    gh.getRepoSlug.mockImplementation(() => {
+      if (prepared) throw new Error("gh rate limited");
+      return { owner: "acme", repo: "widget" };
+    });
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as {
+      items: { sync?: string; outcome: string }[];
+    };
+    expect(tick.items[0]).toMatchObject({ outcome: "failed", sync: "reset-to-remote" });
+  });
+
   it("records a refused branch under its refusal reason", async () => {
     mockPreparePrBranch.mockReturnValue({
       ok: false,

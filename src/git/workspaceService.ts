@@ -10,6 +10,7 @@ import {
   describeDivergence,
   rebaseOnto,
   abortRebase,
+  isRebaseInProgress,
 } from "./gitService.js";
 import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
 
@@ -144,6 +145,18 @@ function rebaseOntoAlreadyAppliedRemote(headRefName: string): PrepareResult | nu
 
   const rebase = rebaseOnto(upstream);
   if (!rebase.ok) {
+    // A non-zero `git rebase` is not necessarily a conflict. git also refuses
+    // before it replays anything — a pre-rebase hook that rejected it, a locked
+    // ref, an unreadable upstream — and then there is no halted rebase to
+    // abort and nothing was moved. Calling that a conflict would send the
+    // operator looking for one that does not exist.
+    if (!isRebaseInProgress()) {
+      return {
+        ok: false,
+        reason: "pull-failed",
+        detail: `${rebase.stderr} — the rebase never started, so ${headRefName} is untouched`,
+      };
+    }
     // Leaving a rebase in progress would make the next tick see a conflicted
     // index, i.e. a dirty tree, and refuse *every* item rather than this one.
     const aborted = abortRebase();
@@ -166,11 +179,18 @@ function divergenceRefusal(headRefName: string, pullError: string): PrepareResul
     `refs/remotes/origin/${headRefName}`,
     `refs/heads/${headRefName}`,
   );
-  const unpushed =
+  const unpushedCount =
     divergence === null
-      ? "the local commits could not be listed"
-      : `${String(divergence.commits.filter((c) => !c.alreadyUpstream).length + divergence.merges)} of its ` +
-        `commits are not on origin/${headRefName}`;
+      ? 0
+      : divergence.commits.filter((c) => !c.alreadyUpstream).length + divergence.merges;
+  let unpushed: string;
+  if (divergence === null) {
+    unpushed = "the local commits could not be listed";
+  } else if (unpushedCount === 1) {
+    unpushed = `1 of its commits is not on origin/${headRefName}`;
+  } else {
+    unpushed = `${String(unpushedCount)} of its commits are not on origin/${headRefName}`;
+  }
   return {
     ok: false,
     reason: "pull-failed",

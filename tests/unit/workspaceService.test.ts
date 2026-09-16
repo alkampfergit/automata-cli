@@ -11,6 +11,7 @@ const mockResetHardTo = vi.fn();
 const mockDescribeDivergence = vi.fn();
 const mockRebaseOnto = vi.fn();
 const mockAbortRebase = vi.fn();
+const mockIsRebaseInProgress = vi.fn();
 
 // The git invocations live in gitService, which owns the process runner; this
 // module only sequences them, so that is what the tests pin down.
@@ -26,6 +27,7 @@ vi.mock("../../src/git/gitService.js", () => ({
   describeDivergence: (...a: unknown[]) => mockDescribeDivergence(...a),
   rebaseOnto: (...a: unknown[]) => mockRebaseOnto(...a),
   abortRebase: (...a: unknown[]) => mockAbortRebase(...a),
+  isRebaseInProgress: (...a: unknown[]) => mockIsRebaseInProgress(...a),
 }));
 
 function ok(): { ok: boolean; stderr: string } {
@@ -51,6 +53,9 @@ beforeEach(() => {
   mockDescribeDivergence.mockReturnValue(null);
   mockRebaseOnto.mockReturnValue(ok());
   mockAbortRebase.mockReturnValue(ok());
+  // A failing `git rebase` that left state behind is the conflict case; the
+  // tests that exercise a refusal before the replay set this to false.
+  mockIsRebaseInProgress.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -324,10 +329,28 @@ describe("preparePrBranch", () => {
       expect(preparePrBranch("feature/042")).toMatchObject({
         ok: false,
         reason: "pull-failed",
-        detail: expect.stringContaining("1 of its commits are not on origin/feature/042"),
+        detail: expect.stringContaining("1 of its commits is not on origin/feature/042"),
       });
       expect(mockRebaseOnto).not.toHaveBeenCalled();
       expect(mockResetHardTo).not.toHaveBeenCalled();
+    });
+
+    it("counts more than one unpushed commit in the plural", async () => {
+      // The singular and the plural are separate branches of the message, and
+      // an operator reads this line out of cron mail.
+      mockPullFastForwardOnly.mockReturnValue(fail("fatal: Not possible to fast-forward"));
+      mockRevParse.mockReturnValue(null);
+      mockDescribeDivergence.mockReturnValue({
+        commits: [
+          { sha: "ffffff1", alreadyUpstream: false },
+          { sha: "ffffff2", alreadyUpstream: false },
+        ],
+        merges: 0,
+      });
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      expect(preparePrBranch("feature/042")).toMatchObject({
+        detail: expect.stringContaining("2 of its commits are not on origin/feature/042"),
+      });
     });
 
     it("refuses when the range holds a merge commit", async () => {
@@ -379,6 +402,24 @@ describe("preparePrBranch", () => {
           "CONFLICT (content): Merge conflict in f.txt — the rebase was aborted, so feature/042 is back where it was",
       });
       expect(mockAbortRebase).toHaveBeenCalledWith();
+    });
+
+    it("reports a rebase git refused to start as pull-failed, not a conflict", async () => {
+      // A pre-rebase hook, a locked ref, an unreadable upstream: git exits
+      // non-zero without halting mid-replay. There is no conflict to resolve
+      // and nothing to abort, and saying "rebase-conflict" would send the
+      // operator looking for one.
+      divergedWithAllCommitsUpstream();
+      mockRebaseOnto.mockReturnValue(fail("error: cannot lock ref 'refs/heads/feature/042'"));
+      mockIsRebaseInProgress.mockReturnValue(false);
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      expect(preparePrBranch("feature/042")).toEqual({
+        ok: false,
+        reason: "pull-failed",
+        detail:
+          "error: cannot lock ref 'refs/heads/feature/042' — the rebase never started, so feature/042 is untouched",
+      });
+      expect(mockAbortRebase).not.toHaveBeenCalled();
     });
 
     it("says so when even the abort failed", async () => {

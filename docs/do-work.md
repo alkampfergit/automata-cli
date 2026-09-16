@@ -378,12 +378,18 @@ The third strategy is the one that keeps an *equivalent* divergence out of the s
 
 ```text
   skipped: pull-failed — fatal: Not possible to fast-forward, aborting. — the local feature/042 has diverged from
-  origin/feature/042 and 1 of its commits are not on origin/feature/042, so it was not synchronized automatically;
+  origin/feature/042 and 1 of its commits is not on origin/feature/042, so it was not synchronized automatically;
   inspect them with `git log origin/feature/042..feature/042` and `git reset --hard origin/feature/042` yourself
   once they are safe to lose
 ```
 
-If the rebase itself conflicts, it is aborted — so the branch is back on the exact tip it started from, with no rebase in progress — and the item is skipped as `rebase-conflict`, a reason of its own so it can be told apart from an ordinary divergence in the logs. Aborting matters beyond this one item: a rebase left in progress leaves a conflicted index, which the next tick reads as a dirty working tree and refuses *every* item for.
+If the rebase itself conflicts, it is aborted — so the branch is back on the exact tip it started from, with no rebase in progress — and the item is skipped as `rebase-conflict`, a reason of its own so it can be told apart from an ordinary divergence in the logs. Aborting matters beyond this one item: a rebase left in progress leaves a conflicted index, which the next tick reads as a dirty working tree and refuses *every* item for. The conflict detail carries git's stdout as well as its stderr, because the `CONFLICT (content): Merge conflict in <file>` lines — the only part naming what failed — are written to stdout.
+
+`rebase-conflict` means a conflict and nothing else. `git rebase` also exits non-zero when it refuses *before* replaying anything — a pre-rebase hook that rejected it, a locked ref, an upstream that cannot be read — and there is then no halted rebase to abort and no conflict to resolve. That case is reported as `pull-failed` with `the rebase never started`, so the two are not confused in the logs:
+
+```text
+  skipped: pull-failed — error: cannot lock ref 'refs/heads/feature/042': Unable to create '.git/refs/heads/feature/042.lock': File exists. — the rebase never started, so feature/042 is untouched
+```
 
 A dirty working tree is still refused before any of this, so uncommitted changes are never touched. The strategy, or the refusal, is recorded in the [operation log](#the-operation-log).
 
