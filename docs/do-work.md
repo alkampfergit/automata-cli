@@ -368,9 +368,11 @@ Every git command in this path names its strategy on the command line. Nothing d
 |---|---|---|---|
 | 1 | `fast-forward` | The local branch is behind the remote, or equal to it. | `git pull --ff-only origin <branch>`. |
 | 2 | `reset-to-remote` | The local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch — so every commit on it came from the remote and was rewritten there. | `git reset --hard origin/<branch>`. |
-| 3 | `rebase` | Every commit the local branch has and the remote does not is **already on the remote as the same patch**, under a different sha, and none of them is a merge commit. | `git rebase refs/remotes/origin/<branch>`, against the ref already fetched. The duplicates are skipped and the branch lands on the remote tip. |
+| 3 | `rebase` | Every commit the local branch has and the remote does not is **already on the remote as the same patch**, under a different sha, none of them is a merge commit, and no rebase is already in progress in the checkout. | `git rebase --no-reapply-cherry-picks refs/remotes/origin/<branch>`, against the ref already fetched. The duplicates are dropped and the branch lands on the remote tip. |
 
-A branch checked out for the first time is created from the remote directly and is reported as `tracking-branch`.
+A branch this checkout has never seen is reported as `tracking-branch`, whether `git checkout` guessed it into existence from the single matching remote-tracking ref or the explicit `git checkout -b <branch> origin/<branch>` fallback created it. Nothing was fast-forwarded in either case — the local branch did not exist a moment earlier.
+
+`--no-reapply-cherry-picks` is named for the same reason `--ff-only` is: with `rebase.reapplyCherryPicks` set in the repository, git replays the commits it was told are already upstream instead of dropping them, and the strategy would then mean something different on that machine. The outcome is checked rather than assumed — after a rebase that reports success, the branch must *be* the remote tip, because every commit that was replayed away was already there. A success that lands anywhere else is reported as `pull-failed` with `did not land on the remote tip`, since the branch is still divergent and calling it synchronized would repeat the same failure on every later tick.
 
 The third strategy is the one that keeps an *equivalent* divergence out of the stuck state. Two tips can hold identical trees and identical patches and still be different commits — the change reached the remote under another sha. `git cherry` is what decides: it compares patch ids, and only a range where every commit is marked as already applied upstream is eligible. Merge commits disqualify the branch outright, because `git cherry` cannot compute a patch id for one and leaves it out of its listing, so unpushed work behind a local merge would otherwise look like nothing at all.
 
@@ -384,6 +386,15 @@ The third strategy is the one that keeps an *equivalent* divergence out of the s
 ```
 
 If the rebase itself conflicts, it is aborted — so the branch is back on the exact tip it started from, with no rebase in progress — and the item is skipped as `rebase-conflict`, a reason of its own so it can be told apart from an ordinary divergence in the logs. Aborting matters beyond this one item: a rebase left in progress leaves a conflicted index, which the next tick reads as a dirty working tree and refuses *every* item for. The conflict detail carries git's stdout as well as its stderr, because the `CONFLICT (content): Merge conflict in <file>` lines — the only part naming what failed — are written to stdout.
+
+A rebase that is **already in progress** when the item comes up is never touched. A halted rebase can leave a clean working tree — a paused manual one, an `--exec` that failed — so it gets past the cleanliness gate, and git then refuses the new rebase on account of it. Aborting on that refusal would discard work `do-work` did not start, so the state is checked *before* the rebase begins and the item is skipped instead:
+
+```text
+  skipped: pull-failed — a rebase is already in progress in this checkout and automata did not start it, so
+  feature/042 was left untouched; finish it with `git rebase --continue` or drop it with `git rebase --abort`
+```
+
+That check is what makes the abort below safe: nothing was halted beforehand, so anything halted afterwards belongs to this run. It is specific to a rebase — git reuses the same `rebase-apply` directory for an interrupted `git am`, which is distinguished by the marker file inside it and is never treated as a rebase or aborted.
 
 `rebase-conflict` means a conflict and nothing else. `git rebase` also exits non-zero when it refuses *before* replaying anything — a pre-rebase hook that rejected it, a locked ref, an upstream that cannot be read — and there is then no halted rebase to abort and no conflict to resolve. That case is reported as `pull-failed` with `the rebase never started`, so the two are not confused in the logs:
 

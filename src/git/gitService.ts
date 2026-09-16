@@ -951,7 +951,15 @@ export function describeDivergence(upstream: string, head: string): DivergenceRe
 }
 
 /**
- * `git rebase <ref>` — replay the current branch onto `ref`.
+ * `git rebase --no-reapply-cherry-picks <ref>` — replay the current branch onto
+ * `ref`, dropping every commit already upstream as the same patch.
+ *
+ * The flag is named rather than left to default because `rebase.reapplyCherryPicks`
+ * is a repository-level setting: with it on, the commits the caller established
+ * were already upstream get replayed instead of dropped, so the same patch is
+ * offered to a tree that already carries it. This module refuses to depend on
+ * the machine's git configuration — that dependency is what made a diverged
+ * branch unrecoverable in the first place.
  *
  * Unlike the other wrappers this reports stdout *and* stderr. git writes the
  * `CONFLICT (content): Merge conflict in <file>` lines — the only part of the
@@ -959,7 +967,7 @@ export function describeDivergence(upstream: string, head: string): DivergenceRe
  * `stderr` alone would tell the operator a rebase conflicted and nothing more.
  */
 export function rebaseOnto(ref: string): GitCommandResult {
-  const { stdout, stderr, status } = run("git", ["rebase", ref]);
+  const { stdout, stderr, status } = run("git", ["rebase", "--no-reapply-cherry-picks", ref]);
   const detail = [stdout.trim(), stderr.trim()].filter((part) => part.length > 0).join("\n");
   return { ok: status === 0, stderr: detail };
 }
@@ -969,8 +977,16 @@ export function abortRebase(): GitCommandResult {
   return gitCommand(["rebase", "--abort"]);
 }
 
-/** The git state directories that exist only while a rebase is halted mid-way. */
-const REBASE_STATE_DIRS = ["rebase-merge", "rebase-apply"];
+/**
+ * The git state paths that exist only while a *rebase* is halted mid-way.
+ *
+ * `rebase-merge` belongs to the merge backend and is unambiguous. `rebase-apply`
+ * is not: git uses that same directory for an interrupted `git am`, and only the
+ * marker file inside it says which — `rebasing` for a rebase, `applying` for an
+ * `am`. Testing the directory would make someone's halted `git am` read as a
+ * rebase of ours, and the caller would then try to abort it.
+ */
+const REBASE_STATE_PATHS = ["rebase-merge", "rebase-apply/rebasing"];
 
 /**
  * Is a rebase halted part-way through in this checkout?
@@ -981,13 +997,14 @@ const REBASE_STATE_DIRS = ["rebase-merge", "rebase-apply"];
  * it, a locked ref, an upstream that cannot be read. Only the first is a
  * conflict, and only the first has anything to abort.
  *
- * `rebase-merge` is the state directory of the merge-based rebase and
- * `rebase-apply` of the `am`-based one. `git rev-parse --git-path` resolves
- * both against the real git directory, which a linked worktree does not share
- * with the main checkout.
+ * `git rev-parse --git-path` resolves the state paths against the real git
+ * directory, which a linked worktree does not share with the main checkout.
+ *
+ * This answers only whether a rebase is halted, not whose it is. The caller
+ * establishes that by asking before it starts one of its own.
  */
 export function isRebaseInProgress(): boolean {
-  return REBASE_STATE_DIRS.some((name) => {
+  return REBASE_STATE_PATHS.some((name) => {
     const { stdout, status } = run("git", ["rev-parse", "--git-path", name]);
     if (status !== 0) return false;
     const path = stdout.trim();

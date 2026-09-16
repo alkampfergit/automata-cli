@@ -2042,8 +2042,22 @@ describe("gitService branch primitives", () => {
     });
     expect(mockSpawnSync).toHaveBeenCalledWith(
       "git",
-      ["rebase", "refs/remotes/origin/feature/042"],
+      ["rebase", "--no-reapply-cherry-picks", "refs/remotes/origin/feature/042"],
       expect.anything(),
+    );
+  });
+
+  it("rebaseOnto names --no-reapply-cherry-picks so rebase.reapplyCherryPicks cannot change it", async () => {
+    // With that key on, the commits the caller established were already
+    // upstream get replayed onto a tree that already carries them instead of
+    // being dropped. The strategy may not depend on the machine's git config.
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { rebaseOnto } = await import("../../src/git/gitService.js");
+    rebaseOnto("refs/remotes/origin/feature/042");
+    const argv = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(argv).toContain("--no-reapply-cherry-picks");
+    expect(argv.indexOf("--no-reapply-cherry-picks")).toBeLessThan(
+      argv.indexOf("refs/remotes/origin/feature/042"),
     );
   });
 

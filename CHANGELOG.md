@@ -21,6 +21,20 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - A fast-forward that fails on a head branch holding nothing the remote does not — a stale `index.lock`, an
   unwritable ref, a hook that rejected the pull — is no longer reported as a divergence. The skip message names
   git's own error as the cause and no longer offers a `git reset --hard` for commits that do not exist.
+- A rebase that was already in progress in the checkout is never aborted by `do-work`. The state is checked before
+  the automatic rebase starts, and the item is skipped as `pull-failed` instead, so a paused manual rebase with a
+  clean tree is left exactly as it was. An interrupted `git am`, which git keeps in the same `rebase-apply`
+  directory, is likewise no longer mistaken for a rebase.
+- The automatic rebase names `--no-reapply-cherry-picks`, so a repository with `rebase.reapplyCherryPicks` set no
+  longer replays the commits that were established as already upstream. The branch is checked against the remote tip
+  afterwards, and a rebase that reported success without landing there is reported as `pull-failed` rather than
+  logged as synchronized.
+- A `pull-failed` whose divergence could not be read at all — `git cherry` failed on a broken ref or an unreadable
+  object — no longer claims the branch has diverged nor offers `git reset --hard` as the remedy. It says what could
+  not be established and leaves the branch untouched.
+- A pull-request branch this checkout has never seen is reported as `tracking-branch` in the operation log even when
+  `git checkout` guessed it into existence from the remote-tracking ref, instead of being logged as a fast-forward of
+  a branch that did not exist.
 
 ### Added
 

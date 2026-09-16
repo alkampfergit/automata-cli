@@ -43,7 +43,11 @@ export type PrepareFailureReason =
 export type SyncStrategy =
   /** `git pull --ff-only` succeeded — the ordinary case. */
   | "fast-forward"
-  /** The local branch did not exist and was created from the remote. */
+  /**
+   * The local branch did not exist and was created from the remote — either by
+   * `git checkout` guessing it from the single matching remote-tracking ref, or
+   * by the explicit fallback when that guess is unavailable.
+   */
   | "tracking-branch"
   /** The remote was force-pushed and every local commit demonstrably came from it. */
   | "reset-to-remote"
@@ -143,6 +147,22 @@ function rebaseOntoAlreadyAppliedRemote(headRefName: string): PrepareResult | nu
   if (divergence.commits.length === 0) return null;
   if (divergence.commits.some((commit) => !commit.alreadyUpstream)) return null;
 
+  // Ownership, before anything is started. A rebase halted here is someone
+  // else's — a paused manual one, a stale one left by an earlier session — and
+  // git would refuse ours on account of it. Without this check the refusal
+  // below would read as our own failure and `abortRebase` would throw that
+  // in-progress work away. Asking first is what makes the abort safe: nothing
+  // was in progress, so anything in progress afterwards is ours.
+  if (isRebaseInProgress()) {
+    return {
+      ok: false,
+      reason: "pull-failed",
+      detail:
+        `a rebase is already in progress in this checkout and automata did not start it, so ${headRefName} ` +
+        `was left untouched; finish it with \`git rebase --continue\` or drop it with \`git rebase --abort\``,
+    };
+  }
+
   const rebase = rebaseOnto(upstream);
   if (!rebase.ok) {
     // A non-zero `git rebase` is not necessarily a conflict. git also refuses
@@ -170,6 +190,24 @@ function rebaseOntoAlreadyAppliedRemote(headRefName: string): PrepareResult | nu
     };
   }
 
+  // Every local-only commit was already upstream and none was a merge, so
+  // replaying drops all of them and the branch must now *be* the remote tip.
+  // Checking it is what rules out a rebase that reported success while leaving
+  // a commit behind — the branch would still be divergent, and calling that a
+  // completed synchronization would send the loop round the same failure for
+  // ever, which is the defect this whole path exists to end.
+  const local = revParse(`refs/heads/${headRefName}`);
+  const remote = revParse(upstream);
+  if (local === null || remote === null || local !== remote) {
+    return {
+      ok: false,
+      reason: "pull-failed",
+      detail:
+        `the rebase of ${headRefName} onto origin/${headRefName} reported success but did not land on the remote ` +
+        `tip, so the branch is still out of sync; compare them with \`git log origin/${headRefName}..${headRefName}\``,
+    };
+  }
+
   return { ok: true, branch: headRefName, strategy: "rebase" };
 }
 
@@ -179,17 +217,32 @@ function divergenceRefusal(headRefName: string, pullError: string): PrepareResul
     `refs/remotes/origin/${headRefName}`,
     `refs/heads/${headRefName}`,
   );
+
+  // Nothing was established at all: `git cherry` itself failed, on a broken
+  // ref, an unreadable object, output this cannot parse. Claiming a divergence
+  // would assert what was never read, and offering `git reset --hard` as its
+  // remedy would put the one irreversible command in the hands of an operator
+  // who has not been told what is actually wrong.
+  if (divergence === null) {
+    return {
+      ok: false,
+      reason: "pull-failed",
+      detail:
+        `${pullError} — how the local ${headRefName} relates to origin/${headRefName} could not be established, ` +
+        `so nothing was changed and ${headRefName} is untouched; inspect it with ` +
+        `\`git log --oneline origin/${headRefName}...${headRefName}\` before deciding what to do`,
+    };
+  }
+
   const unpushedCount =
-    divergence === null
-      ? 0
-      : divergence.commits.filter((c) => !c.alreadyUpstream).length + divergence.merges;
+    divergence.commits.filter((c) => !c.alreadyUpstream).length + divergence.merges;
 
   // A fast-forward can also fail with nothing local-only to fast-forward over:
   // a stale `index.lock`, a ref this process cannot write, a hook that rejected
   // the pull. Diagnosing that as a divergence would send the operator hunting
   // for commits that do not exist — and, worse, offer a `git reset --hard` as
   // the remedy for what is really git's own error.
-  if (divergence !== null && unpushedCount === 0) {
+  if (unpushedCount === 0) {
     return {
       ok: false,
       reason: "pull-failed",
@@ -200,9 +253,7 @@ function divergenceRefusal(headRefName: string, pullError: string): PrepareResul
   }
 
   let unpushed: string;
-  if (divergence === null) {
-    unpushed = "the local commits could not be listed";
-  } else if (unpushedCount === 1) {
+  if (unpushedCount === 1) {
     unpushed = `1 of its commits is not on origin/${headRefName}`;
   } else {
     unpushed = `${String(unpushedCount)} of its commits are not on origin/${headRefName}`;
@@ -233,6 +284,14 @@ export function preparePrBranch(headRefName: string): PrepareResult {
     return { ok: false, reason: "checkout-failed", detail: fetched.stderr };
   }
 
+  // Read before the checkout, because the checkout can create it: given a
+  // single remote carrying the branch — and the fetch above has just made sure
+  // of that — `git checkout <branch>` guesses a local branch into existence and
+  // succeeds. That is still this checkout seeing the branch for the first time,
+  // and the operation log has to say so rather than report a fast-forward of a
+  // branch that did not exist a moment earlier.
+  const localExisted = revParse(`refs/heads/${headRefName}`) !== null;
+
   const checkout = checkoutBranch(headRefName);
   if (!checkout.ok) {
     const created = createTrackingBranch(headRefName);
@@ -256,5 +315,9 @@ export function preparePrBranch(headRefName: string): PrepareResult {
     return divergenceRefusal(headRefName, pull.stderr);
   }
 
-  return { ok: true, branch: headRefName, strategy: "fast-forward" };
+  return {
+    ok: true,
+    branch: headRefName,
+    strategy: localExisted ? "fast-forward" : "tracking-branch",
+  };
 }

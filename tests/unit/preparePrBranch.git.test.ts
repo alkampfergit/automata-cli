@@ -52,6 +52,10 @@ beforeEach(() => {
   // machine configured this way must behave exactly like one that is not. The
   // original defect was the opposite — behaviour that followed this key.
   git(repo, "config", "pull.rebase", "false");
+  // Same reasoning for the rebase: with this on, git replays the commits
+  // `git cherry` reported as already upstream rather than dropping them, so a
+  // machine configured this way must still end exactly on the remote tip.
+  git(repo, "config", "rebase.reapplyCherryPicks", "true");
   commit("base", "base.txt", "base\n");
   git(repo, "push", "--quiet", "origin", `HEAD:refs/heads/${BRANCH}`);
   git(repo, "checkout", "--quiet", "-B", BRANCH);
@@ -133,6 +137,49 @@ describe("preparePrBranch against a real git remote", () => {
     expect(isRebaseInProgress()).toBe(false);
   });
 
+  it("refuses a rebase that was already in progress rather than aborting it", () => {
+    // A halted rebase with a clean tree gets past the cleanliness gate, and git
+    // refuses a new one while it is there. Aborting on that refusal would throw
+    // away an operator's paused work.
+    divergeEquivalently();
+    const before = sha("HEAD");
+    git(repo, "checkout", "--quiet", "-b", "paused", "HEAD~1");
+    writeFileSync(join(repo, "p.txt"), "p\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "--quiet", "-m", "paused work");
+    const pausedTip = sha("HEAD");
+    // `--exec false` stops the rebase after the commit is replayed, with a
+    // clean tree and no conflict to resolve.
+    expect(() => git(repo, "rebase", "--exec", "false", BRANCH)).toThrow();
+    expect(isRebaseInProgress()).toBe(true);
+
+    const result = preparePrBranch(BRANCH);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "pull-failed",
+      detail: expect.stringContaining("automata did not start it"),
+    });
+    // The paused rebase is still there, untouched, and so is the branch.
+    expect(isRebaseInProgress()).toBe(true);
+    git(repo, "rebase", "--abort");
+    expect(sha("paused")).toBe(pausedTip);
+    expect(sha(BRANCH)).toBe(before);
+  });
+
+  it("lands exactly on the remote tip even with rebase.reapplyCherryPicks on", () => {
+    // The strategy names `--no-reapply-cherry-picks`, so the already-upstream
+    // commit is dropped rather than replayed; either way the post-condition is
+    // that the branch *is* the remote tip, with nothing left local-only.
+    divergeEquivalently();
+    const remote = git(repo, "ls-remote", "origin", `refs/heads/${BRANCH}`).split(/\s/)[0];
+
+    expect(preparePrBranch(BRANCH)).toEqual({ ok: true, branch: BRANCH, strategy: "rebase" });
+
+    expect(sha("HEAD")).toBe(remote);
+    expect(git(repo, "log", "--oneline", `origin/${BRANCH}..${BRANCH}`).trim()).toBe("");
+  });
+
   it("refuses a dirty tree before touching anything", () => {
     divergeEquivalently();
     const before = sha("HEAD");
@@ -143,11 +190,11 @@ describe("preparePrBranch against a real git remote", () => {
   });
 
   it("lands on a branch this checkout has no local ref for", () => {
-    // Worth pinning: `git checkout <branch>` guesses the branch from the single
-    // matching remote-tracking ref, so after the fetch it *succeeds* and the
-    // explicit `createTrackingBranch` fallback (strategy `tracking-branch`) is
-    // only reached when that guess is unavailable. Either way the branch ends up
-    // at the remote tip, which is the part that matters.
+    // `git checkout <branch>` guesses the branch from the single matching
+    // remote-tracking ref, so after the fetch it *succeeds* and the explicit
+    // `createTrackingBranch` fallback is only reached when that guess is
+    // unavailable. Both are this checkout seeing the branch for the first time,
+    // so both report `tracking-branch`: nothing was fast-forwarded.
     const other = "feature/never-seen-here";
     git(repo, "checkout", "--quiet", "-b", "scratch");
     commit("branch work", "s.txt", "s\n");
@@ -156,7 +203,11 @@ describe("preparePrBranch against a real git remote", () => {
     git(repo, "checkout", "--quiet", BRANCH);
     git(repo, "branch", "--quiet", "-D", "scratch");
 
-    expect(preparePrBranch(other)).toMatchObject({ ok: true, branch: other });
+    expect(preparePrBranch(other)).toEqual({
+      ok: true,
+      branch: other,
+      strategy: "tracking-branch",
+    });
     expect(sha("HEAD")).toBe(tip);
     expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe(other);
   });
@@ -182,5 +233,37 @@ describe("isRebaseInProgress against a real git", () => {
     expect(isRebaseInProgress()).toBe(true);
     git(repo, "rebase", "--abort");
     expect(isRebaseInProgress()).toBe(false);
+  });
+
+  it("is true for a rebase the apply backend halted, whichever backend ran it", () => {
+    // The merge backend leaves `rebase-merge`, the apply backend `rebase-apply`.
+    // Both are rebases and both have something to abort.
+    git(repo, "checkout", "--quiet", "-b", "theirs");
+    commit("theirs", "c.txt", "theirs\n");
+    git(repo, "checkout", "--quiet", BRANCH);
+    commit("ours", "c.txt", "ours\n");
+    expect(() => git(repo, "-c", "rebase.backend=apply", "rebase", "theirs")).toThrow();
+
+    expect(isRebaseInProgress()).toBe(true);
+    git(repo, "rebase", "--abort");
+    expect(isRebaseInProgress()).toBe(false);
+  });
+
+  it("is false for a halted `git am`, which shares the rebase-apply directory", () => {
+    // git reuses `rebase-apply` for an interrupted `git am`, and only the
+    // marker file inside distinguishes them. Answering true here would make
+    // automata report someone's stopped `git am` as its own rebase conflict and
+    // then try to `git rebase --abort` a state that abort cannot clear.
+    const patches = join(root, "patches");
+    git(repo, "checkout", "--quiet", "-b", "source");
+    commit("a patch to apply", "am.txt", "from the patch\n");
+    git(repo, "format-patch", "--quiet", "-1", "-o", patches);
+    git(repo, "checkout", "--quiet", BRANCH);
+    // The same file with other content, so the patch cannot apply cleanly.
+    commit("conflicting content", "am.txt", "already here\n");
+    expect(() => git(repo, "am", join(patches, "0001-a-patch-to-apply.patch"))).toThrow();
+
+    expect(isRebaseInProgress()).toBe(false);
+    git(repo, "am", "--abort");
   });
 });
