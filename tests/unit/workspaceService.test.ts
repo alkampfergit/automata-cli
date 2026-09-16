@@ -353,6 +353,31 @@ describe("preparePrBranch", () => {
       });
     });
 
+    it("does not call a pull that failed with nothing local-only a divergence", async () => {
+      // A fast-forward can fail on a branch that is merely behind — a stale
+      // `index.lock`, a ref this process cannot write, a hook that rejected the
+      // pull. The old message named a divergence and offered `git reset --hard`
+      // as its remedy, both of which are wrong for git's own error.
+      mockPullFastForwardOnly.mockReturnValue(
+        fail("fatal: Unable to create '.git/index.lock': File exists."),
+      );
+      mockRevParse.mockReturnValue(null);
+      mockDescribeDivergence.mockReturnValue({ commits: [], merges: 0 });
+      const { preparePrBranch } = await import("../../src/git/workspaceService.js");
+      const result = preparePrBranch("feature/042");
+      expect(result).toMatchObject({ ok: false, reason: "pull-failed" });
+      const detail = (result as { detail: string }).detail;
+      expect(detail).toContain(
+        "no commit of the local feature/042 is missing from origin/feature/042",
+      );
+      expect(detail).toContain("feature/042 is untouched");
+      expect(detail).not.toContain("0 of its commits");
+      expect(detail).not.toContain("has diverged");
+      expect(detail).not.toContain("git reset --hard");
+      expect(mockRebaseOnto).not.toHaveBeenCalled();
+      expect(mockResetHardTo).not.toHaveBeenCalled();
+    });
+
     it("refuses when the range holds a merge commit", async () => {
       // `git cherry` cannot compute a patch-id for a merge and omits it, so a
       // listing that looks entirely already-upstream can still be hiding work.

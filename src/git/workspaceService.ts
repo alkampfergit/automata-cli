@@ -183,6 +183,22 @@ function divergenceRefusal(headRefName: string, pullError: string): PrepareResul
     divergence === null
       ? 0
       : divergence.commits.filter((c) => !c.alreadyUpstream).length + divergence.merges;
+
+  // A fast-forward can also fail with nothing local-only to fast-forward over:
+  // a stale `index.lock`, a ref this process cannot write, a hook that rejected
+  // the pull. Diagnosing that as a divergence would send the operator hunting
+  // for commits that do not exist — and, worse, offer a `git reset --hard` as
+  // the remedy for what is really git's own error.
+  if (divergence !== null && unpushedCount === 0) {
+    return {
+      ok: false,
+      reason: "pull-failed",
+      detail:
+        `${pullError} — no commit of the local ${headRefName} is missing from origin/${headRefName}, so this is ` +
+        `not a divergence; ${headRefName} is untouched and git's own error above is the cause to fix`,
+    };
+  }
+
   let unpushed: string;
   if (divergence === null) {
     unpushed = "the local commits could not be listed";

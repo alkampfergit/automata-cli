@@ -18,6 +18,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   a commit that is genuinely unpushed, or a merge commit, is still refused and left untouched.
 - The `pull-failed` skip message now says how many commits are unpushed and gives the `git log origin/<b>..<b>`
   command to inspect them.
+- A fast-forward that fails on a head branch holding nothing the remote does not — a stale `index.lock`, an
+  unwritable ref, a hook that rejected the pull — is no longer reported as a divergence. The skip message names
+  git's own error as the cause and no longer offers a `git reset --hard` for commits that do not exist.
 
 ### Added
 
