@@ -148,11 +148,11 @@ One tick, in order:
 6. **Process** each work item sequentially:
    1. re-read the issue **and its pull-request link** and re-decide the turn. The plan was built before any model ran, and an earlier item can take a long time; a message arriving in the meantime has to be answered rather than buried behind the marker about to be posted, and a pull request opened in the meantime has to switch the turn to `pr-work` rather than starting a competing implementation. An item that stopped being actionable is skipped here, and the summary reports the turn that actually ran;
    2. check out the branch the turn needs (base branch for a discuss turn, the pull request's head branch for a build turn) and bring it up to date with the remote, fast-forward only;
-   3. assign the issue to the agent, if it is not already assigned — a `pr-orphan` turn assigns nothing, since there is no issue and the discovery filter may itself be `assignee`;
+   3. assign the issue to the agent if it has no assignee at all, and on a build turn do the same for the pull request (see [Assignment](#assignment)) — a `pr-orphan` turn claims neither, since there is no issue and the discovery filter may itself read the pull request's assignees;
    4. post a `working…` marker comment — on the pull request for a `pr-work` or `pr-orphan` turn, on the issue for a discussion turn. On a build turn triggered by *issue* messages, also leave a permanent note on the issue pointing at the pull request — the two surfaces keep separate boundaries, so answering on the pull request would otherwise leave that issue comment new forever. The marker is posted first and withdrawn if the note cannot follow it, so either both land or neither does;
    5. invoke the executor;
    6. reconcile the marker — delete it if the agent posted an answer, update it in place to say what happened if it did not, and say the answer could not be verified if the surface could not be re-read;
-   7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue.
+   7. after a discuss turn only, and only if the turn actually moved off the base branch, make sure the new pull request closes the issue, and claim it for the agent if nobody is assigned to it.
 7. **Summarise** and exit.
 
 ---
@@ -166,17 +166,51 @@ Every tick starts by putting the checkout into a known state, once, inside the r
 If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only `.automata/automata.lock` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
 
 - The checkout is **on a branch automata owns** — any branch other than the base branch whose open pull request, if it has one, was opened by `agentUser` → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
-- The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is created at HEAD first, then committed, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
+- The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → the changes are staged, a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is then created at HEAD, and the staged changes are committed onto it, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
 
 The ownership question exists because of the [orphan pass](#the-orphan-pull-request-pass): a tick can end with the checkout sitting on a dependency bump's branch, and a stray edit found there on the next tick must not be pushed into a third party's pull request under the agent's name. A lookup that fails answers "not owned" — a needless rescue branch is noise, a commit pushed into someone else's pull request is not something the next tick can undo.
 
 The commit message is `chore(automata): rescue uncommitted work from <source>`. The run lock is excluded from the commit, so a tick does not commit the lock file naming its own pid.
+
+The exclusion is dropped when the repository already ignores the lock. Naming an ignored path in a pathspec makes `git add` exit non-zero — *after* staging everything correctly — so a checkout that lists `.automata/automata.lock` in its `.gitignore` would otherwise see every rescue fail at the staging step and every item skip with `dirty-tree`. A bare `git add -A` never stages an ignored path, so dropping the exclusion changes nothing but the exit status. An exclusion for a path the repository *tracks* is always kept, even when a `.gitignore` pattern also matches it, so the lock is never committed.
+
+Staging happens before the `rescue/…` branch is created, so a staging failure leaves no empty branch behind. A branch the rescue *did* create is exempt from step 3's pruning for the rest of that tick — otherwise a rescue that failed before its commit would leave an empty branch that the prune step, correctly applying its own rules, would then delete, and the log would name a recovery branch that no longer exists. The next tick prunes it under the ordinary rules if it really is abandoned.
 
 Every step is additive, so a failure at any of them leaves the tree exactly as dirty as it was and discards nothing; the tick then continues with the pre-existing per-item `dirty-tree` skip. One exception is worth knowing about: if the *commit* succeeded and only the push failed, the tree is clean, so no later tick will rescue it again — the work sits in this checkout alone until someone pushes it. The pre-flight says so on the line after the failure, naming the branch.
 
 ### 2. Check out and fast-forward the base branch
 
 `git checkout <base>` then `git pull --ff-only`, on every tick — a tick with nothing to do still leaves the checkout on the base branch at the remote's tip. A base branch that has diverged fails the pull loudly rather than being merged, rebased or reset.
+
+#### Recovering a base branch that will not fast-forward
+
+```text
+  base      FAILED to pull develop: fatal: Not possible to fast-forward, aborting.
+```
+
+The local base branch has at least one commit `origin` does not. `do-work` will not resolve that on its own: merging, rebasing or resetting would each be a judgement about somebody's commit, and an unattended tool has no business making it.
+
+Which items this stops depends on the turn, because each turn prepares the branch *it* needs:
+
+| Turn | Branch it prepares | Effect of a base branch that will not fast-forward |
+|---|---|---|
+| `issue-discuss` | the base branch | Skipped as `pull-failed`, with this pre-flight failure named on the skip line. |
+| `pr-work`, `pr-orphan` | the pull request's head branch | Unaffected — they fetch and check out their own head branch, so they still run. |
+
+So a diverged base branch is not a reason to expect the whole tick to stop; if a `pr-work` item was skipped too, look for a cause on *its* head branch instead.
+
+Look at what is actually there:
+
+```sh
+git log --oneline origin/develop..develop     # commits only this checkout has
+git log --oneline develop..origin/develop     # commits only the remote has
+```
+
+Then pick one:
+
+- **The local commits are wanted.** Move them off the base branch and open a pull request — `git switch -c fix/keep-this`, `git push -u origin fix/keep-this`, then `git switch develop && git reset --hard origin/develop`.
+- **The local commits are unwanted** — a generated file committed by a tool, say. Drop them: `git reset --hard origin/develop`. Confirm the first command's output is only commits you are willing to lose; this discards them.
+- **Both sides have real work.** Reconcile it yourself with a merge or a rebase; `do-work` picks up again on the next tick once `git pull --ff-only` succeeds.
 
 ### 3. Prune dead local branches
 
@@ -221,7 +255,17 @@ Pre-flight:
   prune  rescued wip/scratch (pushed, draft PR #52)
 ```
 
-Under `--json` the same information is a `preflight` object alongside `plan` and `items`. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
+When a pre-flight step failed, every item the failure went on to block repeats the cause on its own skip line, so the tick can be diagnosed from the item output alone:
+
+```text
+  skipped: dirty-tree — the working tree has uncommitted changes; commit or stash them yourself and re-run [pre-flight: the rescue failed at the commit step (the tree is still dirty and rescue/develop-20260915T191357Z carries none of it): nothing to commit; the base branch pull failed: fatal: Not possible to fast-forward, aborting.]
+```
+
+The rescue and the base branch are always reported as two separate causes: they fail for unrelated reasons and want unrelated fixes, and a tick can easily have both. The same text appears in the tick summary's detail for that item and in the operation log. An item skipped after a clean pre-flight carries no such suffix.
+
+The parenthetical says where the rescue actually left things, and it differs by step: a failure at `stage` or `branch` has no branch to name at all, a failure at `commit` names a branch that carries none of the work, and a failure at `push` or `pr` names the branch the work is committed on. The same clause is repeated in the tick summary's `rescue` line, which is the only place the pre-flight shows up when no item was blocked.
+
+Under `--json` the same information is a `preflight` object alongside `plan` and `items`. A failed rescue names the branch it was committing onto there as `rescue.branch`, and repeats it as `rescue.createdBranch` when that branch is one the rescue itself created. Under `--dry-run` every step reports what it *would* do and issues no commit, push, pull, branch creation, branch deletion or pull-request call.
 
 A pre-flight step that failed makes an otherwise-healthy tick **exit 2** — see [exit codes](#exit-codes).
 
@@ -238,7 +282,7 @@ Issue #42 — Add a flag
   Turn         issue-discuss
   Why          1 new issue message, no open pull request
   Branch       develop (would check out and pull)
-  Assign       would assign to automata-bot
+  Assign       would assign issue to automata-bot
   Marker       would post on issue #42
   Executor     claude · model claude-opus-4-6
   Permissions  bypassed (do-work always runs unattended)
@@ -393,7 +437,24 @@ The update deliberately does not claim that nothing changed: a run can commit an
 
 ## Assignment
 
-Before the first model run on an issue, `do-work` assigns the issue to `agentUser` so the claim is visible in the issue list. The assignment is additive — an issue already triaged to a human keeps that assignee — and is skipped when the agent is already assigned. It requires the agent account to have write access on the repository; if it fails, a warning is printed and the turn still runs, because assignment is signalling and does not affect correctness.
+`do-work` claims the surfaces it works on for `agentUser`, **only when nobody is assigned to them yet**:
+
+| Surface | No assignee | Any assignee |
+|---|---|---|
+| The issue | assigned to `agentUser` before the first model run | left untouched |
+| The pull request | assigned to `agentUser` — on a build turn before the run, and on a discuss turn once the pull request the model opened is first seen | left untouched |
+
+"Any assignee" means exactly that: an issue triaged to a human keeps that person and the agent does **not** add itself beside them, and an issue already assigned to the agent is not re-assigned. The assignee column therefore answers one question — is anyone on this? — and nothing else.
+
+The two surfaces are decided independently, so an issue a human owns can still have its pull request claimed, and vice versa.
+
+A **`pr-orphan` turn is the one exception: it claims nothing.** There is no issue to assign, and the orphan pass discovers candidates by the pull request's *own* labels, assignees or title — so with `issueDiscoveryTechnique: assignee`, claiming an unassigned orphan would make it match the filter on every later tick, and the agent would permanently own a pull request the operator never opted in. The `working…` marker on the pull request is the claim there. A build turn is not affected: it reaches its pull request through an issue that matched the filter, not through the pull request's assignees. The work plan and `--dry-run` both say `pull request not claimed (orphan pass)` rather than staying silent: on that one surface, silence would read as "somebody is already on it" when in fact nobody is and nobody ever will be.
+
+Both claims require the agent account to have write access on the repository. If a claim fails, a warning is printed and the turn still runs to completion with its normal outcome and exit code: assignment is signalling and does not affect correctness. The underlying calls (`gh issue edit --add-assignee`, `gh pr edit --add-assignee`) are additive, so a human assigning themselves in the same seconds is never overwritten.
+
+`--dry-run` reports both planned claims per item and performs neither; `--dry-run --json` carries them as `needsAssignment` and `prNeedsAssignment` per plan entry.
+
+The two views differ on purpose. A plan line names only what the tick would *do* — `, will assign the issue and the pull request to the agent` — plus any surface the rule exempts; a surface somebody already owns is left unsaid, because the plan is one line per candidate and the absence of `will assign` is the answer. The per-item `Assign` line of a dry run names **every** surface in whichever state it is in (`issue already assigned · would assign pull request #57 to automata-bot`), since that block has the width for it and an operator auditing one item should not have to read silence.
 
 ---
 
@@ -424,7 +485,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 
 Exit 2 means degraded, not broken. An item was:
 
-- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one;
+- `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one. When a pre-flight step is the cause, the skip line names it (see [reporting](#reporting));
 - `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.

@@ -153,11 +153,23 @@ describe("githubService.getCurrentBranchPr", () => {
   });
 
   it("returns PR info when a PR exists", async () => {
+    const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body", assignees: [{ login: "bob" }] };
+    mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
+    const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
+    expect(getCurrentBranchPr("my-branch")).toEqual({
+      number: 7,
+      url: "https://github.com/o/r/pull/7",
+      body: "PR body",
+      assignees: ["bob"],
+    });
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "my-branch", "--json", "number,url,body,assignees"]);
+  });
+
+  it("reports no assignees when the field is absent", async () => {
     const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
     const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
-    expect(getCurrentBranchPr("my-branch")).toEqual(pr);
-    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "my-branch", "--json", "number,url,body"]);
+    expect(getCurrentBranchPr("my-branch")?.assignees).toEqual([]);
   });
 
   it("returns null when no PR exists", async () => {
@@ -170,8 +182,8 @@ describe("githubService.getCurrentBranchPr", () => {
     const pr = { number: 7, url: "https://github.com/o/r/pull/7", body: "PR body" };
     mockSpawnSync.mockReturnValue({ stdout: JSON.stringify(pr), stderr: "", status: 0 });
     const { getCurrentBranchPr } = await import("../../src/config/githubService.js");
-    expect(getCurrentBranchPr()).toEqual(pr);
-    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url,body"]);
+    expect(getCurrentBranchPr()).toEqual({ ...pr, assignees: [] });
+    expect(mockSpawnSync.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url,body,assignees"]);
   });
 
   it("throws on unexpected errors", async () => {

@@ -944,6 +944,23 @@ export function createBranchAtHead(branch: string): GitCommandResult {
 }
 
 /**
+ * Does `.gitignore` match this path, *and* is it untracked?
+ *
+ * Both halves come free from `git check-ignore`'s exit status: it consults the
+ * index by default, so a path the repository actually tracks answers "not
+ * ignored" even when a pattern matches it. That is the distinction
+ * `stageAllExcept` needs — an ignored, untracked path can be dropped from its
+ * pathspec, a tracked one never can.
+ *
+ * Anything other than a clean exit 0 answers false, including git failing
+ * outright: keeping an exclusion is the pre-existing behaviour, and it can never
+ * cause a file to be committed that should not be.
+ */
+export function pathIsIgnored(path: string): boolean {
+  return run("git", ["check-ignore", "-q", "--", path]).status === 0;
+}
+
+/**
  * Stage everything except the given paths.
  *
  * `-A` is the only form that stages untracked files, deletions and
@@ -951,11 +968,25 @@ export function createBranchAtHead(branch: string): GitCommandResult {
  * counts — anything it counts and this misses would leave the tree dirty. The
  * exclusion mirrors that function's, so automata's own run lock is not committed
  * by the rescue that the lock's own run performs.
+ *
+ * Exclusions the repository already ignores are dropped before the pathspec is
+ * built, because naming an ignored path in one makes `git add` fail:
+ *
+ *     $ git add -A -- . ':(exclude).automata/automata.lock'
+ *     The following paths are ignored by one of your .gitignore files:
+ *     .automata/automata.lock
+ *     exit=1
+ *
+ * — and it fails *after* staging everything it was asked to, so the caller sees
+ * a failure for work that succeeded. `:(exclude)` does not spare a path from
+ * that check, and bare `git add -A` never stages an ignored path anyway, so
+ * dropping the exclusion is both necessary and free.
  */
 export function stageAllExcept(excludePaths: string[]): GitCommandResult {
+  const needed = excludePaths.filter((path) => !pathIsIgnored(path));
   const args = ["add", "-A"];
-  if (excludePaths.length > 0) {
-    args.push("--", ".", ...excludePaths.map((path) => `:(exclude)${path}`));
+  if (needed.length > 0) {
+    args.push("--", ".", ...needed.map((path) => `:(exclude)${path}`));
   }
   return gitCommand(args);
 }

@@ -63,6 +63,24 @@ export interface HygieneOptions {
 
 export type RescueStep = "branch" | "stage" | "commit" | "push" | "pr";
 
+export interface RescueFailure {
+  kind: "failed";
+  step: RescueStep;
+  detail: string;
+  /**
+   * The branch the rescue was committing onto, once it exists in the checkout —
+   * absent for a failure that happened before that point, which leaves nothing
+   * to name. Reported so an operator reading only the tick summary can still
+   * find what the rescue did and did not manage to do.
+   */
+  branch?: string;
+  /**
+   * Set when `branch` is one this rescue created, rather than one it found. Used
+   * to keep the same tick's prune phase off it.
+   */
+  createdBranch?: string;
+}
+
 export type RescueOutcome =
   | { kind: "clean" }
   | {
@@ -75,7 +93,7 @@ export type RescueOutcome =
       prCreated: boolean;
     }
   | { kind: "would-rescue"; branch: string; createdBranch: boolean }
-  | { kind: "failed"; step: RescueStep; detail: string };
+  | RescueFailure;
 
 export type BaseOutcome = { ok: true } | { ok: false; step: "checkout" | "pull"; detail: string };
 
@@ -202,14 +220,12 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     return { kind: "would-rescue", branch: target.branch, createdBranch: target.createdBranch };
   }
 
-  if (target.createdBranch) {
-    const created = createBranchAtHead(target.branch);
-    if (!created.ok) {
-      options.log(`  rescue    FAILED to create ${target.branch}: ${created.stderr}\n`);
-      return { kind: "failed", step: "branch", detail: created.stderr };
-    }
-  }
-
+  // Staged before the branch is created, not after: the index belongs to the
+  // checkout rather than to any branch, and `checkout -b` at the same commit
+  // carries it over — so doing it in this order costs nothing and means a
+  // staging failure leaves no empty rescue branch for the prune phase to find
+  // and report as deleted.
+  //
   // Excluding the lock this very run created: committing it would put a pid in
   // the branch and leave the next tick's tree dirty for a file we just added.
   const staged = stageAllExcept([RUN_LOCK_RELATIVE_PATH]);
@@ -218,10 +234,31 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     return { kind: "failed", step: "stage", detail: staged.stderr };
   }
 
+  if (target.createdBranch) {
+    const created = createBranchAtHead(target.branch);
+    if (!created.ok) {
+      options.log(`  rescue    FAILED to create ${target.branch}: ${created.stderr}\n`);
+      return { kind: "failed", step: "branch", detail: created.stderr };
+    }
+  }
+
+  // From here on the target branch exists in the checkout — the rescue either
+  // just made it or found it — so every failure below names it. Without this a
+  // tick whose items were all refreshed away reports a bare "commit failed" and
+  // the recovery branch is left in the checkout with nothing pointing at it.
+  const left: Pick<RescueFailure, "branch" | "createdBranch"> = target.createdBranch
+    ? { branch: target.branch, createdBranch: target.branch }
+    : { branch: target.branch };
+
   const committed = commitStaged(`chore(automata): rescue uncommitted work from ${target.source}`);
   if (!committed.ok) {
-    options.log(`  rescue    FAILED to commit: ${committed.stderr}\n`);
-    return { kind: "failed", step: "commit", detail: committed.stderr };
+    options.log(`  rescue    FAILED to commit on ${target.branch}: ${committed.stderr}\n`);
+    if (target.createdBranch) {
+      options.log(
+        `  rescue    ${target.branch} was created by this rescue and carries none of the work; it is left in the checkout\n`,
+      );
+    }
+    return { kind: "failed", step: "commit", detail: committed.stderr, ...left };
   }
 
   const pushed = pushSetUpstream(target.branch);
@@ -232,7 +269,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
       `  rescue    FAILED to push ${target.branch}: ${pushed.stderr}\n` +
         `  rescue    the work is committed locally on ${target.branch}; push it by hand before it is lost\n`,
     );
-    return { kind: "failed", step: "push", detail: pushed.stderr };
+    return { kind: "failed", step: "push", detail: pushed.stderr, ...left };
   }
 
   // Pushed, so the work is safe from here on: a pull-request failure below is
@@ -244,7 +281,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     options.log(
       `  rescue    committed and pushed ${target.branch}, but could not check for an open PR: ${(err as Error).message}\n`,
     );
-    return { kind: "failed", step: "pr", detail: (err as Error).message };
+    return { kind: "failed", step: "pr", detail: (err as Error).message, ...left };
   }
 
   if (existing !== null) {
@@ -284,7 +321,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     options.log(
       `  rescue    committed and pushed ${target.branch}, but could not open a draft PR: ${(err as Error).message}\n`,
     );
-    return { kind: "failed", step: "pr", detail: (err as Error).message };
+    return { kind: "failed", step: "pr", detail: (err as Error).message, ...left };
   }
 }
 
@@ -320,7 +357,7 @@ function prepareBase(options: HygieneOptions): BaseOutcome {
  * Returns null when `origin` could not be listed — absence from an unread list
  * is not evidence that a branch has no remote.
  */
-function collectCandidates(options: HygieneOptions): string[] | null {
+function collectCandidates(options: HygieneOptions, rescueBranch: string | null): string[] | null {
   const remote = listRemoteBranches();
   if (remote === null) return null;
   const remoteNames = new Set(remote);
@@ -328,8 +365,15 @@ function collectCandidates(options: HygieneOptions): string[] | null {
   // The current branch is excluded because `git branch -D` cannot delete it —
   // and after `prepareBase` it is the base branch anyway, so this is belt and
   // braces for the case where the checkout failed.
+  // `rescueBranch` is the branch the rescue just created. It has no remote yet
+  // by construction, so without this it is a candidate on the very tick that
+  // made it — and a rescue that failed before its commit leaves it empty, which
+  // reads as "nothing outside the base branch" and gets it deleted. The operator
+  // is then told a recovery branch was created and finds nothing. The next tick
+  // prunes it under the ordinary rules if it really is abandoned.
   const current = getCurrentBranch();
   const untouchable = new Set([options.baseBranch, current, ...options.protectedBranches]);
+  if (rescueBranch !== null) untouchable.add(rescueBranch);
 
   return listLocalBranches().filter(
     (branch) => !untouchable.has(branch) && !remoteNames.has(branch),
@@ -449,8 +493,11 @@ function pruneCandidate(branch: string, options: HygieneOptions): PruneOutcome {
   }
 }
 
-function prune(options: HygieneOptions): { outcomes: PruneOutcome[]; remoteUnreadable: boolean } {
-  const candidates = collectCandidates(options);
+function prune(
+  options: HygieneOptions,
+  rescueBranch: string | null,
+): { outcomes: PruneOutcome[]; remoteUnreadable: boolean } {
+  const candidates = collectCandidates(options, rescueBranch);
   if (candidates === null) {
     options.log(
       "  prune     skipped: could not list origin's branches, so no branch can be shown to have no remote\n",
@@ -481,7 +528,7 @@ export function runRepoHygiene(options: HygieneOptions, now: Date = new Date()):
 
   const rescue = rescueUncommittedChanges(options, now);
   const base = prepareBase(options);
-  const { outcomes, remoteUnreadable } = prune(options);
+  const { outcomes, remoteUnreadable } = prune(options, rescueCreatedBranch(rescue));
 
   // Every reported failure has to show up here, or the tick exits 0 while the
   // log says a step failed. A pushed branch without its draft pull request is
@@ -497,4 +544,71 @@ export function runRepoHygiene(options: HygieneOptions, now: Date = new Date()):
     );
 
   return { rescue, base, prunes: outcomes, degraded };
+}
+
+/**
+ * The branch this rescue created, or would create in a dry run — null when it
+ * committed onto a branch that already existed, or never got that far.
+ *
+ * Only a branch the rescue itself made needs shielding from the same tick's
+ * prune: a pre-existing target either has a remote or is a legitimate prune
+ * candidate on its own merits.
+ */
+function rescueCreatedBranch(rescue: RescueOutcome): string | null {
+  switch (rescue.kind) {
+    case "rescued":
+    case "would-rescue":
+      return rescue.createdBranch ? rescue.branch : null;
+    case "failed":
+      return rescue.createdBranch ?? null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The pre-flight's failures, in the operator's words — one entry per failed
+ * phase, empty when it all worked.
+ *
+ * The rescue and the base preparation fail for unrelated reasons and want
+ * unrelated fixes, so they are never merged into one line: a tick can easily
+ * have both, and the caller shows each item's skip alongside every cause rather
+ * than leaving `dirty-tree` to stand for all of them.
+ */
+export function describePreflightFailures(report: HygieneReport): string[] {
+  const causes: string[] = [];
+  if (report.rescue.kind === "failed") {
+    causes.push(
+      `the rescue failed at the ${report.rescue.step} step (${describeRescueRemains(report.rescue)}): ${report.rescue.detail}`,
+    );
+  }
+  if (!report.base.ok) {
+    causes.push(`the base branch ${report.base.step} failed: ${report.base.detail}`);
+  }
+  return causes;
+}
+
+/**
+ * What a failed rescue left behind, in the operator's words — where the work is
+ * and which branch, if any, is now sitting in the checkout.
+ *
+ * Shared by the per-item skip suffix and the tick summary so the two cannot
+ * drift, and because each is the *only* report the operator gets in some tick:
+ * the summary is all there is when no item was blocked (or every item was
+ * refreshed away), so a branch it cannot name is a branch nobody looks for.
+ *
+ * The answer depends on the step because the steps are additive: a commit that
+ * failed left the work in the tree, a push that failed left it in a commit only
+ * this checkout has.
+ */
+export function describeRescueRemains(rescue: RescueFailure): string {
+  if (rescue.branch === undefined) return "the tree is still dirty";
+  switch (rescue.step) {
+    case "push":
+      return `the work is committed on ${rescue.branch} but not pushed`;
+    case "pr":
+      return `the work is committed and pushed on ${rescue.branch}, without a draft pull request`;
+    default:
+      return `the tree is still dirty and ${rescue.branch} carries none of it`;
+  }
 }

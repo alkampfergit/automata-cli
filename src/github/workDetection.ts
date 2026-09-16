@@ -48,8 +48,22 @@ export interface WorkItem {
   pr: PullRequestRef | null;
   /** Base branch for a discuss turn, the pull request's head branch otherwise. */
   branch: string;
-  /** True when the agent is not yet among the issue's assignees. Always false without an issue. */
+  /**
+   * True when the issue has no assignee at all. Always false without an issue.
+   *
+   * Membership is deliberately not tested: an issue assigned to anyone — a
+   * human who triaged it, or the agent from an earlier tick — is already
+   * claimed, so the agent must not add itself alongside them.
+   */
   needsAssignment: boolean;
+  /**
+   * True when the turn works on a pull request that has no assignee at all.
+   *
+   * Always false for a discuss turn: no pull request is known at decision time,
+   * so one the model opens during the run is claimed afterwards, where it is
+   * first seen. Also false on a `pr-orphan` turn — see the note there.
+   */
+  prNeedsAssignment: boolean;
   /** The empty analysis on a `pr-orphan` turn — there is no issue surface to read. */
   issueAnalysis: SurfaceAnalysis;
   prAnalysis: SurfaceAnalysis | null;
@@ -83,11 +97,6 @@ const NO_ISSUE_MESSAGES: SurfaceAnalysis = {
   hasNewMessage: false,
   lastAgentAt: null,
 };
-
-function isAssignedToAgent(assignees: string[], agentUser: string): boolean {
-  const agent = agentUser.toLowerCase();
-  return assignees.some((name) => name.toLowerCase() === agent);
-}
 
 /**
  * Threads that still need an answer: unresolved, and with an authorized human as
@@ -243,7 +252,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
   }
 
   const issueAnalysis = analyzeSurface(issueSurface.messages, p);
-  const needsAssignment = !isAssignedToAgent(issueSurface.assignees, p.agentUser);
+  const needsAssignment = issueSurface.assignees.length === 0;
 
   // A merged or closed pull request is treated as no pull request: its branch has
   // landed or gone, so the model must not push to it. A discuss turn lets the
@@ -272,6 +281,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
         pr: null,
         branch: baseBranch,
         needsAssignment,
+        prNeedsAssignment: false,
         issueAnalysis,
         prAnalysis: null,
         actionableThreads: [],
@@ -318,6 +328,7 @@ export function decideWork(state: IssueState, p: Participants, policy: BranchPol
       pr: surface.pr,
       branch: surface.pr.headRefName,
       needsAssignment,
+      prNeedsAssignment: surface.assignees.length === 0,
       issueAnalysis,
       prAnalysis,
       actionableThreads,
@@ -396,6 +407,13 @@ export function decideOrphanPrWork(
       // agent here would change what the discovery filter matches next tick.
       // The `working…` marker on the pull request is the claim.
       needsAssignment: false,
+      // For the same reason, and more directly: the orphan pass discovers by
+      // the *pull request's own* assignees, so claiming an unassigned orphan
+      // would make it match the filter on the next tick — the agent would
+      // permanently own a pull request the operator never opted in. A build
+      // turn is safe because it reaches its pull request through an issue that
+      // matched the filter, not through the pull request's assignees.
+      prNeedsAssignment: false,
       issueAnalysis: NO_ISSUE_MESSAGES,
       prAnalysis,
       actionableThreads,
@@ -477,4 +495,55 @@ export function agentAnsweredAfter(
       message.kind !== "issue-body" &&
       message.createdAt > marker.createdAt,
   );
+}
+
+/** What the claim rule says about one surface of a work item. */
+export type ClaimState =
+  /** No assignee at all: the tick would add the agent. */
+  | "would-claim"
+  /** Somebody is already on it, so the tick leaves the list untouched. */
+  | "already-assigned"
+  /** The rule forbids the claim whatever the assignee list says. */
+  | "rule-exempt";
+
+export interface SurfaceClaim {
+  surface: "issue" | "pull request";
+  /** So a caller can name the surface without reaching back into the item. */
+  number: number;
+  state: ClaimState;
+}
+
+/**
+ * The claim decision per surface, one entry per surface the item actually has.
+ *
+ * The single source of truth for everything a tick *says* about assignment. The
+ * plan line and the per-item dry-run block each used to derive it from the two
+ * booleans themselves, and they drifted: the dry-run block named the
+ * `pr-orphan` exemption while the plan stayed silent on it, which an operator
+ * reads as "already assigned" rather than "never claimed here".
+ */
+export function claimStates(item: WorkItem): SurfaceClaim[] {
+  const states: SurfaceClaim[] = [];
+  if (item.issue !== null) {
+    states.push({
+      surface: "issue",
+      number: item.issue.number,
+      state: item.needsAssignment ? "would-claim" : "already-assigned",
+    });
+  }
+  if (item.pr !== null) {
+    states.push({
+      surface: "pull request",
+      number: item.pr.number,
+      // An exemption is a rule, not a state, so it outranks the assignee list:
+      // an orphan pull request with nobody on it is still not claimed.
+      state: prClaimState(item),
+    });
+  }
+  return states;
+}
+
+function prClaimState(item: WorkItem): ClaimState {
+  if (item.turn === "pr-orphan") return "rule-exempt";
+  return item.prNeedsAssignment ? "would-claim" : "already-assigned";
 }

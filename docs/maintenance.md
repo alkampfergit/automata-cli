@@ -94,6 +94,72 @@ an audit.
 caught at publish time (above) and by Dependabot, but not at pull-request time. Adding an audit step to the `build` job
 would surface it earlier; see [Next refresh](#next-refresh--open-items) for the exact change and why it is still open.
 
+## Changelog
+
+`CHANGELOG.md` is the human summary of what shipped in each released version. It is repository documentation: it is not
+in `package.json`'s `files` whitelist, so it is not part of the published tarball.
+
+### Format
+
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/). One `## [Unreleased]` section at the top, then one
+section per released version, newest first:
+
+```markdown
+## [Unreleased]
+
+### Added
+
+- ...
+
+## [0.6.0] - 2026-09-10
+```
+
+Bullets are grouped under `Added`, `Changed`, `Fixed`, `Removed` or `Security`, and describe the behaviour a user would
+notice — not the commit subject and not the file that changed.
+
+### The version headings come from the git tags
+
+`package.json` has read `0.1.0` since the first commit and is **not** the release version. The CI `publish` job derives
+the version from the tag `automata git publish-release` put on `master` and rewrites the field with
+`npm version --no-git-tag-version` before publishing (`.github/workflows/ci.yml`). So the authority for "which versions
+exist" is `git tag`, which is what `tests/unit/changelog.test.ts` checks the file against. Note that two tags exist per
+release — the bare `0.6.0` from `publish-release` and the `v0.6.0` the GitHub release job creates; they are one version.
+
+### When a bullet is added
+
+With the change, on the feature branch — not at release time. A pull request that changes a command, a flag, a config
+key, the output format or what a consumer must install adds a bullet under `Unreleased` in the same commit as the
+change. Internal refactors, test-only changes and spec-kit artifacts (`docs: initialise PR artifacts` and friends) get
+no bullet.
+
+### What a release does to it
+
+`automata git publish-release` does not touch the file — the roll is manual, and it belongs in the release commit on
+`develop` *before* the command runs (it must start from a clean tree anyway, see [docs/git.md](git.md#automata-git-publish-release)):
+
+1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, using the date the release is cut.
+2. Add a fresh, empty `## [Unreleased]` above it.
+3. Commit, then run `automata git publish-release X.Y.Z`.
+
+Steps 1 and 2 may also land in the last pull request merged before the cut, which is the same thing once it reaches
+`develop` — `0.7.0` was rolled that way, in the branch that rebuilt this file.
+
+### Why it exists alongside the GitHub release notes
+
+The CI `release` job creates the GitHub release with `generate_release_notes: true`, so a per-commit list is already
+produced for free. That list is a log, not a summary: it includes bookkeeping commits, names branches rather than
+behaviour, and says nothing about a breaking change unless a commit subject happened to. `CHANGELOG.md` is the curated
+answer to "should I upgrade, and what do I have to change if I do" — which is why it is written by hand.
+
+### The structural test
+
+`tests/unit/changelog.test.ts` fails when `Unreleased` is missing or is not first, when a version heading is malformed
+or undated, when the versions are not in strictly descending order, when an unknown category heading appears, or when a
+semver git tag has no section. The tag-coverage check needs tags to be present; in a shallow clone without them it
+reports that it could not run rather than failing, while the format assertions always run. Sections were reconstructed
+from git history for `0.2.0` through `0.6.0`, which had gone unrecorded — that is the failure this test exists to
+prevent repeating.
+
 ## Refresh policy
 
 1. Try `npm audit fix` first. It only moves versions within the ranges existing parents already declare, so it is the
@@ -107,6 +173,29 @@ would surface it earlier; see [Next refresh](#next-refresh--open-items) for the 
 6. Finish with `npm run audit:prod && npm run audit:all`. The first must exit 0 before the branch is pushed, because it
    is what blocks the release; the second may report dev-toolchain advisories, which belong in the table below rather
    than in a blocked merge.
+
+### Dependabot scope — security updates only
+
+Dependabot runs in security-update mode only. There is deliberately **no `.github/dependabot.yml`** in this repository.
+
+The two modes are configured in different places and do different things:
+
+| Mode | Configured by | Targets |
+| --- | --- | --- |
+| Version updates | `.github/dependabot.yml` (`updates:` block) | the newest published version |
+| Security updates | the repository's "Dependabot security updates" setting | the minimum non-vulnerable version |
+
+Only the second is wanted here. Version updates were enabled briefly and reverted: they proposed majors that this
+project holds back on purpose (see [Deferred upgrades](#deferred-upgrades)), because Dependabot resolves the highest
+published version and has no notion of a dist-tag — so it re-raises `typescript` 7 and `@types/node` 26 every week
+regardless of the reasons recorded below. Adding `ignore` conditions would mean restating every deferral in a second
+place and keeping the two in sync.
+
+Removing the config file does not weaken the security posture: security-update pull requests come from the repository
+setting, not from the file, and advisories are independently gated by `npm run audit:prod` at publish time. Routine
+upgrades are done deliberately instead, per the policy above.
+
+**Do not add `.github/dependabot.yml` back** without also deciding what happens to the deferrals below.
 
 ## Deferred upgrades
 

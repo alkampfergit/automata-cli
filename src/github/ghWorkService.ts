@@ -46,6 +46,8 @@ export interface IssueSurface {
 
 export interface PrSurface {
   pr: PullRequestRef;
+  /** Logins assigned to the pull request, in the order GitHub reports them. */
+  assignees: string[];
   /** Conversation comments and non-empty review bodies. */
   messages: RawMessage[];
   threads: ReviewThread[];
@@ -87,6 +89,7 @@ interface RawPrView {
   author?: RawAuthor;
   createdAt: string;
   updatedAt?: string;
+  assignees?: RawAuthor[];
   comments?: { author?: RawAuthor; body: string; createdAt: string }[];
   reviews?: { author?: RawAuthor; body: string; submittedAt?: string; createdAt?: string }[];
 }
@@ -566,7 +569,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,comments,reviews",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -606,14 +609,20 @@ export function getPrSurface(prNumber: number): PrSurface {
       isDraft: raw.isDraft ?? false,
       updatedAt: raw.updatedAt ?? raw.createdAt,
     },
+    assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
     threads,
   };
 }
 
 /**
- * Add the agent as an assignee, leaving any existing assignee in place so an
- * issue triaged to a human keeps that triage.
+ * Add the agent as an assignee.
+ *
+ * `--add-assignee` is additive, so an existing assignee is never replaced. The
+ * caller only ever reaches this on an issue with an *empty* assignee list —
+ * "assigned to somebody" is the loop's signal that the issue is already
+ * claimed, whoever the somebody is — but the additive flag is kept so a
+ * concurrent human assignment racing this call cannot be clobbered.
  */
 export function assignIssueToAgent(issueNumber: number, agentUser: string): void {
   const { stderr, status } = run("gh", [
@@ -625,6 +634,23 @@ export function assignIssueToAgent(issueNumber: number, agentUser: string): void
   ]);
   if (status !== 0) {
     throw new Error(stderr.trim() || `Failed to assign issue #${String(issueNumber)} to ${agentUser}.`);
+  }
+}
+
+/**
+ * Add the agent as an assignee of a pull request.
+ *
+ * `gh pr edit` rather than `gh issue edit`: REST models a pull request as an
+ * issue, but `gh issue edit` issues the `updateIssue` GraphQL mutation, which
+ * does not accept a pull request node. Same additive, empty-list-only contract
+ * as `assignIssueToAgent`.
+ */
+export function assignPrToAgent(prNumber: number, agentUser: string): void {
+  const { stderr, status } = run("gh", ["pr", "edit", String(prNumber), "--add-assignee", agentUser]);
+  if (status !== 0) {
+    throw new Error(
+      stderr.trim() || `Failed to assign pull request #${String(prNumber)} to ${agentUser}.`,
+    );
   }
 }
 

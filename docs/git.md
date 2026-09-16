@@ -278,6 +278,12 @@ automata git publish-release 2.0.0      # explicit version
 automata git publish-release --dry-run  # preview commands without executing
 ```
 
+### Before you run it
+
+The command does not touch `CHANGELOG.md`. Roll the `Unreleased` section into the new version heading and commit that
+on `develop` first — `publish-release` requires a clean working tree, so it has to happen before, not after. The exact
+three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-it).
+
 ### Arguments
 
 | Argument | Description |

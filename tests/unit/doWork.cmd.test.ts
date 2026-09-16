@@ -11,6 +11,7 @@ const gh = {
   getOpenPrLinkMap: vi.fn(),
   getPrSurface: vi.fn(),
   assignIssueToAgent: vi.fn(),
+  assignPrToAgent: vi.fn(),
   postMarker: vi.fn(),
   updateMarker: vi.fn(),
   deleteMarker: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getOpenPrLinkMap: (...a: unknown[]) => gh.getOpenPrLinkMap(...a),
   getPrSurface: (...a: unknown[]) => gh.getPrSurface(...a),
   assignIssueToAgent: (...a: unknown[]) => gh.assignIssueToAgent(...a),
+  assignPrToAgent: (...a: unknown[]) => gh.assignPrToAgent(...a),
   postMarker: (...a: unknown[]) => gh.postMarker(...a),
   updateMarker: (...a: unknown[]) => gh.updateMarker(...a),
   deleteMarker: (...a: unknown[]) => gh.deleteMarker(...a),
@@ -63,11 +65,14 @@ vi.mock("../../src/git/workspaceService.js", () => ({
 
 const mockRunRepoHygiene = vi.fn();
 
-// The pre-flight has its own suite (repoHygiene.test.ts); here it is mocked so
-// these tests assert only what the command does with its report.
-vi.mock("../../src/git/repoHygiene.js", () => ({
-  runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a),
-}));
+// The pre-flight has its own suite (repoHygiene.test.ts); here only the tick
+// entry point is mocked, so these tests assert what the command does with its
+// report. `describePreflightFailures` is a pure reading of that report and is
+// kept real, so the wording these tests pin is the wording operators see.
+vi.mock("../../src/git/repoHygiene.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/git/repoHygiene.js")>();
+  return { ...actual, runRepoHygiene: (...a: unknown[]) => mockRunRepoHygiene(...a) };
+});
 
 const CLEAN_HYGIENE = {
   rescue: { kind: "clean" },
@@ -182,7 +187,7 @@ const PR: PullRequestRef = {
 };
 
 function prSurface(overrides: Partial<PrSurface> = {}): PrSurface {
-  return { pr: PR, messages: [], threads: [], ...overrides };
+  return { pr: PR, assignees: [], messages: [], threads: [], ...overrides };
 }
 
 /* ── harness ────────────────────────────────────────────────────────────── */
@@ -543,6 +548,35 @@ describe("do-work discuss turn", () => {
     expect(mockInvokeClaude).toHaveBeenCalled();
   });
 
+  it("leaves an issue a human already owns alone rather than adding the agent beside them", async () => {
+    gh.getIssueSurface.mockReturnValue(needsWork(42, ["alice"]));
+    await runDoWork();
+    expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalled();
+  });
+
+  it("claims the pull request the model opened during the turn", async () => {
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] });
+    await runDoWork();
+    expect(gh.assignPrToAgent).toHaveBeenCalledWith(57, "automata-bot");
+  });
+
+  it("leaves a pull request somebody has already taken alone", async () => {
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: ["alice"] });
+    await runDoWork();
+    expect(gh.assignPrToAgent).not.toHaveBeenCalled();
+  });
+
+  it("still links the pull request when claiming it fails", async () => {
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] });
+    gh.assignPrToAgent.mockImplementation(() => {
+      throw new Error("HTTP 403: not a collaborator");
+    });
+    await runDoWork();
+    expect(stderr).toMatch(/could not assign pull request #57/);
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(57, 42);
+  });
+
   it("warns but still runs the turn when assignment fails", async () => {
     gh.assignIssueToAgent.mockImplementation(() => {
       throw new Error("HTTP 403: not a collaborator");
@@ -570,6 +604,66 @@ describe("do-work discuss turn", () => {
     expect(mockInvokeClaude).not.toHaveBeenCalled();
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/dirty-tree/);
+  });
+
+  // Issue #69: every item said `skipped: dirty-tree` while the pre-flight had
+  // already failed with the precise reason a line earlier. The per-item line is
+  // where operators look, so the cause has to be on it.
+  it("names the pre-flight rescue failure on the skip it caused", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "stage", detail: "paths are ignored by .gitignore" },
+      base: { ok: true },
+      prunes: [],
+      degraded: true,
+    });
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    // Both surfaces: the live progress line and the tick summary's recorded detail.
+    expect(stderr).toMatch(
+      /skipped: dirty-tree — uncommitted changes \[pre-flight: the rescue failed at the stage step \(the tree is still dirty\): paths are ignored by \.gitignore\]/,
+    );
+    expect(stdout).toMatch(
+      /skipped — dirty-tree: uncommitted changes \[pre-flight: the rescue failed at the stage step \(the tree is still dirty\): paths are ignored by \.gitignore\]/,
+    );
+  });
+
+  // Two causes, reported as two: a diverged base branch is a different problem
+  // with a different fix from a rescue that could not stage.
+  it("reports a failed base fast-forward separately from the rescue failure", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      rescue: { kind: "failed", step: "stage", detail: "paths are ignored" },
+      base: { ok: false, step: "pull", detail: "Not possible to fast-forward, aborting." },
+      prunes: [],
+      degraded: true,
+    });
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    expect(stdout).toMatch(/the rescue failed at the stage step \(the tree is still dirty\): paths are ignored/);
+    expect(stdout).toMatch(/the base branch pull failed: Not possible to fast-forward/);
+  });
+
+  it("leaves the skip wording alone when the pre-flight worked", async () => {
+    mockPrepareBaseBranch.mockReturnValue({
+      ok: false,
+      reason: "dirty-tree",
+      detail: "uncommitted changes",
+    });
+    await runDoWork();
+
+    expect(stderr).toMatch(/skipped: dirty-tree — uncommitted changes\n/);
+    expect(stdout).toMatch(/skipped — dirty-tree: uncommitted changes\n/);
+    expect(stdout).not.toMatch(/\[pre-flight:/);
+    expect(stderr).not.toMatch(/\[pre-flight:/);
   });
 });
 
@@ -706,6 +800,7 @@ describe("do-work marker reconciliation", () => {
                 path: "src/index.ts",
                 line: 1,
                 isResolved: false,
+                url: null,
                 comments: [message("automata-bot", "2026-01-10T00:05:00Z", "thread-comment")],
               },
             ],
@@ -735,6 +830,35 @@ describe("do-work build turn", () => {
     expect(mockPreparePrBranch).toHaveBeenCalledWith("feature/042");
     expect(mockPrepareBaseBranch).not.toHaveBeenCalled();
     expect(gh.postMarker).toHaveBeenCalledWith("pr", 57, expect.stringContaining("working"));
+  });
+
+  it("claims the pull request it is working on when nobody is assigned to it", async () => {
+    await runDoWork();
+    expect(gh.assignPrToAgent).toHaveBeenCalledWith(57, "automata-bot");
+  });
+
+  it("leaves the pull request alone when anyone is already assigned to it", async () => {
+    gh.getPrSurface.mockReturnValue(
+      prSurface({
+        assignees: ["alice"],
+        messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")],
+      }),
+    );
+    await runDoWork();
+    expect(gh.assignPrToAgent).not.toHaveBeenCalled();
+    expect(mockInvokeClaude).toHaveBeenCalled();
+  });
+
+  it("warns but still runs the turn when the pull request claim fails", async () => {
+    gh.assignPrToAgent.mockImplementation(() => {
+      throw new Error("HTTP 403: not a collaborator");
+    });
+    await runDoWork();
+    expect(stderr).toMatch(/could not assign pull request #57/);
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    // The failed claim is not what the item is reported on: the outcome still
+    // comes from whether the model answered.
+    expect(stdout).not.toMatch(/assign.*failed/);
   });
 
   it("uses the build frame and names the branch", async () => {
@@ -828,13 +952,13 @@ describe("do-work link repair", () => {
   });
 
   it("adds the closing reference when the model opened an unlinked pull request", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "some body" });
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "some body", assignees: [] });
     await runDoWork();
     expect(mockAddClosesRefToPr).toHaveBeenCalledWith(57, 42);
   });
 
   it("leaves the body untouched when the reference is already present", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "Closes #42" });
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "Closes #42", assignees: [] });
     await runDoWork();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
     expect(stderr).toMatch(/already closes issue #42/);
@@ -851,7 +975,7 @@ describe("do-work link repair", () => {
     // return develop's own PR — a release PR into main, say. Appending
     // `Closes #42` to that would make an unrelated merge close this issue.
     mockGetCurrentBranch.mockReturnValue("develop");
-    mockGetCurrentBranchPr.mockReturnValue({ number: 99, url: "https://gh/pr/99", body: "release" });
+    mockGetCurrentBranchPr.mockReturnValue({ number: 99, url: "https://gh/pr/99", body: "release", assignees: [] });
     await runDoWork();
     expect(mockGetCurrentBranchPr).not.toHaveBeenCalled();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
@@ -859,7 +983,7 @@ describe("do-work link repair", () => {
   });
 
   it("warns rather than failing when the link cannot be repaired", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "u", body: "" });
+    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "u", body: "", assignees: [] });
     mockAddClosesRefToPr.mockImplementation(() => {
       throw new Error("HTTP 403");
     });
@@ -1067,7 +1191,7 @@ describe("do-work output modes", () => {
     await runDoWork(["--dry-run"]);
     expect(stdout).toMatch(/1 of 1 candidates need an answer/);
     expect(stdout).toMatch(/#42 issue-discuss on develop/);
-    expect(stdout).toMatch(/will assign to the agent/);
+    expect(stdout).toMatch(/will assign the issue to the agent/);
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
     expect(gh.postMarker).not.toHaveBeenCalled();
     expect(gh.updateMarker).not.toHaveBeenCalled();
@@ -1083,7 +1207,7 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("Issue #42 — Issue 42");
     expect(stdout).toContain("Turn         issue-discuss");
     expect(stdout).toContain("Branch       develop (would check out and pull)");
-    expect(stdout).toContain("would assign to automata-bot");
+    expect(stdout).toContain("would assign issue to automata-bot");
     expect(stdout).toContain("Marker       would post on issue #42");
     expect(stdout).toContain("Executor     claude");
     expect(stdout).toContain("Permissions  bypassed");
@@ -1177,9 +1301,40 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("Marker       would post on pull request #57");
   });
 
+  it("--dry-run names both planned claims on a build turn", async () => {
+    gh.getIssueSurface.mockReturnValue(settled(42));
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
+    gh.getPrSurface.mockReturnValue(
+      prSurface({ messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")] }),
+    );
+    await runDoWork(["--dry-run"]);
+    // `settled` is assigned to the agent already, so only the pull request is claimed.
+    expect(stdout).toContain(
+      "Assign       issue already assigned · would assign pull request #57 to automata-bot",
+    );
+    expect(stdout).toMatch(/will assign the pull request to the agent/);
+    expect(gh.assignPrToAgent).not.toHaveBeenCalled();
+  });
+
+  it("--dry-run reports a pull request nobody would touch", async () => {
+    gh.getIssueSurface.mockReturnValue(settled(42));
+    gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map([[42, [PR]]]), defaultBranch: "main", orphans: [] });
+    gh.getPrSurface.mockReturnValue(
+      prSurface({
+        assignees: ["alice"],
+        messages: [message("alice", "2026-01-07T00:00:00Z", "pr-comment")],
+      }),
+    );
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain(
+      "Assign       issue already assigned · pull request #57 already assigned",
+    );
+  });
+
   it("--dry-run still changes nothing while printing the command", async () => {
     await runDoWork(["--dry-run"]);
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
+    expect(gh.assignPrToAgent).not.toHaveBeenCalled();
     expect(gh.postMarker).not.toHaveBeenCalled();
     expect(mockPrepareBaseBranch).not.toHaveBeenCalled();
     expect(mockInvokeClaude).not.toHaveBeenCalled();
@@ -1233,6 +1388,7 @@ describe("do-work output modes", () => {
         branch: "develop",
         pr: null,
         needsAssignment: true,
+        prNeedsAssignment: false,
         reason: expect.stringContaining("new issue message"),
       },
     ]);
@@ -1955,6 +2111,7 @@ function orphanCandidate(overrides: Partial<PullRequestRef> = {}, labels = ["aut
 function orphanSurface(overrides: Partial<PrSurface> = {}): PrSurface {
   return {
     pr: ORPHAN_PR,
+    assignees: [],
     messages: [message("alice", "2026-01-08T00:00:00Z", "pr-comment")],
     threads: [],
     ...overrides,
@@ -1995,6 +2152,22 @@ describe("do-work orphan pull-request pass", () => {
     expect(gh.assignIssueToAgent).not.toHaveBeenCalled();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
     expect(gh.getIssueSurface).not.toHaveBeenCalled();
+    // Not even the pull request, which has no assignee: see the note on the
+    // orphan item in `workDetection.ts`.
+    expect(gh.assignPrToAgent).not.toHaveBeenCalled();
+  });
+
+  it("--dry-run says the orphan pull request is not claimed rather than staying silent", async () => {
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toContain("Assign       pull request #61 not claimed (orphan pass)");
+  });
+
+  it("says so on the plan line too, where silence would read as 'already assigned'", async () => {
+    // The plan is printed on every tick, not only on a dry run, so it is where
+    // an operator reading cron mail sees the orphan pass claim nothing.
+    await runDoWork(["--dry-run"]);
+    expect(stdout).toMatch(/PR #61 pr-orphan on .* — .*, pull request not claimed \(orphan pass\)/);
+    expect(stdout).not.toMatch(/PR #61 pr-orphan[^\n]*will assign/);
   });
 
   it("does nothing when no authorized account has posted", async () => {

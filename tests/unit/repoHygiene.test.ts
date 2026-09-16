@@ -328,7 +328,13 @@ describe("rescue", () => {
     const report = runRepoHygiene(options(), NOW);
 
     expect(mockPushSetUpstream).toHaveBeenCalled();
-    expect(report.rescue).toEqual({ kind: "failed", step: "pr", detail: "gh: HTTP 502" });
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "pr",
+      detail: "gh: HTTP 502",
+      branch: "rescue/develop-20260910T054512Z",
+      createdBranch: "rescue/develop-20260910T054512Z",
+    });
     expect(report.degraded).toBe(true);
   });
 
@@ -340,8 +346,96 @@ describe("rescue", () => {
     const { runRepoHygiene } = await hygiene();
     const report = runRepoHygiene(options(), NOW);
 
-    expect(report.rescue).toEqual({ kind: "failed", step: "pr", detail: "gh: HTTP 403" });
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "pr",
+      detail: "gh: HTTP 403",
+      branch: "rescue/develop-20260910T054512Z",
+      createdBranch: "rescue/develop-20260910T054512Z",
+    });
     expect(mockCreateDraftPullRequest).not.toHaveBeenCalled();
+  });
+
+  // Issue #69: the rescue created its branch first, so a staging failure left an
+  // empty `rescue/…` in the checkout that the same tick's prune then deleted —
+  // the log named a recovery branch the operator could not find. Staging first
+  // removes the branch from the failure path entirely.
+  it("stages before creating the recovery branch, so a staging failure creates none", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockStageAllExcept.mockReturnValue(bad("permission denied"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(mockStageAllExcept).toHaveBeenCalled();
+    expect(mockCreateBranchAtHead).not.toHaveBeenCalled();
+    expect(report.rescue).toEqual({ kind: "failed", step: "stage", detail: "permission denied" });
+  });
+
+  // A failed commit is the step where naming the branch matters most and was
+  // hardest to see: the branch exists, carries nothing, and is exempt from this
+  // tick's prune, so an operator who is told only "commit failed" is left with a
+  // branch in the checkout that nothing in the output accounts for.
+  it("names the branch a failed commit left in the checkout, on the log and in the outcome", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockCommitStaged.mockReturnValue(bad("nothing to commit"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "commit",
+      detail: "nothing to commit",
+      branch: "rescue/develop-20260910T054512Z",
+      createdBranch: "rescue/develop-20260910T054512Z",
+    });
+    expect(logged.join("")).toContain("FAILED to commit on rescue/develop-20260910T054512Z");
+    expect(logged.join("")).toContain("was created by this rescue and carries none of the work");
+  });
+
+  // Committing onto a branch that already existed: it is named too, since the
+  // operator still has to be told which branch the tick was working on — but it
+  // is not reported as one this rescue created, so the prune rules still apply.
+  it("names an existing target branch without claiming the rescue created it", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/x");
+    mockCommitStaged.mockReturnValue(bad("nothing to commit"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "commit",
+      detail: "nothing to commit",
+      branch: "feature/x",
+    });
+  });
+
+  it("names the recovery branch it left behind when the failure came after creating it", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockPushSetUpstream.mockReturnValue(bad("rejected"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toEqual({
+      kind: "failed",
+      step: "push",
+      detail: "rejected",
+      branch: "rescue/develop-20260910T054512Z",
+      createdBranch: "rescue/develop-20260910T054512Z",
+    });
+  });
+
+  // The reported checkout: a dirty tracked file and a gitignored run lock. With
+  // the pathspec fixed in gitService, staging succeeds and the rescue runs to
+  // completion instead of aborting and skipping every item as `dirty-tree`.
+  it("completes the rescue in a checkout whose run lock is gitignored", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockStageAllExcept.mockReturnValue(ok());
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toMatchObject({ kind: "rescued", pr: 99 });
+    expect(report.degraded).toBe(false);
   });
 
   it("never stashes, resets or cleans — those calls do not exist in gitService's mock surface", async () => {
@@ -741,5 +835,155 @@ describe("dry run", () => {
     expect(text).toContain("would create rescue/develop-20260910T054512Z");
     expect(text).toContain("would delete old/thing");
     expect(text).toContain("dry run");
+  });
+});
+
+// ── The rescue's own branch is off limits to the same tick's prune (US2) ──────
+
+describe("prune protection for the rescue branch", () => {
+  /** A tick that rescues onto a new branch and then prunes it as remote-less. */
+  function rescueThenPrune(): void {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("develop");
+    mockListLocalBranches.mockReturnValue(["develop", "rescue/develop-20260910T054512Z"]);
+    mockListRemoteBranches.mockReturnValue(["develop"]);
+  }
+
+  it("does not delete the branch the rescue just created, even when the push failed", async () => {
+    rescueThenPrune();
+    mockPushSetUpstream.mockReturnValue(bad("rejected"));
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
+    expect(report.prunes).toEqual([]);
+  });
+
+  // The precise shape of the reported bug: the branch is empty, so the ordinary
+  // rule ("nothing outside the base branch") would delete it — but the work it
+  // was created for is still sitting uncommitted in the tree.
+  it("does not delete an empty recovery branch left by a failed rescue", async () => {
+    rescueThenPrune();
+    mockCommitStaged.mockReturnValue(bad("nothing to commit"));
+    mockCountCommitsNotIn.mockReturnValue(0);
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(mockForceDeleteLocalBranch).not.toHaveBeenCalled();
+    expect(report.prunes).toEqual([]);
+  });
+
+  it("does not report the branch it would create as one it would delete, under --dry-run", async () => {
+    rescueThenPrune();
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options({ dryRun: true }), NOW);
+    expect(report.prunes).toEqual([]);
+  });
+
+  // The protection is for branches the rescue *made*. A pre-existing branch it
+  // merely committed onto keeps its ordinary prune treatment, including the
+  // push-and-open-a-draft-PR rescue the prune step does in its own right.
+  it("leaves an existing branch the rescue committed onto subject to the normal rules", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockGetCurrentBranch.mockReturnValue("feature/x");
+    mockListLocalBranches.mockReturnValue(["develop", "old/thing"]);
+    mockListRemoteBranches.mockReturnValue(["develop"]);
+    mockCountCommitsNotIn.mockReturnValue(0);
+    const { runRepoHygiene } = await hygiene();
+    const report = runRepoHygiene(options(), NOW);
+
+    expect(report.rescue).toMatchObject({ branch: "feature/x", createdBranch: false });
+    expect(report.prunes).toEqual([{ kind: "deleted", branch: "old/thing" }]);
+  });
+});
+
+// ── Pre-flight failures are two causes, not one (US3) ────────────────────────
+
+describe("describePreflightFailures", () => {
+  it("says nothing when the pre-flight worked", async () => {
+    const { runRepoHygiene, describePreflightFailures } = await hygiene();
+    expect(describePreflightFailures(runRepoHygiene(options(), NOW))).toEqual([]);
+  });
+
+  it("names the rescue step that failed and quotes git's error", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockStageAllExcept.mockReturnValue(bad("The following paths are ignored"));
+    const { runRepoHygiene, describePreflightFailures } = await hygiene();
+    const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
+
+    expect(causes).toEqual([
+      "the rescue failed at the stage step (the tree is still dirty): The following paths are ignored",
+    ]);
+  });
+
+  it("names the recovery branch a failed rescue left behind", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockPushSetUpstream.mockReturnValue(bad("rejected"));
+    const { runRepoHygiene, describePreflightFailures } = await hygiene();
+    const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
+
+    expect(causes[0]).toContain(
+      "the work is committed on rescue/develop-20260910T054512Z but not pushed",
+    );
+  });
+
+  // The second half of issue #69: a base branch that will not fast-forward must
+  // be readable on its own, not buried under whatever the rescue did.
+  it("reports a base-branch failure separately from the rescue", async () => {
+    mockHasUncommittedChanges.mockReturnValue(true);
+    mockStageAllExcept.mockReturnValue(bad("ignored path"));
+    mockPullFastForwardOnly.mockReturnValue(bad("fatal: Not possible to fast-forward, aborting."));
+    const { runRepoHygiene, describePreflightFailures } = await hygiene();
+    const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
+
+    expect(causes).toEqual([
+      "the rescue failed at the stage step (the tree is still dirty): ignored path",
+      "the base branch pull failed: fatal: Not possible to fast-forward, aborting.",
+    ]);
+  });
+
+  it("reports a base failure alone when the tree was clean", async () => {
+    mockCheckoutBranch.mockReturnValue(bad("error: pathspec 'develop' did not match"));
+    const { runRepoHygiene, describePreflightFailures } = await hygiene();
+    const causes = describePreflightFailures(runRepoHygiene(options(), NOW));
+
+    expect(causes).toEqual([
+      "the base branch checkout failed: error: pathspec 'develop' did not match",
+    ]);
+  });
+});
+
+// ── Where a failed rescue left the work ──────────────────────────────────────
+
+// The steps are additive, so "what is left behind" is different at each of
+// them. Both reporting surfaces read this, which is why it is pinned directly:
+// the tick summary is the only place the pre-flight appears when no item was
+// blocked, and it must not say "the tree is still dirty" about a rescue that
+// got as far as committing and pushing.
+describe("describeRescueRemains", () => {
+  it.each([
+    [
+      { kind: "failed", step: "stage", detail: "x" },
+      "the tree is still dirty",
+    ],
+    [
+      { kind: "failed", step: "branch", detail: "x" },
+      "the tree is still dirty",
+    ],
+    [
+      { kind: "failed", step: "commit", detail: "x", branch: "rescue/a", createdBranch: "rescue/a" },
+      "the tree is still dirty and rescue/a carries none of it",
+    ],
+    [
+      { kind: "failed", step: "push", detail: "x", branch: "rescue/a", createdBranch: "rescue/a" },
+      "the work is committed on rescue/a but not pushed",
+    ],
+    [
+      { kind: "failed", step: "pr", detail: "x", branch: "feature/x" },
+      "the work is committed and pushed on feature/x, without a draft pull request",
+    ],
+  ] as const)("describes the $step step", async (rescue, expected) => {
+    const { describeRescueRemains } = await hygiene();
+    expect(describeRescueRemains(rescue)).toBe(expected);
   });
 });
