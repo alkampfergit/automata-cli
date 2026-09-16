@@ -237,8 +237,8 @@ beforeEach(() => {
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
   mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
-  mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
-  mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042" });
+  mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop", strategy: "fast-forward" });
+  mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042", strategy: "fast-forward" });
   mockGetCurrentBranchPr.mockReturnValue(null);
   // A discussion turn that created a branch is the normal case for link repair.
   mockGetCurrentBranch.mockReturnValue("feature/042-flag");
@@ -940,6 +940,40 @@ describe("do-work build turn", () => {
     await runDoWork();
     expect(mockInvokeClaude).not.toHaveBeenCalled();
     expect(exitCode).toBe(2);
+  });
+
+  it("announces a branch that had to be rebased, and records the strategy", async () => {
+    mockPreparePrBranch.mockReturnValue({
+      ok: true,
+      branch: "feature/042",
+      strategy: "rebase",
+    });
+    await runDoWork();
+    expect(stderr).toContain("feature/042 had diverged from origin; synchronized by rebase.");
+    expect((mockRecordTick.mock.calls[0][0] as { items: { sync?: string }[] }).items[0].sync).toBe(
+      "rebase",
+    );
+  });
+
+  it("says nothing about an ordinary fast-forward, but still records it", async () => {
+    // One line per item saying "fast-forward" would bury the ones that matter.
+    await runDoWork();
+    expect(stderr).not.toContain("had diverged from origin");
+    expect((mockRecordTick.mock.calls[0][0] as { items: { sync?: string }[] }).items[0].sync).toBe(
+      "fast-forward",
+    );
+  });
+
+  it("records a refused branch under its refusal reason", async () => {
+    mockPreparePrBranch.mockReturnValue({
+      ok: false,
+      reason: "rebase-conflict",
+      detail: "CONFLICT — the rebase was aborted",
+    });
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as { items: { sync?: string; detail: string }[] };
+    expect(tick.items[0].sync).toBe("rebase-conflict");
+    expect(tick.items[0].detail).toContain("rebase-conflict: CONFLICT");
   });
 });
 
@@ -1956,6 +1990,7 @@ describe("do-work operation log", () => {
       executor?: string;
       model?: string;
       effort?: string;
+      sync?: string;
     }[];
   }
 
@@ -2127,7 +2162,7 @@ describe("do-work orphan pull-request pass", () => {
       orphans: [orphanCandidate()],
     });
     gh.getPrSurface.mockReturnValue(orphanSurface());
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName, strategy: "fast-forward" });
   });
 
   it("runs one pr-orphan turn on the head branch and marks the pull request", async () => {
@@ -2228,7 +2263,7 @@ describe("do-work orphan pull-request pass", () => {
     gh.getPrSurface.mockImplementation((n: number) =>
       orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: shared } }),
     );
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared, strategy: "fast-forward" });
     await runDoWork();
 
     expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
@@ -2424,7 +2459,7 @@ describe("do-work --pr", () => {
       orphans: [orphanCandidate()],
     });
     gh.getPrSurface.mockReturnValue(orphanSurface());
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName, strategy: "fast-forward" });
   });
 
   it("restricts the tick to that pull request and skips the issue pass", async () => {

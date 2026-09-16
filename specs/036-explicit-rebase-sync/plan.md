@@ -94,6 +94,7 @@ src/
 tests/unit/
 ├── workspaceService.test.ts     # existing suite extended: rebase, refusal, conflict, strategies
 ├── describeDivergence.git.test.ts  # new: real git, pins git cherry's behaviour incl. merge omission
+├── preparePrBranch.git.test.ts     # new: real git + real bare remote, issue #73 reproduced end to end
 ├── operationLog.test.ts         # existing suite extended: sync field and sync= summary
 └── doWork.cmd.test.ts           # existing suite extended: the progress line and the tick log item
 

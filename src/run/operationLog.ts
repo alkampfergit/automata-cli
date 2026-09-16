@@ -68,6 +68,15 @@ export interface TickLogItem {
   detail: string;
   /** True only when the executor was actually invoked — what decides work-log membership. */
   ranExecutor: boolean;
+  /**
+   * How the item's branch was synchronised with the remote, or why it was not:
+   * the strategy on a success, the failure reason on a refusal.
+   *
+   * Recorded because a cron tick discards its stdout, and a branch that stops
+   * synchronising is otherwise indistinguishable from a branch with nothing to
+   * do — which is what made the `pull-failed` loop in issue #73 invisible.
+   */
+  sync?: string;
   executor?: string;
   model?: string;
   effort?: string;
@@ -110,6 +119,31 @@ function repoField(repo: string | null): string {
  * ambiguous between "none of those" and "written by an older automata", which
  * is the same reason `summarize()` names the executor unconditionally.
  */
+/**
+ * The synchronisation strategies that carry no information: a branch that
+ * fast-forwarded, or one this checkout had never seen before. Everything else —
+ * a reset, a rebase, a refusal — is worth a field.
+ */
+const QUIET_SYNC: ReadonlySet<string> = new Set(["fast-forward", "tracking-branch"]);
+
+/**
+ * `rebase:1,pull-failed:2`, or null when nothing unusual happened.
+ *
+ * Null rather than an empty field so the line of an ordinary tick is byte-for-
+ * byte what it was before this existed, and an existing grep keeps working.
+ */
+function summarizeSync(items: readonly TickLogItem[]): string | null {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.sync === undefined) continue;
+    const key = oneLine(item.sync);
+    if (key.length === 0 || QUIET_SYNC.has(key)) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  return [...counts].map(([strategy, count]) => `${strategy}:${String(count)}`).join(",");
+}
+
 export function formatExecutionLine(tick: TickLog): string {
   const counts: Record<OperationOutcome, number> = {
     answered: 0,
@@ -134,6 +168,8 @@ export function formatExecutionLine(tick: TickLog): string {
     `exit=${String(tick.exitCode)}`,
     `dur=${(tick.durationMs / 1000).toFixed(1)}s`,
   ];
+  const sync = summarizeSync(tick.items);
+  if (sync !== null) fields.push(`sync=${sync}`);
   if (tick.note !== undefined && tick.note.length > 0) fields.push(`note=${tick.note}`);
   return fields.join(" ") + "\n";
 }
@@ -166,6 +202,13 @@ function describeItemExecution(item: TickLogItem): string {
   return ` [${oneLine(item.executor)}${model}${effort}]`;
 }
 
+/** Every ran item names its strategy, including the ordinary one — the work log is read per item. */
+function describeItemSync(item: TickLogItem): string {
+  if (item.sync === undefined) return "";
+  const flat = oneLine(item.sync);
+  return flat.length === 0 ? "" : ` sync=${flat}`;
+}
+
 /**
  * The record for one tick, or null when the tick performed nothing.
  *
@@ -181,7 +224,7 @@ export function formatWorkRecord(tick: TickLog): string | null {
   const lines = ran.map(
     (item) =>
       `${oneLine(item.subject)} ${item.turn === null ? "-" : oneLine(item.turn)} ${item.outcome}` +
-      `${describeItemExecution(item)} — ${briefDetail(item.detail)}\n`,
+      `${describeItemExecution(item)}${describeItemSync(item)} — ${briefDetail(item.detail)}\n`,
   );
   return header + lines.join("") + "\n";
 }

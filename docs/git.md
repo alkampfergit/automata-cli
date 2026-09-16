@@ -256,7 +256,7 @@ If any precondition fails the command prints a descriptive error to stderr and e
 ### What it does
 
 1. `git fetch --prune` — syncs remote refs
-2. `git checkout develop && git pull` — moves to develop and updates it
+2. `git checkout develop && git pull --ff-only` — moves to develop and updates it. The strategy is named on the command line so the result does not depend on the machine's `pull.rebase` / `pull.ff` configuration; where neither is set, a bare `git pull` on a diverged branch fails with `Need to specify how to reconcile divergent branches`. A `develop` that has diverged fails here rather than being merged or rebased — reconcile it yourself and re-run.
 3. `git branch -d <branch>` — removes the local feature branch
 
 ### Exit codes

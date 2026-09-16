@@ -10,6 +10,33 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- `do-work` recovers from a pull-request branch that has diverged from its remote because the same change reached the
+  remote under a different sha. When every local-only commit is already on the remote as an equivalent patch, the
+  branch is rebased onto the remote instead of being skipped as `pull-failed` on every tick forever. A branch holding
+  a commit that is genuinely unpushed, or a merge commit, is still refused and left untouched.
+- The `pull-failed` skip message now says how many commits are unpushed and gives the `git log origin/<b>..<b>`
+  command to inspect them.
+
+### Added
+
+- A new `rebase-conflict` skip reason for a pull-request branch whose automatic rebase conflicted. The rebase is
+  aborted first, so the branch is back on the tip it started from and the next tick does not see a conflicted index as
+  a dirty working tree.
+- The operation log records how each branch was synchronized: a `sync=` field per item in `automata-work.log`, and a
+  `sync=<strategy>:<count>` summary in `automata-execution.log` whenever an item needed more than a fast-forward or
+  could not be synchronized at all.
+
+### Changed
+
+- Every pull `automata` performs now names its strategy on the command line, so nothing depends on the machine's
+  `pull.rebase` / `pull.ff` git configuration. In particular `git finish-feature` now runs `git pull --ff-only`
+  instead of a bare `git pull`, which on a machine with no strategy configured failed with
+  `Need to specify how to reconcile divergent branches`.
+- Development dependencies refreshed: `@types/node` 26.6.1, `prettier` 3.9.7, `vitest` 5.0.1. `npm audit` reports no
+  vulnerabilities.
+
 ## [0.7.0] - 2026-09-16
 
 ### Added

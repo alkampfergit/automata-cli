@@ -181,4 +181,13 @@ mirrored in `spec.md`'s `## Assumptions` and `## Clarifications`: refusing rathe
 | `git cherry` **omits merge commits** | Range with 1 ordinary + 1 merge commit: `rev-list --count` = 2, `--merges` = 1, `cherry` printed 1 line |
 | `git rebase` exits `1` on a conflict and leaves a detached HEAD with a `UU` index entry | `git status --porcelain=2 --branch` during the conflict |
 | `git rebase --abort` exits `0` and restores the exact pre-rebase sha | `rev-parse HEAD` compared before and after |
+| `git checkout <branch>` guesses a branch from a single matching remote-tracking ref, so after the fetch it succeeds and the explicit `createTrackingBranch` fallback is rarely reached | `preparePrBranch` over a real bare remote reported `fast-forward`, not `tracking-branch`, for a branch with no local ref |
 | `npm audit` on `develop` reports 0 vulnerabilities | `npm audit` |
+
+## Added during implementation
+
+`tests/unit/preparePrBranch.git.test.ts` was not in the plan. It drives the whole sequence against a real `git` and a
+real bare remote, with `pull.rebase=false` set in the scratch repository on purpose, and reproduces issue #73 end to
+end. The reason it exists: the defect was "git does not do what we assumed", and a `spawnSync` mock can only ever
+confirm the argv that was already chosen. Every new decision path was then mutation-proved — removing the rebase
+recovery turns exactly that one test red.
