@@ -356,13 +356,36 @@ So in particular:
 
 **Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an oversized prompt or an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
 
-### Force-pushed head branches
+### Synchronizing a diverged head branch
 
-Dependabot force pushes every rebase, so an orphan pull request's head branch is routinely rewritten between two ticks. On a checkout that has already seen the old tip, `git pull --ff-only` then fails for good — and would refuse the turn on every later tick.
+A pull request's head branch is routinely rewritten between two ticks — Dependabot force pushes every rebase, a reviewer squashes, a bot re-applies a fix upstream. On a checkout that has already seen the old tip, `git pull --ff-only` then fails for good, and without a recovery the turn is refused on every later tick.
 
-So when the fast-forward fails, `do-work` resets the local branch to the remote, but **only** when the local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch. Every commit the local branch holds then came from the remote and was rewritten there, so nothing a turn committed here can be lost. In any other case — a commit made locally and never pushed, or no previously known remote-tracking ref to compare against — the item is skipped as `pull-failed`, and the message names the branch to inspect and the reset to run by hand.
+Every git command in this path names its strategy on the command line. Nothing depends on the machine's `pull.rebase` or `pull.ff` configuration: an unattended loop must do the same thing on every machine it runs on.
 
-A dirty working tree is still refused before any of this, so uncommitted changes are never touched.
+`do-work` tries three things in order, stopping at the first that applies:
+
+| # | Strategy | When it applies | What it does |
+|---|---|---|---|
+| 1 | `fast-forward` | The local branch is behind the remote, or equal to it. | `git pull --ff-only origin <branch>`. |
+| 2 | `reset-to-remote` | The local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch — so every commit on it came from the remote and was rewritten there. | `git reset --hard origin/<branch>`. |
+| 3 | `rebase` | Every commit the local branch has and the remote does not is **already on the remote as the same patch**, under a different sha, and none of them is a merge commit. | `git rebase refs/remotes/origin/<branch>`, against the ref already fetched. The duplicates are skipped and the branch lands on the remote tip. |
+
+A branch checked out for the first time is created from the remote directly and is reported as `tracking-branch`.
+
+The third strategy is the one that keeps an *equivalent* divergence out of the stuck state. Two tips can hold identical trees and identical patches and still be different commits — the change reached the remote under another sha. `git cherry` is what decides: it compares patch ids, and only a range where every commit is marked as already applied upstream is eligible. Merge commits disqualify the branch outright, because `git cherry` cannot compute a patch id for one and leaves it out of its listing, so unpushed work behind a local merge would otherwise look like nothing at all.
+
+**Nothing else is synchronized automatically.** If even one local commit is not already on the remote — work a turn committed here and never pushed — the item is skipped as `pull-failed` and no ref is moved. The message names how many commits are unpushed and gives the two commands to inspect and resolve them:
+
+```text
+  skipped: pull-failed — fatal: Not possible to fast-forward, aborting. — the local feature/042 has diverged from
+  origin/feature/042 and 1 of its commits are not on origin/feature/042, so it was not synchronized automatically;
+  inspect them with `git log origin/feature/042..feature/042` and `git reset --hard origin/feature/042` yourself
+  once they are safe to lose
+```
+
+If the rebase itself conflicts, it is aborted — so the branch is back on the exact tip it started from, with no rebase in progress — and the item is skipped as `rebase-conflict`, a reason of its own so it can be told apart from an ordinary divergence in the logs. Aborting matters beyond this one item: a rebase left in progress leaves a conflicted index, which the next tick reads as a dirty working tree and refuses *every* item for.
+
+A dirty working tree is still refused before any of this, so uncommitted changes are never touched. The strategy, or the refusal, is recorded in the [operation log](#the-operation-log).
 
 Two extra skips exist for the moment between the plan and the run — the item is re-decided just before it runs, as issue items already are:
 
@@ -532,6 +555,7 @@ One line per invocation, including invocations that found nothing to do. Fields 
 | `runs` | Items for which the executor was actually invoked — what `--max-runs` counts |
 | `exit` | The process exit code (see [Exit codes](#exit-codes)) |
 | `dur` | Wall-clock duration in seconds |
+| `sync` | Present only when at least one item's branch needed more than a fast-forward, or could not be synchronized at all: `strategy:count` pairs, comma-separated — e.g. `sync=rebase:1,pull-failed:2`. See [synchronizing a diverged head branch](#synchronizing-a-diverged-head-branch) |
 | `note` | Present only for an invocation that ran no tick: `lock-held`, or `config-error` when the run was rejected before the tick began |
 
 After the append, the file is trimmed to its newest 1000 lines.
@@ -554,6 +578,7 @@ awk '{print $1}' ../automata-execution.log | tail -1   # when it last fired
 grep 'exit=2' ../automata-execution.log | tail    # the last degraded ticks
 grep 'note=lock-held' ../automata-execution.log   # ticks turned away by the run lock
 grep 'note=config-error' ../automata-execution.log # ticks rejected before they began
+grep 'sync=' ../automata-execution.log            # ticks where a branch needed more than a fast-forward
 ```
 
 If the newest timestamp is older than your cron interval, the loop is not firing — that is the question this file exists to answer.
@@ -564,16 +589,18 @@ One record per invocation in which the executor was actually invoked for at leas
 
 ```text
 === 2026-09-10T06:51:36.412Z acme/widget ===
-#53 issue-discuss answered [claude model=opus-5] — posted a reply
-#51 pr-work answered [codex effort=high] — pushed 2 commits
-PR #61 pr-orphan answered [claude model=opus-5] — recommended merge
+#53 issue-discuss answered [claude model=opus-5] sync=fast-forward — posted a reply
+#51 pr-work answered [codex effort=high] sync=fast-forward — pushed 2 commits
+PR #61 pr-orphan answered [claude model=opus-5] sync=rebase — recommended merge
 
 === 2026-09-10T07:34:11.902Z acme/widget ===
 #57 issue-discuss failed [claude] — the executor exited with status 1
 
 ```
 
-A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the subject, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set) and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the subject, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set), the [synchronization strategy](#synchronizing-a-diverged-head-branch) its branch needed, and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+
+Only items that reached the executor appear here, so a branch that was *refused* never does; the `sync=` field on the [execution line](#automata-executionlog) is where a refusal is counted.
 
 The subject is `#<issue>` for an issue turn and `PR #<number>` for a [`pr-orphan`](#turn-kinds) turn, which has no issue — the same label the tick printed on stdout, so `grep '#53' ../automata-work.log` cannot confuse issue 53 with pull request 53.
 
@@ -614,7 +641,7 @@ You do not have to redirect anywhere to keep a record: [the operation log](#the-
 - Merge a pull request.
 - Close an issue, or close a pull request.
 - Push to the base branch, or commit to it.
-- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped. It does reset a pull-request branch that was force-pushed, but only when every commit on it demonstrably came from the remote — see [force-pushed head branches](#force-pushed-head-branches).
+- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped. It does reset or rebase a pull-request branch that has diverged from its remote, but only when every commit on it demonstrably came from the remote, or is already on the remote as the same patch — see [synchronizing a diverged head branch](#synchronizing-a-diverged-head-branch).
 - Delete a local branch whose work it cannot prove is finished — it pushes the branch and opens a draft pull request instead. Evidence is a merged pull request, a pull request closed unmerged, or zero commits outside the base branch; a branch whose state it could not read is kept.
 - Merge, rebase or reset the base branch to make a pull succeed.
 - Act on a message from an account that is not in `allowedUsers` — including the pull request body and commits of a bot such as Dependabot.

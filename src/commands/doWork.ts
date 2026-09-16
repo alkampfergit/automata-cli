@@ -133,6 +133,11 @@ interface ItemReport {
   ranExecutor?: boolean;
   /** Present once the item got far enough for the executor and model to be resolved. */
   execution?: ResolvedExecution;
+  /**
+   * How the item's branch was synchronised, or why it was not. Operation log
+   * only — the `--json` item shape is deliberately unchanged.
+   */
+  sync?: string;
 }
 
 /**
@@ -1244,7 +1249,7 @@ async function processItem(
 
   // Reported from the refreshed item: the summary must say which turn actually
   // ran, not the one the stale plan predicted.
-  const base: Pick<ItemReport, "issue" | "pr" | "title" | "turn"> = {
+  const base: Pick<ItemReport, "issue" | "pr" | "title" | "turn" | "sync"> = {
     issue: item.issue?.number ?? null,
     pr: item.pr?.number ?? null,
     title: itemTitle(item),
@@ -1260,7 +1265,18 @@ async function processItem(
       ...base,
       outcome: "skipped",
       detail: `${prepared.reason}: ${prepared.detail}${why}`,
+      sync: prepared.reason,
     };
+  }
+  // Carried on `base`, so every later return — answered, failed or skipped for
+  // another reason — records how the branch got here.
+  base.sync = prepared.strategy;
+  // Only the recoveries are announced. A fast-forward is what happens on nearly
+  // every item, and a line per item saying so would bury the ones that matter.
+  if (prepared.strategy !== "fast-forward" && prepared.strategy !== "tracking-branch") {
+    progress(
+      `  ${prepared.branch} had diverged from origin; synchronized by ${prepared.strategy}.\n`,
+    );
   }
 
   claimIssue(item, settings);
@@ -1561,6 +1577,7 @@ function toTickLogItem(report: ItemReport): TickLogItem {
     executor: report.execution?.executor,
     model: report.execution?.model,
     effort: report.execution?.effort,
+    sync: report.sync,
   };
 }
 

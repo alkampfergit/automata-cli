@@ -816,7 +816,12 @@ export function checkoutAndPull(targetBranch: string): void {
   if (checkout.status !== 0) {
     throw new Error(`Failed to checkout ${targetBranch}: ${checkout.stderr.trim()}`);
   }
-  const pull = run("git", ["pull"]);
+  // `--ff-only` rather than a bare `git pull`: without a strategy on the
+  // command line the result depends on the machine's `pull.rebase` / `pull.ff`
+  // configuration, and where neither is set git refuses outright with
+  // "Need to specify how to reconcile divergent branches". Fast-forward is what
+  // this command has always meant — it runs after the branch was merged.
+  const pull = run("git", ["pull", "--ff-only"]);
   if (pull.status !== 0) {
     throw new Error(`Failed to pull ${targetBranch}: ${pull.stderr.trim()}`);
   }
@@ -884,6 +889,74 @@ export function isAncestorCommit(maybeAncestor: string, descendant: string): boo
 /** `git reset --hard <ref>` — moves the current branch, discarding local commits past `ref`. */
 export function resetHardTo(ref: string): GitCommandResult {
   return gitCommand(["reset", "--hard", ref]);
+}
+
+/** One commit present on the head ref and absent from the upstream ref. */
+export interface DivergentCommit {
+  sha: string;
+  /**
+   * True when the same patch is already part of the upstream history under a
+   * different sha — `git cherry`'s `-` marker.
+   */
+  alreadyUpstream: boolean;
+}
+
+export interface DivergenceReport {
+  /** `upstream..head`, oldest first, merge commits excluded — see `merges`. */
+  commits: DivergentCommit[];
+  /**
+   * How many commits in the same range are merges.
+   *
+   * Counted separately because `git cherry` cannot compute a patch-id for a
+   * merge and silently leaves it out of its output. An empty `commits` next to
+   * a non-zero `merges` therefore means "this range holds content this report
+   * cannot classify", not "this range is empty".
+   */
+  merges: number;
+}
+
+const CHERRY_LINE = /^([+-]) ([0-9a-f]+)$/;
+
+/**
+ * What the head ref has that the upstream ref does not, and how much of it is
+ * already upstream under a different sha.
+ *
+ * `git cherry` compares patch-ids, which is the only thing that can tell a
+ * rebased-but-identical commit apart from work that exists nowhere else.
+ *
+ * Returns null when either command fails or prints a line this cannot parse, so
+ * an unreadable repository can never be mistaken for a safe one by a caller
+ * that is deciding whether to move a branch.
+ */
+export function describeDivergence(upstream: string, head: string): DivergenceReport | null {
+  const cherry = run("git", ["cherry", upstream, head]);
+  if (cherry.status !== 0) return null;
+
+  const commits: DivergentCommit[] = [];
+  for (const line of cherry.stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const match = CHERRY_LINE.exec(trimmed);
+    if (match === null) return null;
+    commits.push({ sha: match[2], alreadyUpstream: match[1] === "-" });
+  }
+
+  const merges = run("git", ["rev-list", "--count", "--merges", `${upstream}..${head}`]);
+  if (merges.status !== 0) return null;
+  const count = Number.parseInt(merges.stdout.trim(), 10);
+  if (!Number.isInteger(count)) return null;
+
+  return { commits, merges: count };
+}
+
+/** `git rebase <ref>` — replay the current branch onto `ref`. */
+export function rebaseOnto(ref: string): GitCommandResult {
+  return gitCommand(["rebase", ref]);
+}
+
+/** `git rebase --abort` — back to the tip the branch was on before the rebase. */
+export function abortRebase(): GitCommandResult {
+  return gitCommand(["rebase", "--abort"]);
 }
 
 export function fetchPrune(): void {
