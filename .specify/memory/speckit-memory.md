@@ -92,6 +92,10 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
   `continue-on-error`, add `--audit-level`), confirm the suite goes red on each, then restore. Why: a config-reading test
   that silently matches nothing passes just as green as one that works. Confirmed: 2026-09-09.
 
+- **Release version comes from the git tag, never `package.json`**: the field has read `0.1.0` since the first commit; the CI `publish` job reads `git tag --points-at HEAD` on `master` and rewrites it with `npm version --no-git-tag-version`. Two tags exist per release — the bare `0.6.0` from `publish-release` and the `v0.6.0` the GitHub release job creates. Anything that reasons about "which versions shipped" must read tags and strip the `v`. Confirmed: 2026-09-16.
+- **A repository-policy document gets pinned by a test under `tests/unit/`**, following `ciAuditGate.test.ts`: the file is not imported, built or published, so only a deliberate assertion notices when it rots — `CHANGELOG.md` went eight releases stale precisely because nothing failed. Keep environment-dependent parts (anything shelling out to `git`) degrading to a reported skip so the suite does not depend on how the repo was cloned, and keep the format assertions unconditional so the test is never wholly vacuous. Confirmed: 2026-09-16.
+- **Non-command-group policy belongs in `docs/maintenance.md`**, not a new `docs/<name>.md`: `AGENTS.md` reserves `docs/<group>.md` for command groups and the README table links only those, so a policy page would want a row for a non-command. State it once there and link it from the command page that triggers it and from `AGENTS.md`'s working defaults. Confirmed: 2026-09-16.
+
 ## Process Friction
 
 - **`npm outdated`'s "Latest" column is not always the highest version**: `@types/node` publishes 26.x but DefinitelyTyped tags `22.20.2` as `latest`. Check `npm view <pkg> dist-tags` before treating a row as "behind". Why: cost a wrong-direction upgrade attempt. Confirmed: 2026-09-09.
@@ -160,6 +164,8 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **`do-work` splits its streams**: per-item `progress()` lines go to **stderr**, the tick summary goes to **stdout**, and both carry the item's detail. A test asserting a skip line must pick the right one — matching the summary passes while the progress line is untested. Confirmed: 2026-09-15.
 - **When a step's failure is the *cause* of a later step's refusal, carry it**: the pre-flight knew "the rescue failed at the stage step", and every item still reported the bare symptom `dirty-tree`. Operators read the per-item lines, not the banner above them. Confirmed: 2026-09-15.
 - **`create-new-feature.sh` still does not create the git branch** (re-confirmed on the 034 run) and `--number NNN --short-name <slug>` avoids the leading-number mangling noted above. Confirmed: 2026-09-15.
+- **Prove a markdown-structure test by mutating the document, once per assertion**: five assertions needed five separate mutations (undated heading, deleted section, swapped order, renamed category, moved `Unreleased`) — a single broken heading tripped two of them and left three unproven. Restore the file from a `cp` backup rather than by re-editing. Confirmed: 2026-09-16.
+- **A docs-only feature still runs the full gate**: `npm run lint` only covers `src/` and `tsconfig.json` only includes `src`, so a new file under `tests/unit/` is type-checked by vitest alone — run `npm test`, not just `typecheck`, before believing it compiles. Confirmed: 2026-09-16.
 
 ## Helper Skills
 
