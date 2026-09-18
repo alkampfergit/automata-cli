@@ -49,7 +49,7 @@ release sequence instead of erroring.
    tag `0.7.0`, **When** the maintainer runs `automata git publish-release --dry-run`, **Then** the
    command reports the detected trunk, fetches tags, and announces version `0.7.0 → 0.8.0`.
 2. **Given** the same clone, **When** the maintainer runs `automata git publish-release` for real,
-   **Then** the local trunk branch is created tracking `origin/<trunk>` as part of the release
+   **Then** the local trunk branch is created from `origin/<trunk>` as part of the release
    sequence and the final push names the detected trunk.
 3. **Given** a repository whose trunk is named `main`, **When** the maintainer runs
    `automata git publish-release`, **Then** every step that previously said `master` says `main`.
@@ -133,8 +133,10 @@ configured name is used and no detection commands run.
 - **FR-007**: The "no semver tag" error MUST name the resolved trunk ref rather than `master`.
 - **FR-008**: When a local trunk branch exists and is behind the remote trunk, the command MUST refuse
   with an explicit message and MUST NOT fast-forward, merge or reset it.
-- **FR-009**: When no local trunk branch exists, the real release sequence MUST create it tracking
-  `origin/<trunk>`; `--dry-run` MUST print that step without creating anything.
+- **FR-009**: When no local trunk branch exists, the real release sequence MUST create it *from*
+  `origin/<trunk>`. It MUST NOT be required to configure an upstream: git refuses to set tracking
+  information from a ref a `--single-branch` clone's refspec does not cover, which is the very clone
+  shape this feature exists for. `--dry-run` MUST print that step without creating anything.
 - **FR-010**: The checkout, merge, tag and push steps MUST use the resolved trunk name, including the
   final `git push origin develop <trunk> <version>`.
 - **FR-011**: The resolved trunk name and how it was resolved MUST be reported on stdout before the

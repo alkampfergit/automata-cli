@@ -7,9 +7,11 @@ const mockSpawnSync = vi.fn();
 // ── Mock configStore so azdo dispatch tests can set remoteType ────────────────
 
 const mockReadConfig = vi.fn(() => ({}));
+const mockReadRawConfig = vi.fn((): Record<string, unknown> => ({}));
 
 vi.mock("../../src/config/configStore.js", () => ({
   readConfig: () => mockReadConfig(),
+  readRawConfig: () => mockReadRawConfig(),
   writeConfig: vi.fn(),
 }));
 
@@ -482,6 +484,8 @@ describe("git get-pr-info --wait-finish-checks", () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
     out = captureStreams();
     vi.useFakeTimers();
   });
@@ -839,6 +843,8 @@ describe("git get-pr-comments command", () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
     out = captureStreams();
   });
 
@@ -996,6 +1002,8 @@ describe("git get-pr-info: azdo dispatch", () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
     out = captureStreams();
   });
 
@@ -1113,6 +1121,8 @@ describe("git publish-release command: preconditions", () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
     mockReadConfig.mockReturnValue({});
     out = captureStreams();
   });
@@ -1234,7 +1244,7 @@ describe("git publish-release command: preconditions", () => {
   });
 
   it("uses the configured trunk branch and skips detection", async () => {
-    mockReadConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
+    mockReadRawConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
     stubPublish();
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1296,6 +1306,8 @@ describe("git get-pr-info SonarCloud fields", () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
     out = captureStreams();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

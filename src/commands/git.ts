@@ -12,9 +12,9 @@ import {
   resolveTrunkBranch,
   fetchTrunkAndTags,
   trunkBehindCount,
-  bumpMinorVersion,
   tagExists,
   publishRelease,
+  checkReleasePreconditions,
   type PrCheck,
   type PrInfo,
   type SonarFailureSummary,
@@ -23,6 +23,7 @@ import {
   type SonarSecurityHotspot,
 } from "../git/gitService.js";
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
+import { resolveReleaseVersion } from "../git/releaseVersion.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 const SKIP_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
@@ -435,8 +436,6 @@ const finishFeatureCmd = new Command("finish-feature")
     }
   });
 
-const SEMVER_ARG_RE = /^\d+\.\d+\.\d+$/;
-
 const publishReleaseCmd = new Command("publish-release")
   .description("Execute the full GitFlow release sequence and push to origin")
   .argument("[version]", "Release version in X.Y.Z format (auto-detected from the trunk tag if omitted)")
@@ -463,24 +462,10 @@ and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
   .action((version: string | undefined, options: { dryRun?: boolean }) => {
     const dryRun = options.dryRun ?? false;
 
-    // Precondition: must be on develop
-    let branch: string;
-    try {
-      branch = getCurrentBranch();
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
-    if (branch !== "develop") {
-      process.stderr.write(
-        `Error: publish-release must be run from the 'develop' branch (currently on '${branch}').\n`,
-      );
-      process.exit(1);
-    }
-
-    // Precondition: clean working tree
-    if (hasUncommittedChanges()) {
-      process.stderr.write("Error: You have uncommitted changes. Commit or stash them before publishing a release.\n");
+    // Preconditions: on develop, with a clean working tree.
+    const preconditions = checkReleasePreconditions();
+    if (!preconditions.ok) {
+      process.stderr.write(`Error: ${preconditions.message}\n`);
       process.exit(1);
     }
 
@@ -505,24 +490,14 @@ and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
     }
 
     // Resolve version
-    let resolvedVersion: string;
-    if (version !== undefined) {
-      if (!SEMVER_ARG_RE.test(version)) {
-        process.stderr.write(`Error: Version '${version}' is not valid semver. Use X.Y.Z format (e.g. 1.2.0).\n`);
-        process.exit(1);
-      }
-      resolvedVersion = version;
-    } else {
-      const latest = getLatestTagOnTrunk(trunkRef);
-      if (latest === null) {
-        process.stderr.write(
-          `Error: No semver tag found on ${trunkRef}. ` +
-            "Pass a version explicitly: automata git publish-release <X.Y.Z>\n",
-        );
-        process.exit(1);
-      }
-      resolvedVersion = bumpMinorVersion(latest);
-      process.stdout.write(`Auto-detected version: ${latest} → ${resolvedVersion}\n`);
+    const versionResult = resolveReleaseVersion(version, trunkRef, () => getLatestTagOnTrunk(trunkRef));
+    if (!versionResult.ok) {
+      process.stderr.write(`Error: ${versionResult.message}\n`);
+      process.exit(1);
+    }
+    const resolvedVersion = versionResult.version;
+    if (versionResult.notice !== null) {
+      process.stdout.write(`${versionResult.notice}\n`);
     }
 
     // Precondition: tag must not already exist
