@@ -67,9 +67,11 @@ One parsed line of `automata-execution.log`.
 | `durationSeconds` | `number` |
 | `note` | `string \| null` |
 
-`readExecutionTicks({ repo, limit })` returns `{ ticks, skipped, otherRepos }` — newest
-first, `skipped` counting unparseable lines, `otherRepos` counting lines belonging to a
-different slug.
+`readExecutionTicks({ repo, limit })` returns
+`LogReadResult<ExecutionTick> = { entries, present, error, skipped, otherRepos, filtered, path }`
+— `entries` newest first, `skipped` counting unparseable lines, `otherRepos` counting lines
+belonging to a different slug, and `filtered` false when no slug was given and the entries
+therefore come from every checkout sharing the log.
 
 ## `WorkRecord` (`src/run/operationLog.ts`)
 
@@ -82,10 +84,10 @@ One `=== <iso> <slug> ===` block of `automata-work.log`.
 | `items` | `WorkRecordItem[]` |
 
 `WorkRecordItem`: `subject`, `turn: string \| null`, `outcome`, `executor: string \| null`,
-`model: string \| null`, `effort: string \| null`, `detail`.
+`model: string \| null`, `effort: string \| null`, `sync: string \| null`, `detail`.
 
-`readWorkRecords({ repo, limit })` returns `{ records, skipped, otherRepos }`, newest
-first.
+`readWorkRecords({ repo, limit })` returns `LogReadResult<WorkRecord>` — the same envelope,
+with the records in `entries`, newest first.
 
 ## `TickCadence` (`src/run/checkReport.ts`)
 
@@ -104,9 +106,11 @@ The scheduler-silence judgement (R3).
 | `branch` | `string \| null` | Current branch; null when HEAD is detached. |
 | `head` | `string \| null` | Short sha of HEAD. |
 | `dirtyPaths` | `string[]` | Porcelain entries, excluding the run lock's own path. |
+| `statusError` | `string \| null` | Set when `git status` itself failed, so `dirtyPaths` says nothing. |
 | `baseBranch` | `string` | The configured base branch, echoed for the report. |
 | `baseLocal` | `boolean` | Does `refs/heads/<base>` exist? |
 | `upstream` | `string \| null` | The base branch's upstream ref, e.g. `origin/develop`. |
+| `upstreamTracked` | `boolean` | True only when `<base>@{u}` resolved; false means `upstream` was inferred from `refs/remotes/origin/<base>`, which the pre-flight's bare `git pull --ff-only` cannot use. |
 | `ahead` / `behind` | `number \| null` | Base branch against its upstream; null when either side is missing. |
 | `refreshed` | `boolean` | Whether the remote-tracking ref was fetched this run. |
 | `fetchError` | `string \| null` | The fetch's stderr when it failed. |

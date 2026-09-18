@@ -82,11 +82,11 @@ structured form of that section's facts:
 | Section | `data` |
 |---|---|
 | `lock` | `{ status: "free" \| "held" \| "suspect" \| "stale" \| "unreadable", owner, heldForMs, staleMinutes }` |
-| `ticks` | `{ newest: ExecutionTick \| null, history: ExecutionTick[], lockHeldCount, medianIntervalMs, sinceNewestMs, silent, skipped, otherRepos, logPath, logPresent }` |
-| `work` | `{ records: WorkRecord[], skipped, otherRepos, logPath, logPresent }` |
+| `ticks` | `{ newest: ExecutionTick \| null, history: ExecutionTick[], lockHeldCount, medianIntervalMs, sinceNewestMs, silent, skipped, otherRepos, filtered, logPath, logPresent }` |
+| `work` | `{ records: WorkRecord[], skipped, otherRepos, filtered, logPath, logPresent }` |
 | `git` | the `RepoStatus` fields |
 | `selection` | `{ ran: boolean, detail: string \| null, plan: PlanEntry[] }` where `PlanEntry` is the existing `toPlanJson` shape |
-| `environment` | `{ version, repo, remoteType, configValid, configError, ghAvailable, ghLogin, identityProblem, discovery: { technique, value }, baseBranch, maxRuns, executor, executorCommand, executorOnPath }` |
+| `environment` | `{ version, repo, remoteType, configValid, configError, ghAvailable, ghLogin, identityProblem, discovery: { technique, value }, baseBranch, maxRuns, lockStaleMinutes, executor, executorCommand, executorOnPath }` |
 
 `selection.plan` reuses `toPlanJson` verbatim, so a consumer that already parses
 `do-work --dry-run --json` parses this without change.

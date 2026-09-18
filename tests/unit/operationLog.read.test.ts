@@ -184,6 +184,37 @@ describe("readExecutionTicks", () => {
     expect(empty.present).toBe(true);
     expect(empty.entries).toEqual([]);
   });
+
+  it("voids a line whose numeric field is not a number, rather than reading it as zero", () => {
+    // `items=oops` used to pass through `Number.parseInt(...) || 0` and be
+    // reported as a clean zero-item tick, hiding corrupted history behind a
+    // healthy report.
+    writeFileSync(
+      join(dir, EXECUTION_LOG_FILE),
+      "2026-01-10T00:00:00.000Z do-work repo=acme/widgets items=oops answered=0 " +
+        "answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=1.0s\n",
+      "utf8",
+    );
+    const read = readExecutionTicks({ dir });
+    expect(read.entries).toHaveLength(0);
+    expect(read.skipped).toBe(1);
+  });
+
+  it("voids a line whose outcome bucket is not a number", () => {
+    writeFileSync(
+      join(dir, EXECUTION_LOG_FILE),
+      "2026-01-10T00:00:00.000Z do-work repo=acme/widgets items=1 answered=1x " +
+        "answered-no-reply=0 skipped=0 failed=0 deferred=0 runs=0 exit=0 dur=1.0s\n",
+      "utf8",
+    );
+    expect(readExecutionTicks({ dir }).entries).toHaveLength(0);
+  });
+
+  it("says so when no repository filter was applied", () => {
+    writeExecution(tick());
+    expect(readExecutionTicks({ dir }).filtered).toBe(false);
+    expect(readExecutionTicks({ dir, repo: "acme/widgets" }).filtered).toBe(true);
+  });
 });
 
 describe("readWorkRecords", () => {
@@ -310,5 +341,26 @@ describe("readWorkRecords", () => {
     const read = readWorkRecords({ dir });
     expect(read.present).toBe(false);
     expect(read.error).toBeNull();
+  });
+  it("counts a malformed header without discarding the record in progress", () => {
+    // One bad header used to close the current record and orphan every item
+    // line after it, so a single damaged line hid the work history that followed.
+    writeFileSync(
+      join(dir, WORK_LOG_FILE),
+      "=== 2026-01-10T00:00:00.000Z acme/widgets ===\n" +
+        "=== not-a-timestamp acme/widgets ===\n" +
+        "#42 issue-discuss answered [claude model=opus] — posted an answer\n",
+      "utf8",
+    );
+    const read = readWorkRecords({ dir });
+    expect(read.entries).toHaveLength(1);
+    expect(read.entries[0].items).toHaveLength(1);
+    expect(read.skipped).toBe(1);
+  });
+
+  it("says so when no repository filter was applied", () => {
+    writeWork(tick());
+    expect(readWorkRecords({ dir }).filtered).toBe(false);
+    expect(readWorkRecords({ dir, repo: "acme/widgets" }).filtered).toBe(true);
   });
 });

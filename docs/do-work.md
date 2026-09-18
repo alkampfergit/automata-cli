@@ -350,6 +350,11 @@ Every section is printed even when it has nothing to say, and a section that fai
 reports the failure instead of aborting the report — a check that dies on the first fault tells you
 about one section out of six, and the fault most likely to be present is the one you are chasing.
 
+Both operation logs are filtered to this repository's slug. When the slug cannot be resolved — no
+`origin` remote pointing at GitHub — no filter is applied and the two sections say
+`not filtered by repository`, because the logs are shared by every checkout that writes to the same
+workspace root and another repository's history is not an answer about this one.
+
 ### What counts as a problem
 
 | Finding | Problem? |
@@ -364,13 +369,18 @@ about one section out of six, and the fault most likely to be present is the one
 | Recent ticks answered nothing | **No.** An idle loop with no matching work is healthy. |
 | The work log is empty | **No.** Same reason. |
 | Detached HEAD, uncommitted changes, a missing base branch, a base branch with no upstream, a *diverged* base branch, a failed `git fetch` | Yes. |
+| `git status` itself failed, so whether the tree is clean is unknown | Yes — never reported as a clean tree. |
+| The base branch has **no tracking configuration**, even though `origin/<base>` exists | Yes: the pre-flight's pull is a bare `git pull --ff-only`, which needs it. The ahead/behind figures are still shown, counted against `origin/<base>`. |
+| The base branch's divergence could not be read at all | Yes: an unestablished state is not a healthy one. |
 | The checkout is on a branch other than the base | **No.** The pre-flight checks the base branch out itself. |
 | The base branch is only behind, or only ahead | **No.** The pre-flight fast-forwards it; local commits are your business. |
 | A `gh` call failed | Yes. |
+| `gh api user` failed — `gh` is not authenticated here | Yes. |
+| `gh` is authenticated but names no account (a GitHub App installation token) | **No.** That token legitimately has no user. |
 | The discovery filter matched nothing | **No.** |
 | The configuration does not parse or validate | Yes — reported, not fatal. |
 | `gh` is authenticated as an account in `allowedUsers`, or as one that is neither the agent nor unverifiable | Yes: that is the self-triggering-loop misconfiguration [`do-work` itself refuses to run under](#required-configuration). |
-| The executor's command is not on `PATH` | Yes. Under cron the `PATH` is not your login shell's. |
+| The executor's command is not on `PATH` | Yes. Under cron the `PATH` is not your login shell's. A name on `PATH` that is a directory, or a file with no execute bit, counts as not found — `--check` resolves what `spawn` would accept, not what merely exists. |
 
 ### Scheduler silence
 
@@ -424,11 +434,11 @@ These are `--check`'s own codes; they are not the [tick exit codes](#exit-codes)
   "problems": [{ "section": "git", "summary": "…" }],
   "sections": {
     "lock":        { "title": "Run lock",     "lines": ["…"], "problems": [], "data": { "status": "free", "staleMinutes": 120 } },
-    "ticks":       { "…": "newest, history, lockHeldCount, medianIntervalMs, sinceNewestMs, silent, logPath" },
-    "work":        { "…": "records" },
-    "git":         { "…": "branch, dirtyPaths, baseLocal, upstream, ahead, behind, refreshed, fetchError" },
+    "ticks":       { "…": "newest, history, lockHeldCount, medianIntervalMs, sinceNewestMs, silent, filtered, logPath" },
+    "work":        { "…": "records, filtered" },
+    "git":         { "…": "branch, dirtyPaths, statusError, baseLocal, upstream, upstreamTracked, ahead, behind, refreshed, fetchError" },
     "selection":   { "…": "ran, detail, plan" },
-    "environment": { "…": "version, configValid, configError, ghLogin, executor, executorOnPath" }
+    "environment": { "…": "version, remoteType, configValid, configError, ghAvailable, ghLogin, executor, executorOnPath" }
   }
 }
 ```

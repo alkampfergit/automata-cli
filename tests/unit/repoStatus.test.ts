@@ -67,32 +67,28 @@ function clean(): void {
   respond(["rev-list"], { stdout: "0\t0\n", status: 0 });
 }
 
-const MUTATING = [
-  "checkout",
-  "commit",
-  "add",
-  "push",
-  "pull",
-  "reset",
-  "merge",
-  "rebase",
-  "branch",
-  "stash",
-  "clean",
-  "switch",
-  "restore",
-  "cherry-pick",
-  "am",
-  "apply",
-  "tag",
-];
+/**
+ * An allow-list, not a deny-list.
+ *
+ * A list of forbidden subcommands can only ever forbid what someone thought of:
+ * `update-ref`, `config`, `worktree`, `reflog` and `read-tree` all write, and a
+ * deny-list that omits them lets the mutation through with the tests still
+ * green. Naming the four reads this module is allowed to issue inverts that —
+ * anything new has to be added here deliberately, which is the review the
+ * module's "cannot modify the checkout" promise actually needs.
+ */
+const READ_ONLY = ["rev-parse", "symbolic-ref", "status", "rev-list"];
 
 function assertNoMutation(): void {
   for (const args of calls) {
-    expect(MUTATING).not.toContain(args[0]);
     // The one write that is allowed writes a remote-tracking ref and nothing else.
-    if (args[0] === "fetch")
+    if (args[0] === "fetch") {
       expect(args).toEqual(["fetch", "origin", expect.stringContaining("refs/remotes/origin/")]);
+      continue;
+    }
+    expect(READ_ONLY).toContain(args[0]);
+    // `git status` is read-only only without a mode that writes the index.
+    if (args[0] === "status") expect(args).toEqual(["status", "--porcelain"]);
   }
 }
 
@@ -203,6 +199,31 @@ describe("inspectRepoStatus", () => {
     const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
 
     expect(status.upstream).toBe("origin/develop");
+    // Inferred, not configured. `prepareBaseBranch` runs a bare
+    // `git pull --ff-only`, which needs the tracking configuration this branch
+    // does not have, so the two must not be reported as the same thing.
+    expect(status.upstreamTracked).toBe(false);
+  });
+
+  it("marks a configured upstream as tracked", () => {
+    clean();
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.upstreamTracked).toBe(true);
+  });
+
+  it("carries a failed `git status` rather than reporting a clean tree", () => {
+    clean();
+    respond(["status", "--porcelain"], { status: 128, stderr: "fatal: unable to read index\n" });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.statusError).toBe("fatal: unable to read index");
+    expect(status.dirtyPaths).toEqual([]);
+  });
+
+  it("reports a clean tree with no status error", () => {
+    clean();
+    expect(inspectRepoStatus({ baseBranch: "develop", fetch: true }).statusError).toBeNull();
   });
 
   it("reports no upstream when neither the configured one nor origin/<base> exists", () => {

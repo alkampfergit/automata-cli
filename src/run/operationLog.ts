@@ -455,6 +455,13 @@ export interface LogReadResult<T> {
   skipped: number;
   /** Well-formed entries belonging to a different repository. */
   otherRepos: number;
+  /**
+   * False when no repository filter was applied, which happens when the caller
+   * could not resolve its own slug. The entries then come from every checkout
+   * that shares the log, and a report must say so rather than present them as
+   * this repository's history.
+   */
+  filtered: boolean;
   path: string;
 }
 
@@ -472,8 +479,13 @@ function readLogFile(path: string): { content: string | null; error: string | nu
   }
 }
 
-function emptyResult<T>(path: string, error: string | null): LogReadResult<T> {
-  return { entries: [], present: false, error, skipped: 0, otherRepos: 0, path };
+function emptyResult<T>(path: string, error: string | null, filtered: boolean): LogReadResult<T> {
+  return { entries: [], present: false, error, skipped: 0, otherRepos: 0, filtered, path };
+}
+
+/** Whether a repository filter was asked for at all. */
+function isFiltered(want: string | null | undefined): boolean {
+  return want !== undefined && want !== null;
 }
 
 /**
@@ -487,6 +499,33 @@ function emptyResult<T>(path: string, error: string | null): LogReadResult<T> {
 function matchesRepo(entryRepo: string | null, want: string | null | undefined): boolean {
   if (want === undefined || want === null) return true;
   return entryRepo === null || entryRepo === want;
+}
+
+/**
+ * A numeric log field, parsed whole.
+ *
+ * Absent means "written by an older automata" and reads as zero; present but
+ * unparseable means the line is corrupt and voids it. `Number.parseInt` alone
+ * cannot tell those apart — it accepts `42junk` and, through `|| 0`, turned
+ * `items=oops` into a clean zero-item tick, hiding damaged history behind a
+ * healthy report.
+ */
+function readInt(value: string | undefined): number | null {
+  if (value === undefined) return 0;
+  if (!/^-?\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * As `readInt`, for the one fractional field. `formatExecutionLine` writes the
+ * duration with its unit (`dur=1.5s`), which is accepted here and nowhere else.
+ */
+function readDurationSeconds(value: string | undefined): number | null {
+  if (value === undefined) return 0;
+  if (!/^\d+(?:\.\d+)?s?$/.test(value)) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseExecutionLine(line: string): ExecutionTick | null {
@@ -509,30 +548,32 @@ function parseExecutionLine(line: string): ExecutionTick | null {
   // `exit` is the one field with no sensible default: a line without it was not
   // written by `formatExecutionLine` and guessing 0 would report a failed tick
   // as clean.
-  const exit = pairs.get("exit");
-  if (exit === undefined) return null;
-  const exitCode = Number.parseInt(exit, 10);
-  if (Number.isNaN(exitCode)) return null;
+  const exit = readInt(pairs.get("exit"));
+  if (exit === null) return null;
 
   const counts = {} as Record<OperationOutcome, number>;
   for (const outcome of OUTCOMES) {
-    // Absent means "written by an older automata", not "malformed": the line is
-    // still worth reporting, so the bucket reads zero rather than voiding it.
-    counts[outcome] = Number.parseInt(pairs.get(outcome) ?? "0", 10) || 0;
+    const count = readInt(pairs.get(outcome));
+    if (count === null) return null;
+    counts[outcome] = count;
   }
 
+  const items = readInt(pairs.get("items"));
+  const runs = readInt(pairs.get("runs"));
+  const durationSeconds = readDurationSeconds(pairs.get("dur"));
+  if (items === null || runs === null || durationSeconds === null) return null;
+
   const repo = pairs.get("repo");
-  const duration = pairs.get("dur");
   const note = pairs.get("note");
   return {
     timestamp,
     command: fields[1],
     repo: repo === undefined || repo === "-" ? null : repo,
-    items: Number.parseInt(pairs.get("items") ?? "0", 10) || 0,
+    items,
     counts,
-    runs: Number.parseInt(pairs.get("runs") ?? "0", 10) || 0,
-    exitCode,
-    durationSeconds: duration === undefined ? 0 : Number.parseFloat(duration) || 0,
+    runs,
+    exitCode: exit,
+    durationSeconds,
     note: note === undefined || note.length === 0 ? null : note,
   };
 }
@@ -547,7 +588,7 @@ function parseExecutionLine(line: string): ExecutionTick | null {
 export function readExecutionTicks(options: LogReadOptions = {}): LogReadResult<ExecutionTick> {
   const path = join(options.dir ?? operationLogDirectory(), EXECUTION_LOG_FILE);
   const { content, error } = readLogFile(path);
-  if (content === null) return emptyResult(path, error);
+  if (content === null) return emptyResult(path, error, isFiltered(options.repo));
 
   const entries: ExecutionTick[] = [];
   let skipped = 0;
@@ -573,6 +614,7 @@ export function readExecutionTicks(options: LogReadOptions = {}): LogReadResult<
     error: null,
     skipped,
     otherRepos,
+    filtered: isFiltered(options.repo),
     path,
   };
 }
@@ -649,7 +691,7 @@ function parseWorkItem(line: string): WorkRecord["items"][number] | null {
 export function readWorkRecords(options: LogReadOptions = {}): LogReadResult<WorkRecord> {
   const path = join(options.dir ?? operationLogDirectory(), WORK_LOG_FILE);
   const { content, error } = readLogFile(path);
-  if (content === null) return emptyResult(path, error);
+  if (content === null) return emptyResult(path, error, isFiltered(options.repo));
 
   const entries: WorkRecord[] = [];
   let skipped = 0;
@@ -670,10 +712,16 @@ export function readWorkRecords(options: LogReadOptions = {}): LogReadResult<Wor
     if (line.trim().length === 0) continue;
 
     const header = parseWorkHeader(line);
+    if (header === null) {
+      // A header whose timestamp is unreadable is counted and stepped over. It
+      // must not close the record in progress: doing so orphaned every item line
+      // after it, so one damaged line hid the work history that followed it.
+      skipped++;
+      continue;
+    }
     if (header !== "not-a-header") {
       close();
-      if (header === null) skipped++;
-      else current = header;
+      current = header;
       continue;
     }
 
@@ -693,6 +741,7 @@ export function readWorkRecords(options: LogReadOptions = {}): LogReadResult<Wor
     error: null,
     skipped,
     otherRepos,
+    filtered: isFiltered(options.repo),
     path,
   };
 }

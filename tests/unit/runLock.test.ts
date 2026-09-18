@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  utimesSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
@@ -364,6 +373,24 @@ describe("inspectRunLock", () => {
   it("reports an unparseable lock as stale with no owner", () => {
     writeLock("{ not json");
     expect(inspectRunLock(120)).toEqual({ kind: "stale", owner: null, heldForMs: null });
+  });
+
+  // Root bypasses the mode bits, so the case cannot be provoked there.
+  const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  it.skipIf(asRoot)("reports a lock it cannot open as unreadable, not as stale", () => {
+    // `readOwner` answers null for an I/O failure and for malformed contents
+    // alike. Calling the first "stale" tells the operator the next tick will
+    // reclaim it, when that tick will fail on the very same permissions.
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    chmodSync(lockFile(), 0o000);
+    try {
+      const status = inspectRunLock(120);
+      expect(status.kind).toBe("unreadable");
+      if (status.kind !== "unreadable") return;
+      expect(status.detail.length).toBeGreaterThan(0);
+    } finally {
+      chmodSync(lockFile(), 0o644);
+    }
   });
 
   it("reports a live same-host lock past the staleness window as suspect", () => {

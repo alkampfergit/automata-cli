@@ -318,6 +318,16 @@ function describeTickHistory(
   }
 }
 
+/**
+ * Said whenever the repository slug could not be resolved, because the reader
+ * then keeps every checkout's entries. Without it the section presents another
+ * repository's history as this one's, which is exactly the wrong answer for an
+ * operator asking why *this* checkout has done nothing.
+ */
+function unfilteredLine(unit: string): string {
+  return `not filtered by repository: the slug could not be resolved, so ${unit} from other checkouts may be shown`;
+}
+
 export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): CheckSection {
   const lines: string[] = [];
   const problems: string[] = [];
@@ -332,6 +342,7 @@ export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): Chec
     describeTickHistory(ticks, cadence, now, lines, problems);
   }
 
+  if (!read.filtered && read.present) lines.push(unfilteredLine("line(s)"));
   if (read.skipped > 0)
     lines.push(`${String(read.skipped)} log line(s) could not be parsed and were ignored`);
   if (read.otherRepos > 0)
@@ -346,6 +357,7 @@ export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): Chec
     silent: cadence.silent,
     skipped: read.skipped,
     otherRepos: read.otherRepos,
+    filtered: read.filtered,
     logPath: read.path,
     logPresent: read.present,
   });
@@ -358,6 +370,29 @@ export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): Chec
  * legitimately invokes no executor for days. The *ticks* section is what notices
  * a loop that has stopped.
  */
+/**
+ * One item line, in the shape `operationLog` wrote it.
+ *
+ * The synchronisation strategy is reported because a branch that stops
+ * synchronising is otherwise indistinguishable from one with nothing to do.
+ */
+function describeWorkItem(item: WorkRecord["items"][number]): string {
+  const how =
+    item.executor === null
+      ? ""
+      : ` [${[item.executor, item.model, item.effort].filter((part) => part !== null).join(" ")}]`;
+  const sync = item.sync === null ? "" : ` sync=${item.sync}`;
+  return `  ${item.subject} ${item.turn ?? "-"} ${item.outcome}${how}${sync} — ${item.detail}`;
+}
+
+/** Each retained record, newest first, with its age. */
+function describeWorkRecords(records: WorkRecord[], now: Date): string[] {
+  return records.flatMap((record) => [
+    `${record.timestamp.toISOString()} (${describeDuration(now.getTime() - record.timestamp.getTime())} ago)`,
+    ...record.items.map(describeWorkItem),
+  ]);
+}
+
 export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSection {
   const lines: string[] = [];
   const problems: string[] = [];
@@ -369,23 +404,10 @@ export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSe
   } else if (!read.present || records.length === 0) {
     lines.push("no tick has invoked the executor in the retained window");
   } else {
-    for (const record of records) {
-      const age = describeDuration(now.getTime() - record.timestamp.getTime());
-      lines.push(`${record.timestamp.toISOString()} (${age} ago)`);
-      for (const item of record.items) {
-        const how =
-          item.executor === null
-            ? ""
-            : ` [${[item.executor, item.model, item.effort].filter((part) => part !== null).join(" ")}]`;
-        // The synchronisation strategy is reported because a branch that stops
-        // synchronising is otherwise indistinguishable from one with nothing to do.
-        const sync = item.sync === null ? "" : ` sync=${item.sync}`;
-        lines.push(
-          `  ${item.subject} ${item.turn ?? "-"} ${item.outcome}${how}${sync} — ${item.detail}`,
-        );
-      }
-    }
+    lines.push(...describeWorkRecords(records, now));
   }
+
+  if (!read.filtered && read.present) lines.push(unfilteredLine("record(s)"));
 
   if (read.skipped > 0)
     lines.push(`${String(read.skipped)} log line(s) could not be parsed and were ignored`);
@@ -396,6 +418,7 @@ export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSe
     records,
     skipped: read.skipped,
     otherRepos: read.otherRepos,
+    filtered: read.filtered,
     logPath: read.path,
     logPresent: read.present,
   });
@@ -411,6 +434,15 @@ function describeCheckout(status: RepoStatus, lines: string[], problems: string[
   } else {
     const at = status.head === null ? "" : ` at ${status.head}`;
     lines.push(`on ${status.branch}${at}`);
+  }
+
+  if (status.statusError !== null) {
+    lines.push(`the working tree could not be inspected: ${status.statusError}`);
+    problems.push(
+      `\`git status\` failed (${status.statusError}), so whether the working tree is clean is unknown; ` +
+        "the pre-flight runs the same command and stops every item when it cannot answer",
+    );
+    return;
   }
 
   if (status.dirtyPaths.length === 0) {
@@ -443,6 +475,20 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
     return;
   }
 
+  // An inferred `origin/<base>` is not tracking configuration. The pre-flight's
+  // bare `git pull --ff-only` reads the branch's own configuration and fails
+  // without it, however healthy the counts below look.
+  if (!status.upstreamTracked) {
+    lines.push(
+      `base branch ${status.baseBranch} has no tracking configuration; counted against ${status.upstream}`,
+    );
+    problems.push(
+      `the base branch \`${status.baseBranch}\` has no upstream configured, so the pre-flight's ` +
+        `\`git pull --ff-only\` fails even though ${status.upstream} exists; set it with ` +
+        `\`git branch --set-upstream-to=${status.upstream} ${status.baseBranch}\``,
+    );
+  }
+
   const freshness = status.refreshed ? "" : " (not refreshed)";
   const ahead = status.ahead === null ? "?" : String(status.ahead);
   const behind = status.behind === null ? "?" : String(status.behind);
@@ -450,8 +496,20 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
     `base branch ${status.baseBranch} vs ${status.upstream}: ahead ${ahead}, behind ${behind}${freshness}`,
   );
 
-  if (status.ahead === null || status.ahead === 0) return;
-  if (status.behind !== null && status.behind > 0) {
+  // Both counts null with the branch and its upstream both present means
+  // `rev-list` failed or answered something unreadable. Returning quietly here
+  // would let a checkout whose state was never established exit `0`.
+  if (status.ahead === null || status.behind === null) {
+    problems.push(
+      `the divergence of \`${status.baseBranch}\` from ${status.upstream} could not be read, so whether the ` +
+        "pre-flight's fast-forward pull will succeed is unknown; try `git rev-list --left-right --count " +
+        `${status.upstream}...${status.baseBranch}\` to see git's own error`,
+    );
+    return;
+  }
+
+  if (status.ahead === 0) return;
+  if (status.behind > 0) {
     problems.push(
       `the base branch \`${status.baseBranch}\` has diverged from ${status.upstream} ` +
         `(${String(status.ahead)} ahead, ${String(status.behind)} behind); the pre-flight's fast-forward pull ` +

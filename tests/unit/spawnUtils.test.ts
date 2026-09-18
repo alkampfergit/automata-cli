@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { resolveCommand } from "../../src/cli/spawnUtils.js";
@@ -7,10 +7,11 @@ import { resolveCommand } from "../../src/cli/spawnUtils.js";
 const originalPath = process.env["PATH"];
 const dirs: string[] = [];
 
+/** A PATH entry holding launchable executables: regular files with an execute bit. */
 function pathDir(...names: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), "automata-path-"));
   dirs.push(dir);
-  for (const name of names) writeFileSync(join(dir, name), "");
+  for (const name of names) writeFileSync(join(dir, name), "", { mode: 0o755 });
   return dir;
 }
 
@@ -47,5 +48,26 @@ describe("resolveCommand", () => {
     delete process.env["PATH"];
 
     expect(resolveCommand("automata-fake-tool")).toBe("automata-fake-tool");
+  });
+
+  it("skips a name on PATH that is not executable", () => {
+    // A half-finished install leaves a mode-644 file behind. Reporting it as the
+    // executor makes `--check` say the loop is fine and the tick die on EACCES.
+    const dir = mkdtempSync(join(tmpdir(), "automata-path-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "automata-fake-tool"), "", { mode: 0o644 });
+    process.env["PATH"] = dir;
+
+    expect(resolveCommand("automata-fake-tool")).toBe("automata-fake-tool");
+  });
+
+  it("skips a directory that shares the command's name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "automata-path-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, "automata-fake-tool"));
+    const real = pathDir("automata-fake-tool");
+    process.env["PATH"] = [dir, real].join(delimiter);
+
+    expect(resolveCommand("automata-fake-tool")).toBe(join(real, "automata-fake-tool"));
   });
 });
