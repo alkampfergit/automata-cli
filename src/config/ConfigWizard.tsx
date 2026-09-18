@@ -43,7 +43,7 @@ const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
 
 // New entries are appended so existing menu positions — and the navigation tests
 // that depend on them — stay valid.
-const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts", "Issue Watch", "Do Work"] as const;
+const MAIN_MENU_OPTIONS = ["Remote / Mode", "Implement-Next", "Prompts", "Issue Watch", "Do Work", "Git"] as const;
 
 const PROMPTS_MENU_OPTIONS = [
   "Sonar",
@@ -84,7 +84,8 @@ type Screen =
   | "do-work-lock-stale"
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt"
-  | "do-work-pr-orphan-prompt";
+  | "do-work-pr-orphan-prompt"
+  | "git-trunk-branch";
 
 /** The subset of ink's key object this wizard reacts to. */
 interface InkKey {
@@ -277,6 +278,7 @@ export function ConfigWizard() {
   const [doWorkPrOrphanPrompt, setDoWorkPrOrphanPrompt] = useState(
     existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   );
+  const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -494,6 +496,18 @@ export function ConfigWizard() {
       },
       onBack: () => setScreen("prompts-menu"),
     },
+    "git-trunk-branch": {
+      setValue: setGitTrunkBranch,
+      onSubmit: () => {
+        const branch = gitTrunkBranch.trim();
+        const current = readRawConfig();
+        // Blank clears the key, which is how an operator goes back to detecting
+        // the trunk from the remote.
+        writeConfig({ ...current, git: { ...current.git, trunkBranch: branch || undefined } });
+        exit();
+      },
+      onBack: () => setScreen("main"),
+    },
   };
 
   /** The arrow-navigated screens, described the same way as the text ones. */
@@ -508,6 +522,7 @@ export function ConfigWizard() {
         else if (chosen === "Implement-Next") setScreen("technique");
         else if (chosen === "Issue Watch") setScreen("allowed-users");
         else if (chosen === "Do Work") setScreen("do-work-base-branch");
+        else if (chosen === "Git") setScreen("git-trunk-branch");
         else setScreen("prompts-menu");
       },
     },
@@ -675,6 +690,12 @@ export function ConfigWizard() {
       label: "Instructions for a pull request with no linked issue:",
       value: doWorkPrOrphanPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "git-trunk-branch": {
+      title: "Git — Trunk Branch",
+      label: "Branch publish-release releases to (blank = detect it from the remote):",
+      value: gitTrunkBranch,
+      hint: `Type branch · Enter to save · ${BACK}`,
     },
   };
 

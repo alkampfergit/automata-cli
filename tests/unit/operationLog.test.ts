@@ -132,6 +132,59 @@ describe("formatExecutionLine", () => {
 
 /* ── formatWorkRecord ────────────────────────────────────────────────────── */
 
+describe("branch synchronisation in the log", () => {
+  // A cron tick discards its stdout, so a branch that has stopped synchronising
+  // is otherwise invisible — which is what let the `pull-failed` loop in issue
+  // #73 run unnoticed.
+  it("adds no sync field when every item fast-forwarded", () => {
+    // The ordinary line must stay byte-for-byte what it was, or existing greps
+    // over an operator's log break.
+    const line = formatExecutionLine(
+      tick({ items: [item({ sync: "fast-forward" }), item({ subject: "#54", sync: "tracking-branch" })] }),
+    );
+    expect(line).not.toContain("sync=");
+  });
+
+  it("counts each non-trivial strategy and refusal on the execution line", () => {
+    const line = formatExecutionLine(
+      tick({
+        items: [
+          item({ subject: "#1", sync: "rebase" }),
+          item({ subject: "#2", sync: "rebase" }),
+          item({ subject: "#3", outcome: "skipped", ranExecutor: false, sync: "rebase-conflict" }),
+          item({ subject: "#4", outcome: "skipped", ranExecutor: false, sync: "pull-failed" }),
+          item({ subject: "#5", sync: "fast-forward" }),
+          item({ subject: "#6" }),
+        ],
+      }),
+    );
+    expect(line.trimEnd().endsWith(" sync=rebase:2,rebase-conflict:1,pull-failed:1")).toBe(true);
+  });
+
+  it("keeps the sync field ahead of the note field", () => {
+    const line = formatExecutionLine(
+      tick({ note: "lock-held", items: [item({ sync: "reset-to-remote" })] }),
+    );
+    expect(line.trimEnd().endsWith("sync=reset-to-remote:1 note=lock-held")).toBe(true);
+  });
+
+  it("names the strategy on the work record of an item that ran", () => {
+    const record = formatWorkRecord(
+      tick({
+        items: [item({ subject: "PR #81", turn: "pr-orphan", sync: "rebase", detail: "pushed a fix" })],
+      }),
+    );
+    expect(record).toContain("PR #81 pr-orphan answered sync=rebase — pushed a fix");
+  });
+
+  it("collapses a newline smuggled through the sync field", () => {
+    const record = formatWorkRecord(
+      tick({ items: [item({ sync: "rebase\n=== 2026-09-10T06:51:36.412Z x ===" })] }),
+    );
+    expect(record?.trimEnd().split("\n")).toHaveLength(2);
+  });
+});
+
 describe("formatWorkRecord", () => {
   it("returns null when no item reached the executor", () => {
     expect(formatWorkRecord(tick())).toBeNull();

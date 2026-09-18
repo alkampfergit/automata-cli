@@ -10,6 +10,70 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- The executor's command is resolved against `PATH` the way `spawn` resolves it: only a regular file with an
+  execute bit counts. A directory sharing the name, or a mode-644 file left behind by a half-finished install,
+  is now skipped instead of being launched and failing with `EISDIR` / `EACCES`.
+- `automata git publish-release` no longer assumes the release branch is a local `master`. It resolves the trunk name
+  from `origin` (an explicit `git.trunkBranch` setting, then `origin/HEAD`, then the remote's advertised HEAD, then a
+  probe of `main`/`master`), fetches tags before inferring a version, and reads that version from `origin/<trunk>` — so
+  a clone that only checked out `develop`, and a repository whose trunk is called `main`, both work.
+- `do-work` recovers from a pull-request branch that has diverged from its remote because the same change reached the
+  remote under a different sha. When every local-only commit is already on the remote as an equivalent patch, the
+  branch is rebased onto the remote instead of being skipped as `pull-failed` on every tick forever. A branch holding
+  a commit that is genuinely unpushed, or a merge commit, is still refused and left untouched.
+- The `pull-failed` skip message now says how many commits are unpushed and gives the `git log origin/<b>..<b>`
+  command to inspect them.
+- A fast-forward that fails on a head branch holding nothing the remote does not — a stale `index.lock`, an
+  unwritable ref, a hook that rejected the pull — is no longer reported as a divergence. The skip message names
+  git's own error as the cause and no longer offers a `git reset --hard` for commits that do not exist.
+- A rebase that was already in progress in the checkout is never aborted by `do-work`. The state is checked before
+  the automatic rebase starts, and the item is skipped as `pull-failed` instead, so a paused manual rebase with a
+  clean tree is left exactly as it was. An interrupted `git am`, which git keeps in the same `rebase-apply`
+  directory, is likewise no longer mistaken for a rebase.
+- The automatic rebase names `--no-reapply-cherry-picks`, so a repository with `rebase.reapplyCherryPicks` set no
+  longer replays the commits that were established as already upstream. The branch is checked against the remote tip
+  afterwards, and a rebase that reported success without landing there is reported as `pull-failed` rather than
+  logged as synchronized.
+- A `pull-failed` whose divergence could not be read at all — `git cherry` failed on a broken ref or an unreadable
+  object — no longer claims the branch has diverged nor offers `git reset --hard` as the remedy. It says what could
+  not be established and leaves the branch untouched.
+- A pull-request branch this checkout has never seen is reported as `tracking-branch` in the operation log even when
+  `git checkout` guessed it into existence from the remote-tracking ref, instead of being logged as a fast-forward of
+  a branch that did not exist.
+
+### Added
+
+- `do-work --check`: a read-only health report for the autonomous loop — run lock, tick history, last work records,
+  repository state, per-candidate GitHub selection and environment — exiting `0` when it found no problem and `1` when
+  it did. `--no-fetch` makes it run without any network call, and `--json` emits the whole report as one document.
+  See [docs/do-work.md](docs/do-work.md#checking-the-loops-health).
+- `git.trunkBranch` in `.automata/config.json` pins the branch `publish-release` releases to, settable with
+  `automata config set git-trunk-branch <name>` or the wizard's new `Git` screen. Unset by default.
+- `publish-release` now refuses to run when a local trunk branch is behind `origin/<trunk>`, rather than silently
+  fast-forwarding it, and prints which branch it resolved and where the name came from.
+- A new `rebase-conflict` skip reason for a pull-request branch whose automatic rebase conflicted. The rebase is
+  aborted first, so the branch is back on the tip it started from and the next tick does not see a conflicted index as
+  a dirty working tree. It means a conflict and nothing else: a `git rebase` that git refused before replaying
+  anything — a pre-rebase hook, a locked ref — is reported as `pull-failed` with `the rebase never started`, since
+  there is no conflict to resolve and nothing to abort. The conflict detail carries git's stdout as well as its
+  stderr, so the `CONFLICT (content): Merge conflict in <file>` lines reach the operator.
+- The operation log keeps the synchronization strategy on an item that failed *after* its branch was moved, so a
+  reset or a rebase is never lost from the log because a later GitHub call threw.
+- The operation log records how each branch was synchronized: a `sync=` field per item in `automata-work.log`, and a
+  `sync=<strategy>:<count>` summary in `automata-execution.log` whenever an item needed more than a fast-forward or
+  could not be synchronized at all.
+
+### Changed
+
+- Every pull `automata` performs now names its strategy on the command line, so nothing depends on the machine's
+  `pull.rebase` / `pull.ff` git configuration. In particular `git finish-feature` now runs `git pull --ff-only`
+  instead of a bare `git pull`, which on a machine with no strategy configured failed with
+  `Need to specify how to reconcile divergent branches`.
+- Development dependencies refreshed: `@types/node` 26.6.1, `prettier` 3.9.7, `vitest` 5.0.1. `npm audit` reports no
+  vulnerabilities.
+
 ## [0.7.0] - 2026-09-16
 
 ### Added

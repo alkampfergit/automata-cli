@@ -8,10 +8,13 @@ import {
   checkoutAndPull,
   deleteLocalBranch,
   fetchPrune,
-  getLatestTagOnMaster,
-  bumpMinorVersion,
+  getLatestTagOnTrunk,
+  resolveTrunkBranch,
+  fetchTrunkAndTags,
+  trunkBehindCount,
   tagExists,
   publishRelease,
+  checkReleasePreconditions,
   type PrCheck,
   type PrInfo,
   type SonarFailureSummary,
@@ -19,6 +22,8 @@ import {
   type SonarIssue,
   type SonarSecurityHotspot,
 } from "../git/gitService.js";
+import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
+import { resolveReleaseVersion } from "../git/releaseVersion.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 const SKIP_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
@@ -431,73 +436,85 @@ const finishFeatureCmd = new Command("finish-feature")
     }
   });
 
-const SEMVER_ARG_RE = /^\d+\.\d+\.\d+$/;
-
 const publishReleaseCmd = new Command("publish-release")
   .description("Execute the full GitFlow release sequence and push to origin")
-  .argument("[version]", "Release version in X.Y.Z format (auto-detected from master tag if omitted)")
+  .argument("[version]", "Release version in X.Y.Z format (auto-detected from the trunk tag if omitted)")
   .option("--dry-run", "Print git commands without executing them")
   .addHelpText(
     "after",
     `
 Release sequence:
   1. git checkout -b release/<version>
-  2. git checkout master && git merge --no-ff release/<version>
+  2. git checkout <trunk> && git merge --no-ff release/<version>
   3. git tag <version>
   4. git checkout develop && git merge --no-ff release/<version>
   5. git branch -d release/<version>
-  6. git push origin develop master <version>
+  6. git push origin develop <trunk> <version>
 
-When [version] is omitted the latest semver tag on master is detected and the
-minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
+<trunk> is resolved from origin — git.trunkBranch in .automata/config.json if
+set, else origin/HEAD, the remote's advertised HEAD, or a probe of main/master.
+Tags are fetched from origin first, in --dry-run too, so the version a dry run
+prints is the one a real run would use.
+
+When [version] is omitted the latest semver tag on origin/<trunk> is detected
+and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
   )
   .action((version: string | undefined, options: { dryRun?: boolean }) => {
     const dryRun = options.dryRun ?? false;
 
-    // Precondition: must be on develop
-    let branch: string;
-    try {
-      branch = getCurrentBranch();
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
-    if (branch !== "develop") {
-      process.stderr.write(
-        `Error: publish-release must be run from the 'develop' branch (currently on '${branch}').\n`,
-      );
+    // Preconditions: on develop, with a clean working tree.
+    const preconditions = checkReleasePreconditions();
+    if (!preconditions.ok) {
+      process.stderr.write(`Error: ${preconditions.message}\n`);
       process.exit(1);
     }
 
-    // Precondition: clean working tree
-    if (hasUncommittedChanges()) {
-      process.stderr.write("Error: You have uncommitted changes. Commit or stash them before publishing a release.\n");
+    // Resolve the trunk branch before anything else reads or writes a ref: every
+    // remaining step needs its name, and a repository that cannot answer should
+    // fail here, untouched.
+    const trunk = resolveTrunkBranch();
+    if (!trunk.ok) {
+      process.stderr.write(`Error: ${unresolvedTrunkMessage(trunk.attempted)}\n`);
+      process.exit(1);
+    }
+    const trunkBranch = trunk.branch;
+    const trunkRef = `origin/${trunkBranch}`;
+    process.stdout.write(`Trunk branch: ${trunkBranch} (${describeTrunkSource(trunk.source, trunkBranch)})\n`);
+
+    // Read-only, so it runs under --dry-run as well: without it the version
+    // would be inferred from whatever tags this clone happens to have.
+    const fetched = fetchTrunkAndTags(trunkBranch);
+    if (!fetched.ok) {
+      process.stderr.write(`Error: Failed to fetch ${trunkBranch} and tags from origin.\n${fetched.message}\n`);
       process.exit(1);
     }
 
     // Resolve version
-    let resolvedVersion: string;
-    if (version !== undefined) {
-      if (!SEMVER_ARG_RE.test(version)) {
-        process.stderr.write(`Error: Version '${version}' is not valid semver. Use X.Y.Z format (e.g. 1.2.0).\n`);
-        process.exit(1);
-      }
-      resolvedVersion = version;
-    } else {
-      const latest = getLatestTagOnMaster();
-      if (latest === null) {
-        process.stderr.write(
-          "Error: No semver tag found on master. Pass a version explicitly: automata git publish-release <X.Y.Z>\n",
-        );
-        process.exit(1);
-      }
-      resolvedVersion = bumpMinorVersion(latest);
-      process.stdout.write(`Auto-detected version: ${latest} → ${resolvedVersion}\n`);
+    const versionResult = resolveReleaseVersion(version, trunkRef, () => getLatestTagOnTrunk(trunkRef));
+    if (!versionResult.ok) {
+      process.stderr.write(`Error: ${versionResult.message}\n`);
+      process.exit(1);
+    }
+    const resolvedVersion = versionResult.version;
+    if (versionResult.notice !== null) {
+      process.stdout.write(`${versionResult.notice}\n`);
     }
 
     // Precondition: tag must not already exist
     if (tagExists(resolvedVersion)) {
       process.stderr.write(`Error: Tag '${resolvedVersion}' already exists.\n`);
+      process.exit(1);
+    }
+
+    // Precondition: a local trunk must not be behind the remote. Refused rather
+    // than fast-forwarded, because that branch may carry work this command knows
+    // nothing about.
+    const behind = trunkBehindCount(trunkBranch);
+    if (behind > 0) {
+      process.stderr.write(
+        `Error: Local branch '${trunkBranch}' is ${String(behind)} commit(s) behind ${trunkRef}. ` +
+          `Update it (git checkout ${trunkBranch} && git merge --ff-only ${trunkRef}) or delete it, then re-run.\n`,
+      );
       process.exit(1);
     }
 
@@ -508,7 +525,7 @@ minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
     }
 
     try {
-      publishRelease(resolvedVersion, dryRun);
+      publishRelease(resolvedVersion, dryRun, trunkBranch);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);

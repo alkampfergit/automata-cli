@@ -93,6 +93,20 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The I/O failure behind an unreadable lock, or null when the bytes were read —
+ * whatever they turned out to contain. Kept separate from `readOwner`, whose
+ * null is load-bearing in the acquisition path and must stay "no usable owner".
+ */
+function readOwnerError(path: string): string | null {
+  try {
+    readFileSync(path, "utf8");
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
 function readOwner(path: string): LockOwner | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<LockOwner>;
@@ -474,4 +488,67 @@ function reclaim(path: string, command: string, token: string, expected: LockOwn
       // Already gone.
     }
   }
+}
+
+/**
+ * The lock's state, as a reader sees it.
+ *
+ * `unreadable` is distinct from `stale` even though `acquireRunLock` treats the
+ * two alike: a tick reclaiming an unparseable lock is the right thing to do,
+ * while a *report* that called that "stale" would send an operator looking for a
+ * dead process that never existed.
+ */
+export type LockStatus =
+  | { kind: "free" }
+  /** Live, on this host or within the staleness window: the normal state mid-tick. */
+  | { kind: "held"; owner: LockOwner; heldForMs: number | null }
+  /** Live but past the window with an unverifiable identity — the orphan case. */
+  | { kind: "suspect"; owner: LockOwner; heldForMs: number | null }
+  /** The next tick will reclaim it. */
+  | { kind: "stale"; owner: LockOwner | null; heldForMs: number | null }
+  | { kind: "unreadable"; detail: string };
+
+/** How long the lock has been held, or null when `startedAt` is not a date. */
+function heldForMs(owner: LockOwner, now: number): number | null {
+  const startedAt = Date.parse(owner.startedAt);
+  return Number.isNaN(startedAt) ? null : now - startedAt;
+}
+
+/**
+ * Classify the lock without touching it.
+ *
+ * Deliberately *not* `acquireRunLock`: that one creates the lock when the path is
+ * free, which would plant a lock file in a repository that has not ignored it and
+ * — for the moment it is held — turn away a real tick. A diagnostic must not be
+ * able to break the thing it is diagnosing.
+ *
+ * The judgement itself is `isStale`/`heldTooLong`, the same pair the acquisition
+ * path uses, so a report and a tick can never disagree about one lock file.
+ */
+export function inspectRunLock(staleMinutes: number, now: number = Date.now()): LockStatus {
+  const path = lockPath();
+
+  try {
+    statSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "free" };
+    return { kind: "unreadable", detail: (err as Error).message };
+  }
+
+  // A lock that exists but cannot be *opened* is not stale. `readOwner` answers
+  // null for an unreadable file and for malformed contents alike, and calling
+  // the first "stale" would promise the operator that the next tick reclaims it
+  // — when that tick will fail on the same permissions.
+  const readError = readOwnerError(path);
+  if (readError !== null) return { kind: "unreadable", detail: readError };
+
+  const owner = readOwner(path);
+  if (isStale(owner, staleMinutes)) {
+    return { kind: "stale", owner, heldForMs: owner === null ? null : heldForMs(owner, now) };
+  }
+
+  // Not stale, so `readOwner` returned an owner: `isStale(null)` is always true.
+  const held = owner as LockOwner;
+  const kind = heldTooLong(held, staleMinutes) ? "suspect" : "held";
+  return { kind, owner: held, heldForMs: heldForMs(held, now) };
 }

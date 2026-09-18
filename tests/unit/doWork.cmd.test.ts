@@ -81,16 +81,21 @@ const CLEAN_HYGIENE = {
   degraded: false,
 };
 
-vi.mock("../../src/run/runLock.js", () => ({
-  acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
-}));
+// Spread the original: `RUN_LOCK_RELATIVE_PATH` and `inspectRunLock` are
+// imported by the command and by `repoStatus.ts`, and a literal factory naming
+// only `acquireRunLock` breaks the suite at import time.
+vi.mock("../../src/run/runLock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/runLock.js")>();
+  return { ...actual, acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a) };
+});
 
 // Stubbed rather than pointed at a temp directory: the real module writes to
 // the *parent* of the working directory, so an unmocked test run would litter
 // the directory above the checkout on any machine where it is writable.
-vi.mock("../../src/run/operationLog.js", () => ({
-  recordTick: (...a: unknown[]) => mockRecordTick(...a),
-}));
+vi.mock("../../src/run/operationLog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/operationLog.js")>();
+  return { ...actual, recordTick: (...a: unknown[]) => mockRecordTick(...a) };
+});
 
 vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/claude/claudeService.js")>();
@@ -237,8 +242,8 @@ beforeEach(() => {
   gh.listCandidateIssues.mockReturnValue([]);
   gh.postMarker.mockReturnValue(MARKER);
   mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
-  mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop" });
-  mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042" });
+  mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop", strategy: "fast-forward" });
+  mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042", strategy: "fast-forward" });
   mockGetCurrentBranchPr.mockReturnValue(null);
   // A discussion turn that created a branch is the normal case for link repair.
   mockGetCurrentBranch.mockReturnValue("feature/042-flag");
@@ -940,6 +945,61 @@ describe("do-work build turn", () => {
     await runDoWork();
     expect(mockInvokeClaude).not.toHaveBeenCalled();
     expect(exitCode).toBe(2);
+  });
+
+  it("announces a branch that had to be rebased, and records the strategy", async () => {
+    mockPreparePrBranch.mockReturnValue({
+      ok: true,
+      branch: "feature/042",
+      strategy: "rebase",
+    });
+    await runDoWork();
+    expect(stderr).toContain("feature/042 had diverged from origin; synchronized by rebase.");
+    expect((mockRecordTick.mock.calls[0][0] as { items: { sync?: string }[] }).items[0].sync).toBe(
+      "rebase",
+    );
+  });
+
+  it("says nothing about an ordinary fast-forward, but still records it", async () => {
+    // One line per item saying "fast-forward" would bury the ones that matter.
+    await runDoWork();
+    expect(stderr).not.toContain("had diverged from origin");
+    expect((mockRecordTick.mock.calls[0][0] as { items: { sync?: string }[] }).items[0].sync).toBe(
+      "fast-forward",
+    );
+  });
+
+  it("keeps the strategy in the log when a later step throws the item out", async () => {
+    // The branch has already been moved by the time an exception escapes
+    // `processItem`; the tick catches it and builds its own report, which would
+    // otherwise drop the one fact an operator needs to understand the checkout
+    // they are looking at.
+    let prepared = false;
+    mockPreparePrBranch.mockImplementation(() => {
+      prepared = true;
+      return { ok: true, branch: "feature/042", strategy: "reset-to-remote" };
+    });
+    gh.getRepoSlug.mockImplementation(() => {
+      if (prepared) throw new Error("gh rate limited");
+      return { owner: "acme", repo: "widget" };
+    });
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as {
+      items: { sync?: string; outcome: string }[];
+    };
+    expect(tick.items[0]).toMatchObject({ outcome: "failed", sync: "reset-to-remote" });
+  });
+
+  it("records a refused branch under its refusal reason", async () => {
+    mockPreparePrBranch.mockReturnValue({
+      ok: false,
+      reason: "rebase-conflict",
+      detail: "CONFLICT — the rebase was aborted",
+    });
+    await runDoWork();
+    const tick = mockRecordTick.mock.calls[0][0] as { items: { sync?: string; detail: string }[] };
+    expect(tick.items[0].sync).toBe("rebase-conflict");
+    expect(tick.items[0].detail).toContain("rebase-conflict: CONFLICT");
   });
 });
 
@@ -1956,6 +2016,7 @@ describe("do-work operation log", () => {
       executor?: string;
       model?: string;
       effort?: string;
+      sync?: string;
     }[];
   }
 
@@ -2127,7 +2188,7 @@ describe("do-work orphan pull-request pass", () => {
       orphans: [orphanCandidate()],
     });
     gh.getPrSurface.mockReturnValue(orphanSurface());
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName, strategy: "fast-forward" });
   });
 
   it("runs one pr-orphan turn on the head branch and marks the pull request", async () => {
@@ -2228,7 +2289,7 @@ describe("do-work orphan pull-request pass", () => {
     gh.getPrSurface.mockImplementation((n: number) =>
       orphanSurface({ pr: { ...ORPHAN_PR, number: n, headRefName: shared } }),
     );
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: shared, strategy: "fast-forward" });
     await runDoWork();
 
     expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
@@ -2424,7 +2485,7 @@ describe("do-work --pr", () => {
       orphans: [orphanCandidate()],
     });
     gh.getPrSurface.mockReturnValue(orphanSurface());
-    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName });
+    mockPreparePrBranch.mockReturnValue({ ok: true, branch: ORPHAN_PR.headRefName, strategy: "fast-forward" });
   });
 
   it("restricts the tick to that pull request and skips the issue pass", async () => {

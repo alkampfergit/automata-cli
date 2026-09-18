@@ -217,10 +217,33 @@ export function getRepoSlug(): { owner: string; repo: string } {
  * callers must treat it as "unknown" rather than as a failure.
  */
 export function getAuthenticatedLogin(): string | null {
-  const { stdout, status } = run("gh", ["api", "user", "--jq", ".login"]);
-  if (status !== 0) return null;
+  const identity = getAuthenticatedIdentity();
+  return identity.kind === "login" ? identity.login : null;
+}
+
+/**
+ * Who `gh` is, with the reason when it is nobody.
+ *
+ * `getAuthenticatedLogin` flattens three different states into one `null`:
+ * an app installation token (which genuinely has no user and is fine), a `gh`
+ * that is not authenticated at all, and a `gh api user` that failed for any
+ * other reason. A diagnostic has to tell them apart — the middle one stops the
+ * loop completely and must be reported, the first one must not be.
+ */
+export type GhIdentity =
+  | { kind: "login"; login: string }
+  /** `gh api user` succeeded but named no login: an app installation token. */
+  | { kind: "no-user" }
+  /** `gh api user` failed. `gh` is unauthenticated, or could not reach GitHub. */
+  | { kind: "unavailable"; detail: string };
+
+export function getAuthenticatedIdentity(): GhIdentity {
+  const { stdout, stderr, status } = run("gh", ["api", "user", "--jq", ".login"]);
+  if (status !== 0) {
+    return { kind: "unavailable", detail: stderr.trim() || `gh api user exited ${String(status)}` };
+  }
   const login = stdout.trim();
-  return login.length > 0 ? login : null;
+  return login.length > 0 ? { kind: "login", login } : { kind: "no-user" };
 }
 
 export function listCandidateIssues(

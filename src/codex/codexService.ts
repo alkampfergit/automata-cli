@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { resolveCommand } from "../claude/claudeService.js";
-import { handleSpawnError, handleExitCode } from "../cli/spawnUtils.js";
+import { handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
 
 export interface InvokeCodexOptions {

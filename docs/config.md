@@ -225,3 +225,36 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
 The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.
+
+---
+
+## `git`
+
+Settings for the git commands a human runs. Kept apart from [`doWork`](#dowork), which configures the unattended loop.
+
+```json
+{
+  "git": {
+    "trunkBranch": "main"
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `trunkBranch` | *(unset — detected)* | The branch [`publish-release`](git.md#automata-git-publish-release) releases to. Unset means the name is resolved from `origin` on every run (`origin/HEAD`, then the remote's advertised HEAD, then a probe of `main`/`master`). Set it when detection cannot succeed, or to pin the name. |
+
+### Setting it non-interactively
+
+```bash
+automata config set git-trunk-branch main
+```
+
+The setter rejects an empty value. To go back to detection, remove the key from `.automata/config.json` or clear the
+field on the wizard's `Git` screen.
+
+### Wizard
+
+| Wizard screen | Key written |
+|---|---|
+| Git — Trunk Branch | `git.trunkBranch` (blank clears it) |

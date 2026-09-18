@@ -1,0 +1,271 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockSpawnSync = vi.fn();
+
+vi.mock("node:child_process", () => ({
+  spawnSync: (...a: unknown[]) => mockSpawnSync(...a),
+}));
+
+vi.mock("../../src/cli/spawnUtils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/cli/spawnUtils.js")>();
+  return { ...actual, resolveCommand: (name: string) => `/usr/bin/${name}` };
+});
+
+const { inspectRepoStatus } = await import("../../src/git/repoStatus.js");
+
+/**
+ * Every test asserts the argv, not only the parsed result.
+ *
+ * The module's whole promise is "this cannot modify the checkout", and a promise
+ * like that is only worth what its tests assert: a future `git checkout` added
+ * here would still return the right `RepoStatus`, and only an argv assertion
+ * notices it.
+ */
+
+type Result = { stdout?: string; stderr?: string; status?: number };
+
+let responses: { match: (args: string[]) => boolean; result: Result }[] = [];
+let calls: string[][] = [];
+let commands: string[] = [];
+
+function respond(prefix: string[], result: Result): void {
+  responses.push({
+    match: (args) => prefix.every((part, index) => args[index] === part),
+    result,
+  });
+}
+
+beforeEach(() => {
+  responses = [];
+  calls = [];
+  commands = [];
+  mockSpawnSync.mockReset();
+  mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+    commands.push(cmd);
+    calls.push(args);
+    // Last registered wins, so a test can override a default set up by `clean()`.
+    const hit = [...responses].reverse().find((candidate) => candidate.match(args));
+    const result = hit?.result ?? { status: 1 };
+    return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 0 };
+  });
+});
+
+/** The happy path: on the base branch, clean, level with its upstream. */
+function clean(): void {
+  respond(["rev-parse", "--short", "HEAD"], { stdout: "abc1234\n", status: 0 });
+  respond(["symbolic-ref"], { stdout: "develop\n", status: 0 });
+  respond(["status", "--porcelain"], { stdout: "", status: 0 });
+  respond(["rev-parse", "--verify", "--quiet", "refs/heads/develop"], {
+    stdout: "abc\n",
+    status: 0,
+  });
+  respond(["fetch"], { status: 0 });
+  respond(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "develop@{u}"], {
+    stdout: "origin/develop\n",
+    status: 0,
+  });
+  respond(["rev-list"], { stdout: "0\t0\n", status: 0 });
+}
+
+/**
+ * An allow-list, not a deny-list.
+ *
+ * A list of forbidden subcommands can only ever forbid what someone thought of:
+ * `update-ref`, `config`, `worktree`, `reflog` and `read-tree` all write, and a
+ * deny-list that omits them lets the mutation through with the tests still
+ * green. Naming the four reads this module is allowed to issue inverts that —
+ * anything new has to be added here deliberately, which is the review the
+ * module's "cannot modify the checkout" promise actually needs.
+ */
+const READ_ONLY = ["rev-parse", "symbolic-ref", "status", "rev-list"];
+
+function assertNoMutation(): void {
+  for (const args of calls) {
+    // The one write that is allowed writes a remote-tracking ref and nothing else.
+    if (args[0] === "fetch") {
+      expect(args).toEqual(["fetch", "origin", expect.stringContaining("refs/remotes/origin/")]);
+      continue;
+    }
+    expect(READ_ONLY).toContain(args[0]);
+    // `git status` is read-only only without a mode that writes the index.
+    if (args[0] === "status") expect(args).toEqual(["status", "--porcelain"]);
+  }
+}
+
+describe("inspectRepoStatus", () => {
+  it("reports a clean checkout level with its upstream", () => {
+    clean();
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status).toMatchObject({
+      branch: "develop",
+      head: "abc1234",
+      dirtyPaths: [],
+      baseBranch: "develop",
+      baseLocal: true,
+      upstream: "origin/develop",
+      ahead: 0,
+      behind: 0,
+      refreshed: true,
+      fetchError: null,
+      error: null,
+    });
+    assertNoMutation();
+  });
+
+  it("issues only read-only commands, plus the one permitted fetch", () => {
+    clean();
+    inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(calls).toContainEqual([
+      "fetch",
+      "origin",
+      "+refs/heads/develop:refs/remotes/origin/develop",
+    ]);
+    assertNoMutation();
+  });
+
+  it("makes no network call and reports the figures as unrefreshed when fetch is off", () => {
+    clean();
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: false });
+
+    expect(calls.some((args) => args[0] === "fetch")).toBe(false);
+    expect(status.refreshed).toBe(false);
+    expect(status.fetchError).toBeNull();
+    // The ahead/behind figures still come back — from the last successful fetch.
+    expect(status.ahead).toBe(0);
+    assertNoMutation();
+  });
+
+  it("reports a failed fetch without throwing, and still reads divergence", () => {
+    clean();
+    respond(["fetch"], { status: 128, stderr: "fatal: unable to access 'https://…'\n" });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.refreshed).toBe(false);
+    expect(status.fetchError).toBe("fatal: unable to access 'https://…'");
+    expect(status.ahead).toBe(0);
+  });
+
+  it("lists uncommitted changes and excludes automata's own lock file", () => {
+    clean();
+    respond(["status", "--porcelain"], {
+      stdout: " M src/index.ts\n?? notes.txt\n?? .automata/automata.lock\n",
+      status: 0,
+    });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.dirtyPaths).toEqual([" M src/index.ts", "?? notes.txt"]);
+  });
+
+  it("reports a detached HEAD as a null branch", () => {
+    clean();
+    respond(["symbolic-ref"], { status: 1 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.branch).toBeNull();
+    expect(status.head).toBe("abc1234");
+  });
+
+  it("orders ahead and behind the way `--left-right` prints them", () => {
+    clean();
+    // upstream...branch, so the left count is *behind* and the right is *ahead*.
+    respond(["rev-list"], { stdout: "5\t2\n", status: 0 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.behind).toBe(5);
+    expect(status.ahead).toBe(2);
+  });
+
+  it("reports a base branch that is absent locally", () => {
+    clean();
+    respond(["rev-parse", "--verify", "--quiet", "refs/heads/develop"], { status: 1 });
+    respond(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/develop"], { status: 1 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.baseLocal).toBe(false);
+    expect(status.upstream).toBeNull();
+    expect(status.ahead).toBeNull();
+    expect(status.behind).toBeNull();
+  });
+
+  it("falls back to origin/<base> when the local branch has no configured upstream", () => {
+    clean();
+    respond(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "develop@{u}"], { status: 128 });
+    respond(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/develop"], {
+      stdout: "def\n",
+      status: 0,
+    });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.upstream).toBe("origin/develop");
+    // Inferred, not configured. `prepareBaseBranch` runs a bare
+    // `git pull --ff-only`, which needs the tracking configuration this branch
+    // does not have, so the two must not be reported as the same thing.
+    expect(status.upstreamTracked).toBe(false);
+  });
+
+  it("marks a configured upstream as tracked", () => {
+    clean();
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.upstreamTracked).toBe(true);
+  });
+
+  it("carries a failed `git status` rather than reporting a clean tree", () => {
+    clean();
+    respond(["status", "--porcelain"], { status: 128, stderr: "fatal: unable to read index\n" });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.statusError).toBe("fatal: unable to read index");
+    expect(status.dirtyPaths).toEqual([]);
+  });
+
+  it("reports a clean tree with no status error", () => {
+    clean();
+    expect(inspectRepoStatus({ baseBranch: "develop", fetch: true }).statusError).toBeNull();
+  });
+
+  it("reports no upstream when neither the configured one nor origin/<base> exists", () => {
+    clean();
+    respond(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "develop@{u}"], { status: 128 });
+    respond(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/develop"], { status: 1 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.upstream).toBeNull();
+    expect(status.ahead).toBeNull();
+  });
+
+  it("reports a directory that is not a git repository rather than throwing", () => {
+    respond(["rev-parse", "--short", "HEAD"], {
+      status: 128,
+      stderr: "fatal: not a git repository\n",
+    });
+    respond(["rev-parse", "--is-inside-work-tree"], { status: 128 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.error).toBe("fatal: not a git repository");
+    expect(status.branch).toBeNull();
+    // It stopped there: no point interrogating a directory that is not a repository.
+    expect(calls.some((args) => args[0] === "status")).toBe(false);
+  });
+
+  it("returns nulls rather than NaN when rev-list prints something unexpected", () => {
+    clean();
+    respond(["rev-list"], { stdout: "weird\n", status: 0 });
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    expect(status.ahead).toBeNull();
+    expect(status.behind).toBeNull();
+  });
+
+  it("spawns a git resolved against PATH rather than letting the child search it", () => {
+    clean();
+    inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    // Every command, not just the first: one unqualified call is enough to let
+    // a `git` earlier on PATH than the real one decide what the report says.
+    expect(commands.length).toBeGreaterThan(0);
+    expect(commands.every((cmd) => cmd === "/usr/bin/git")).toBe(true);
+  });
+});

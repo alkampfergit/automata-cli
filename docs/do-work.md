@@ -14,6 +14,7 @@ automata do-work --dry-run          # show the work plan, change nothing
 automata do-work --issue 42         # restrict the tick to one issue
 automata do-work --pr 61            # restrict the tick to one orphan pull request
 automata do-work --json             # machine-readable plan and outcomes
+automata do-work --check            # read-only health report: is the loop working?
 ```
 
 ---
@@ -30,7 +31,9 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--limit <n>` | Maximum **issues** to fetch (default: `10`). A note is printed when the result was truncated. It does not bound the orphan pass, whose candidates come out of the pull-request query that is always read in full. |
 | `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. The issue items and the orphan pull-request items share this one budget, and the issues are offered it first. Default: `doWork.maxRunsPerTick`. |
 | `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
-| `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
+| `--check` | Print a read-only health report for the loop and exit — see [Checking the loop's health](#checking-the-loops-health). Exits `0` when it found no problem, `1` when it did. Cannot be combined with `--dry-run`. |
+| `--no-fetch` | With `--check`: make **no network call at all** — no `git fetch` and no `gh` query. Ahead/behind is reported from the last fetch, and the selection section does not run. |
+| `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. With `--check`, emits the whole report as one JSON document. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
 The directive in the newest triggering message takes precedence over the command-line options, which take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults. Only the executor and the model can be named in a message; the reasoning effort follows whichever executor ends up running — see [Steering one turn from a message](#steering-one-turn-from-a-message).
@@ -315,6 +318,155 @@ Every `--json` entry — in `plan`, `items` and `runs` — carries both `issue` 
 
 `--dry-run --json` carries the same information as `executor`, `model`, `effort`, `executorSource`, `modelSource`, `effortSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first six on each entry of `items`. `effortSource` is never `message` — no directive names a level — but it does change to the new executor's `config` when a `tool:` directive switches executor.
 
+---
+
+## Checking the loop's health
+
+```bash
+automata do-work --check [--no-fetch] [--json] [--issue <n>] [--pr <n>]
+```
+
+`do-work` normally runs from a scheduler and discards its own stdout, so when the loop quietly stops
+picking work up there is nowhere to look. `--check` is the one command that answers "is it working,
+and if not, why": it reads everything automata knows about itself, judges it, and exits `0` when it
+found no problem or `1` when it did.
+
+It **changes nothing**. It does not take the run lock, so it is safe to run while a tick is in
+flight; it does not record a tick, so reporting on the operation logs does not alter them; and it
+makes no GitHub write and starts no executor. See [what it never does](#what---check-never-does).
+
+### The six sections
+
+| Section | Answers | Read from |
+|---|---|---|
+| `Run lock` | Is a tick running right now? Is a dead one blocking every future tick? | `.automata/automata.lock` |
+| `Recent ticks` | Is the scheduler still firing, and how did the recent ticks end? | `automata-execution.log` |
+| `Last work` | What did the loop last actually do, to which item, and how was each branch synchronised (`sync=`)? | `automata-work.log` |
+| `Repository` | Is the checkout in a state that lets a tick work at all? | `git`, read-only |
+| `Selection` | Per candidate: picked up, or skipped and why? | live `gh` |
+| `Environment` | Are the configuration, `gh` and the executor sound? | config, `gh`, `PATH` |
+
+Every section is printed even when it has nothing to say, and a section that fails to collect
+reports the failure instead of aborting the report — a check that dies on the first fault tells you
+about one section out of six, and the fault most likely to be present is the one you are chasing.
+
+Both operation logs are filtered to this repository's slug. When the slug cannot be resolved — no
+`origin` remote pointing at GitHub — no filter is applied and the two sections say
+`not filtered by repository`, because the logs are shared by every checkout that writes to the same
+workspace root and another repository's history is not an answer about this one.
+
+### What counts as a problem
+
+| Finding | Problem? |
+|---|---|
+| A tick is running and holds the lock | **No.** A tick in flight is the normal state of a scheduled loop. |
+| The lock is stale (its holder is dead) | Yes — though the next tick reclaims it by itself. |
+| The lock is *suspect* — held past `doWork.lockStaleMinutes` by a process whose identity cannot be verified | Yes. See [the run lock](#the-run-lock). |
+| No execution log, or none for this repository | Yes: no tick has ever run here. |
+| The newest tick exited non-zero | Yes. |
+| No tick for much longer than the usual interval | Yes — see [scheduler silence](#scheduler-silence) below. |
+| Every recorded tick was turned away by a held lock | Yes: a previous tick is wedged. |
+| Recent ticks answered nothing | **No.** An idle loop with no matching work is healthy. |
+| The work log is empty | **No.** Same reason. |
+| Detached HEAD, uncommitted changes, a missing base branch, a base branch with no upstream, a *diverged* base branch, a failed `git fetch` | Yes. |
+| `git status` itself failed, so whether the tree is clean is unknown | Yes — never reported as a clean tree. |
+| The base branch has **no tracking configuration**, even though `origin/<base>` exists | Yes: the pre-flight's pull is a bare `git pull --ff-only`, which needs it. The ahead/behind figures are still shown, counted against `origin/<base>`. |
+| The base branch's divergence could not be read at all | Yes: an unestablished state is not a healthy one. |
+| The checkout is on a branch other than the base | **No.** The pre-flight checks the base branch out itself. |
+| The base branch is only behind, or only ahead | **No.** The pre-flight fast-forwards it; local commits are your business. |
+| A `gh` call failed | Yes. |
+| `gh api user` failed — `gh` is not authenticated here | Yes. |
+| `gh` is authenticated but names no account (a GitHub App installation token) | **No.** That token legitimately has no user. |
+| The discovery filter matched nothing | **No.** |
+| The configuration does not parse or validate | Yes — reported, not fatal. |
+| `gh` is authenticated as an account in `allowedUsers`, or as one that is neither the agent nor unverifiable | Yes: that is the self-triggering-loop misconfiguration [`do-work` itself refuses to run under](#required-configuration). |
+| The executor's command is not on `PATH` | Yes. Under cron the `PATH` is not your login shell's. A name on `PATH` that is a directory, or a file with no execute bit, counts as not found — `--check` resolves what `spawn` would accept, not what merely exists. |
+
+### Scheduler silence
+
+`--check` does not know your cron interval, and deliberately inspects no cron file, no cron log and
+no process table — those are host specifics, and hardcoding one host's makes the check wrong
+everywhere else. Instead it derives the cadence from the execution log itself: the **median**
+interval between the recorded ticks, flagged when the newest tick is older than **three times** that
+median. It withholds the judgement entirely until at least three intervals are on record, so a fresh
+installation is never accused of a failure it cannot have had.
+
+The median rather than the mean, so that one past outage in the history cannot inflate the
+expectation far enough to mask an outage happening right now.
+
+### Selection runs the real thing
+
+The `Selection` section is not a simulation. It calls the same functions a tick calls — the
+candidate query, each issue's surface, the open-pull-request link map, and the same
+[detection rules](#detection-rules) — and stops immediately before the first mutation. The skip
+reason you read here is the skip reason the next tick will act on.
+
+`--issue <n>` and `--pr <n>` narrow it, which is the direct way to ask "why is *this* one not being
+picked up".
+
+### Offline
+
+`--no-fetch` makes **no network call at all**: no `git fetch`, and no `gh`. The `Repository` section
+then labels its ahead/behind figures `(not refreshed)` — they come from the last successful fetch —
+and the `Selection` section reports that it did not run, which is not itself counted as a problem.
+Useful when the machine has lost connectivity and that is what you are diagnosing.
+
+### `--check` exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The report was produced and found no problem. The last line reads `RESULT: healthy`. |
+| `1` | The report was produced and found at least one problem (`RESULT: <n> problem(s) found`), **or** the invocation was refused — `--check` with `--dry-run` is refused, because they are two different read-only reports and silently preferring one would make the other flag a lie. |
+
+These are `--check`'s own codes; they are not the [tick exit codes](#exit-codes), and in particular
+`--check` never exits `2`.
+
+### `--json`
+
+`--check --json` emits one JSON document on stdout:
+
+```jsonc
+{
+  "generatedAt": "2026-09-18T14:41:26.000Z",
+  "repo": "owner/name",
+  "offline": false,
+  "exitCode": 0,
+  "problems": [{ "section": "git", "summary": "…" }],
+  "sections": {
+    "lock":        { "title": "Run lock",     "lines": ["…"], "problems": [], "data": { "status": "free", "staleMinutes": 120 } },
+    "ticks":       { "…": "newest, history, lockHeldCount, medianIntervalMs, sinceNewestMs, silent, filtered, logPath" },
+    "work":        { "…": "records, filtered" },
+    "git":         { "…": "branch, dirtyPaths, statusError, baseLocal, upstream, upstreamTracked, ahead, behind, refreshed, fetchError" },
+    "selection":   { "…": "ran, detail, plan" },
+    "environment": { "…": "version, remoteType, configValid, configError, ghAvailable, ghLogin, executor, executorOnPath" }
+  }
+}
+```
+
+`sections` is keyed by section id rather than being an array, so a consumer can reach one section
+without searching. `sections.selection.data.plan` uses exactly the shape `--dry-run --json` puts in
+its `plan`, so a script that already parses one parses the other.
+
+### What `--check` never does
+
+Asserted by tests, not merely intended:
+
+- never acquires the run lock, and never creates `.automata/automata.lock`;
+- never records a tick — reporting on the operation logs does not alter them;
+- never posts, edits or deletes a marker, and never assigns an issue or a pull request;
+- never runs the [pre-flight](#the-repository-hygiene-pre-flight): nothing is rescued, committed,
+  pushed, pruned, checked out or pulled;
+- never launches an executor;
+- inspects no cron file, no cron log and no process table;
+- offers no repair action — `do-work` already fast-forwards and rescues in its own pre-flight, and a
+  diagnostic that can change things is one you cannot run while worried.
+
+The only network effects are the read-only `gh` queries the `Selection` section makes and a single
+`git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>`, which updates one remote-tracking
+ref and nothing else.
+
+---
+
 ## Turn kinds
 
 | Turn | When | What the model is told |
@@ -356,13 +508,53 @@ So in particular:
 
 **Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an oversized prompt or an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
 
-### Force-pushed head branches
+### Synchronizing a diverged head branch
 
-Dependabot force pushes every rebase, so an orphan pull request's head branch is routinely rewritten between two ticks. On a checkout that has already seen the old tip, `git pull --ff-only` then fails for good — and would refuse the turn on every later tick.
+A pull request's head branch is routinely rewritten between two ticks — Dependabot force pushes every rebase, a reviewer squashes, a bot re-applies a fix upstream. On a checkout that has already seen the old tip, `git pull --ff-only` then fails for good, and without a recovery the turn is refused on every later tick.
 
-So when the fast-forward fails, `do-work` resets the local branch to the remote, but **only** when the local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch. Every commit the local branch holds then came from the remote and was rewritten there, so nothing a turn committed here can be lost. In any other case — a commit made locally and never pushed, or no previously known remote-tracking ref to compare against — the item is skipped as `pull-failed`, and the message names the branch to inspect and the reset to run by hand.
+Every git command in this path names its strategy on the command line. Nothing depends on the machine's `pull.rebase` or `pull.ff` configuration: an unattended loop must do the same thing on every machine it runs on.
 
-A dirty working tree is still refused before any of this, so uncommitted changes are never touched.
+`do-work` tries three things in order, stopping at the first that applies:
+
+| # | Strategy | When it applies | What it does |
+|---|---|---|---|
+| 1 | `fast-forward` | The local branch is behind the remote, or equal to it. | `git pull --ff-only origin <branch>`. |
+| 2 | `reset-to-remote` | The local tip was already reachable from the remote-tracking ref as this checkout last saw it, before the fetch — so every commit on it came from the remote and was rewritten there. | `git reset --hard origin/<branch>`. |
+| 3 | `rebase` | Every commit the local branch has and the remote does not is **already on the remote as the same patch**, under a different sha, none of them is a merge commit, and no rebase is already in progress in the checkout. | `git rebase --no-reapply-cherry-picks refs/remotes/origin/<branch>`, against the ref already fetched. The duplicates are dropped and the branch lands on the remote tip. |
+
+A branch this checkout has never seen is reported as `tracking-branch`, whether `git checkout` guessed it into existence from the single matching remote-tracking ref or the explicit `git checkout -b <branch> origin/<branch>` fallback created it. Nothing was fast-forwarded in either case — the local branch did not exist a moment earlier.
+
+`--no-reapply-cherry-picks` is named for the same reason `--ff-only` is: with `rebase.reapplyCherryPicks` set in the repository, git replays the commits it was told are already upstream instead of dropping them, and the strategy would then mean something different on that machine. The outcome is checked rather than assumed — after a rebase that reports success, the branch must *be* the remote tip, because every commit that was replayed away was already there. A success that lands anywhere else is reported as `pull-failed` with `did not land on the remote tip`, since the branch is still divergent and calling it synchronized would repeat the same failure on every later tick.
+
+The third strategy is the one that keeps an *equivalent* divergence out of the stuck state. Two tips can hold identical trees and identical patches and still be different commits — the change reached the remote under another sha. `git cherry` is what decides: it compares patch ids, and only a range where every commit is marked as already applied upstream is eligible. Merge commits disqualify the branch outright, because `git cherry` cannot compute a patch id for one and leaves it out of its listing, so unpushed work behind a local merge would otherwise look like nothing at all.
+
+**Nothing else is synchronized automatically.** If even one local commit is not already on the remote — work a turn committed here and never pushed — the item is skipped as `pull-failed` and no ref is moved. The message names how many commits are unpushed and gives the two commands to inspect and resolve them:
+
+```text
+  skipped: pull-failed — fatal: Not possible to fast-forward, aborting. — the local feature/042 has diverged from
+  origin/feature/042 and 1 of its commits is not on origin/feature/042, so it was not synchronized automatically;
+  inspect them with `git log origin/feature/042..feature/042` and `git reset --hard origin/feature/042` yourself
+  once they are safe to lose
+```
+
+If the rebase itself conflicts, it is aborted — so the branch is back on the exact tip it started from, with no rebase in progress — and the item is skipped as `rebase-conflict`, a reason of its own so it can be told apart from an ordinary divergence in the logs. Aborting matters beyond this one item: a rebase left in progress leaves a conflicted index, which the next tick reads as a dirty working tree and refuses *every* item for. The conflict detail carries git's stdout as well as its stderr, because the `CONFLICT (content): Merge conflict in <file>` lines — the only part naming what failed — are written to stdout.
+
+A rebase that is **already in progress** when the item comes up is never touched. A halted rebase can leave a clean working tree — a paused manual one, an `--exec` that failed — so it gets past the cleanliness gate, and git then refuses the new rebase on account of it. Aborting on that refusal would discard work `do-work` did not start, so the state is checked *before* the rebase begins and the item is skipped instead:
+
+```text
+  skipped: pull-failed — a rebase is already in progress in this checkout and automata did not start it, so
+  feature/042 was left untouched; finish it with `git rebase --continue` or drop it with `git rebase --abort`
+```
+
+That check is what makes the abort below safe: nothing was halted beforehand, so anything halted afterwards belongs to this run. It is specific to a rebase — git reuses the same `rebase-apply` directory for an interrupted `git am`, which is distinguished by the marker file inside it and is never treated as a rebase or aborted.
+
+`rebase-conflict` means a conflict and nothing else. `git rebase` also exits non-zero when it refuses *before* replaying anything — a pre-rebase hook that rejected it, a locked ref, an upstream that cannot be read — and there is then no halted rebase to abort and no conflict to resolve. That case is reported as `pull-failed` with `the rebase never started`, so the two are not confused in the logs:
+
+```text
+  skipped: pull-failed — error: cannot lock ref 'refs/heads/feature/042': Unable to create '.git/refs/heads/feature/042.lock': File exists. — the rebase never started, so feature/042 is untouched
+```
+
+A dirty working tree is still refused before any of this, so uncommitted changes are never touched. The strategy, or the refusal, is recorded in the [operation log](#the-operation-log).
 
 Two extra skips exist for the moment between the plan and the run — the item is re-decided just before it runs, as issue items already are:
 
@@ -462,6 +654,8 @@ The two views differ on purpose. A plan line names only what the tick would *do*
 
 A tick is one or more full model sessions, and cron fires on a fixed interval, so overlap is normal. `do-work` holds `.automata/automata.lock` for the whole tick.
 
+To see who holds it right now, without taking it, run [`do-work --check`](#checking-the-loops-health) — it reads this file and classifies it by the same rules described below.
+
 - Another **live** instance holds it → print a message and exit 0. Nothing is assigned, posted or invoked.
 - The lock is **stale** → it is reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness wins over age**: a long-running tick keeps its lock however old it is, because stealing it would put two model sessions in one checkout.
 - Reclaiming a stale lock is exclusive: a contender must first win an atomic rename of the stale file out of the way, and only the winner may create the replacement. Renaming one's *own* candidate over the lock would not be enough — `rename` replaces unconditionally, so two contenders could each write and each read their own token back.
@@ -498,6 +692,8 @@ A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 
 ## The operation log
 
+[`do-work --check`](#checking-the-loops-health) reads both of these files back and summarises them, which is usually easier than reading them by hand.
+
 Every non-dry-run `do-work` invocation appends to two plain-text files in the **parent directory of the working directory** — so a checkout at `~/workspaces/my-repo` writes to `~/workspaces/`:
 
 ```text
@@ -532,6 +728,7 @@ One line per invocation, including invocations that found nothing to do. Fields 
 | `runs` | Items for which the executor was actually invoked — what `--max-runs` counts |
 | `exit` | The process exit code (see [Exit codes](#exit-codes)) |
 | `dur` | Wall-clock duration in seconds |
+| `sync` | Present only when at least one item's branch needed more than a fast-forward, or could not be synchronized at all: `strategy:count` pairs, comma-separated — e.g. `sync=rebase:1,pull-failed:2`. See [synchronizing a diverged head branch](#synchronizing-a-diverged-head-branch) |
 | `note` | Present only for an invocation that ran no tick: `lock-held`, or `config-error` when the run was rejected before the tick began |
 
 After the append, the file is trimmed to its newest 1000 lines.
@@ -554,6 +751,7 @@ awk '{print $1}' ../automata-execution.log | tail -1   # when it last fired
 grep 'exit=2' ../automata-execution.log | tail    # the last degraded ticks
 grep 'note=lock-held' ../automata-execution.log   # ticks turned away by the run lock
 grep 'note=config-error' ../automata-execution.log # ticks rejected before they began
+grep 'sync=' ../automata-execution.log            # ticks where a branch needed more than a fast-forward
 ```
 
 If the newest timestamp is older than your cron interval, the loop is not firing — that is the question this file exists to answer.
@@ -564,16 +762,18 @@ One record per invocation in which the executor was actually invoked for at leas
 
 ```text
 === 2026-09-10T06:51:36.412Z acme/widget ===
-#53 issue-discuss answered [claude model=opus-5] — posted a reply
-#51 pr-work answered [codex effort=high] — pushed 2 commits
-PR #61 pr-orphan answered [claude model=opus-5] — recommended merge
+#53 issue-discuss answered [claude model=opus-5] sync=fast-forward — posted a reply
+#51 pr-work answered [codex effort=high] sync=fast-forward — pushed 2 commits
+PR #61 pr-orphan answered [claude model=opus-5] sync=rebase — recommended merge
 
 === 2026-09-10T07:34:11.902Z acme/widget ===
 #57 issue-discuss failed [claude] — the executor exited with status 1
 
 ```
 
-A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the subject, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set) and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+A record is a `=== <timestamp> <repo> ===` header, one line per invoked item, and a blank separator line. Each item line carries the subject, the [turn kind](#turn-kinds), the outcome, the resolved executor (with `model=` and `effort=` when they were set), the [synchronization strategy](#synchronizing-a-diverged-head-branch) its branch needed, and a brief detail — newlines collapsed and truncated to 200 characters, so one item is always one line.
+
+Only items that reached the executor appear here, so a branch that was *refused* never does; the `sync=` field on the [execution line](#automata-executionlog) is where a refusal is counted.
 
 The subject is `#<issue>` for an issue turn and `PR #<number>` for a [`pr-orphan`](#turn-kinds) turn, which has no issue — the same label the tick printed on stdout, so `grep '#53' ../automata-work.log` cannot confuse issue 53 with pull request 53.
 
@@ -607,6 +807,8 @@ Pick an interval comfortably shorter than how long you are willing to wait for a
 
 You do not have to redirect anywhere to keep a record: [the operation log](#the-operation-log) is maintained regardless, and survives the cron mail you never read.
 
+When the loop seems to have stopped, run [`do-work --check`](#checking-the-loops-health) from the same checkout. It reports whether the scheduler is still firing, entirely from automata's own records — it inspects nothing of cron itself, which is not automata's to manage.
+
 ---
 
 ## What `do-work` never does
@@ -614,7 +816,7 @@ You do not have to redirect anywhere to keep a record: [the operation log](#the-
 - Merge a pull request.
 - Close an issue, or close a pull request.
 - Push to the base branch, or commit to it.
-- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped. It does reset a pull-request branch that was force-pushed, but only when every commit on it demonstrably came from the remote — see [force-pushed head branches](#force-pushed-head-branches).
+- Stash, reset, clean or otherwise discard uncommitted changes — the [pre-flight](#the-repository-hygiene-pre-flight) commits and pushes them instead, and if that fails the item is skipped. It does reset or rebase a pull-request branch that has diverged from its remote, but only when every commit on it demonstrably came from the remote, or is already on the remote as the same patch — see [synchronizing a diverged head branch](#synchronizing-a-diverged-head-branch).
 - Delete a local branch whose work it cannot prove is finished — it pushes the branch and opens a draft pull request instead. Evidence is a merged pull request, a pull request closed unmerged, or zero commits outside the base branch; a branch whose state it could not read is kept.
 - Merge, rebase or reset the base branch to make a pull succeed.
 - Act on a message from an account that is not in `allowedUsers` — including the pull request body and commits of a bot such as Dependabot.

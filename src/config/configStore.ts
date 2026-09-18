@@ -71,6 +71,19 @@ export interface AutomataDoWorkConfig {
   prompts?: DoWorkPrompts;
 }
 
+/**
+ * Repository-level git settings. Separate from `doWork` on purpose: these apply
+ * to the git commands a human runs, not to the unattended loop.
+ */
+export interface AutomataGitConfig {
+  /**
+   * The branch releases are published to. Unset means "detect it from the
+   * remote", which is the normal case — this pins it for a repository whose
+   * trunk detection cannot succeed or should not be relied on.
+   */
+  trunkBranch?: string;
+}
+
 export interface AutomataConfig {
   remoteType?: RemoteType;
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
@@ -80,6 +93,7 @@ export interface AutomataConfig {
   agentUser?: string;
   prompts?: AutomataPrompts;
   doWork?: AutomataDoWorkConfig;
+  git?: AutomataGitConfig;
 }
 
 export const DEFAULT_CLAUDE_SYSTEM_PROMPT =

@@ -48,8 +48,18 @@ A command-line interface tool built with TypeScript and commander.js.
 - `.automata/config.json` (existing), `.automata/*.md` (new prompt files) (011-config-prompt-files)
 - TypeScript 5.x (strict mode) + commander.js, node:child_process (022-unify-ai-options)
 - TypeScript 5.x (strict mode) + commander.js, `gh` CLI via `spawnSync` (033-orphan-pull-requests)
+- TypeScript 5.x (strict mode) + `git cherry` / `git rebase` via `spawnSync` in `src/git/gitService.ts` (036-explicit-rebase-sync)
+- TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync` (036-release-trunk-detection)
 
 ## Recent Changes
+- 036-do-work-check: `do-work` gained `--check` (a read-only six-section health report, exit 0/1) and
+  `--no-fetch`; `inspectRunLock`, `readExecutionTicks`/`readWorkRecords`, `src/git/repoStatus.ts` and
+  `src/run/checkReport.ts` are the read-side modules behind it
+- 036-release-trunk-detection: `publish-release` resolves the trunk branch from `origin` instead of assuming a local
+  `master`, fetches tags first (in `--dry-run` too), and gained the `git.trunkBranch` config key
+- 036-explicit-rebase-sync: `do-work` names every pull strategy explicitly, rebases a pull-request branch whose
+  local-only commits are all already upstream as the same patch, adds the `rebase-conflict` skip reason, and records
+  the synchronisation strategy in the operation log
 - 033-orphan-pull-requests: `do-work` gained a second pass over open pull requests that close no issue of
   this repository, a `pr-orphan` turn kind, `doWork.prompts.prOrphan` and `--pr <number>`
 - 001-config-wizard: Added TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector)
