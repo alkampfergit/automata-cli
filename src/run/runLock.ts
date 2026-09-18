@@ -475,3 +475,59 @@ function reclaim(path: string, command: string, token: string, expected: LockOwn
     }
   }
 }
+
+/**
+ * The lock's state, as a reader sees it.
+ *
+ * `unreadable` is distinct from `stale` even though `acquireRunLock` treats the
+ * two alike: a tick reclaiming an unparseable lock is the right thing to do,
+ * while a *report* that called that "stale" would send an operator looking for a
+ * dead process that never existed.
+ */
+export type LockStatus =
+  | { kind: "free" }
+  /** Live, on this host or within the staleness window: the normal state mid-tick. */
+  | { kind: "held"; owner: LockOwner; heldForMs: number | null }
+  /** Live but past the window with an unverifiable identity — the orphan case. */
+  | { kind: "suspect"; owner: LockOwner; heldForMs: number | null }
+  /** The next tick will reclaim it. */
+  | { kind: "stale"; owner: LockOwner | null; heldForMs: number | null }
+  | { kind: "unreadable"; detail: string };
+
+/** How long the lock has been held, or null when `startedAt` is not a date. */
+function heldForMs(owner: LockOwner, now: number): number | null {
+  const startedAt = Date.parse(owner.startedAt);
+  return Number.isNaN(startedAt) ? null : now - startedAt;
+}
+
+/**
+ * Classify the lock without touching it.
+ *
+ * Deliberately *not* `acquireRunLock`: that one creates the lock when the path is
+ * free, which would plant a lock file in a repository that has not ignored it and
+ * — for the moment it is held — turn away a real tick. A diagnostic must not be
+ * able to break the thing it is diagnosing.
+ *
+ * The judgement itself is `isStale`/`heldTooLong`, the same pair the acquisition
+ * path uses, so a report and a tick can never disagree about one lock file.
+ */
+export function inspectRunLock(staleMinutes: number, now: number = Date.now()): LockStatus {
+  const path = lockPath();
+
+  try {
+    statSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "free" };
+    return { kind: "unreadable", detail: (err as Error).message };
+  }
+
+  const owner = readOwner(path);
+  if (isStale(owner, staleMinutes)) {
+    return { kind: "stale", owner, heldForMs: owner === null ? null : heldForMs(owner, now) };
+  }
+
+  // Not stale, so `readOwner` returned an owner: `isStale(null)` is always true.
+  const held = owner as LockOwner;
+  const kind = heldTooLong(held, staleMinutes) ? "suspect" : "held";
+  return { kind, owner: held, heldForMs: heldForMs(held, now) };
+}

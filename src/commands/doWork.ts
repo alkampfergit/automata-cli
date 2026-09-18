@@ -65,8 +65,28 @@ import {
   type PruneOutcome,
 } from "../git/repoHygiene.js";
 import { getCurrentBranch } from "../git/gitService.js";
-import { acquireRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
-import { recordTick, type TickLogItem } from "../run/operationLog.js";
+import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
+import {
+  readExecutionTicks,
+  readWorkRecords,
+  recordTick,
+  type TickLogItem,
+} from "../run/operationLog.js";
+import { inspectRepoStatus } from "../git/repoStatus.js";
+import {
+  assembleReport,
+  gitSection,
+  lockSection,
+  renderText,
+  sectionTitle,
+  tickSection,
+  toJson,
+  workSection,
+  TICK_HISTORY,
+  WORK_HISTORY,
+  type CheckSection,
+} from "../run/checkReport.js";
+import { version } from "../version.js";
 import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
@@ -102,6 +122,9 @@ interface DoWorkOptions {
   dryRun?: boolean;
   json?: boolean;
   silent?: boolean;
+  check?: boolean;
+  /** Commander's `--no-fetch` counterpart: true unless the flag was given. */
+  fetch?: boolean;
 }
 
 interface Settings {
@@ -210,6 +233,22 @@ function fail(message: string): never {
 }
 
 /**
+ * A configuration or invocation fault found while resolving settings.
+ *
+ * Thrown rather than exited so that `--check` can *report* a bad configuration
+ * instead of dying on it — which is most of the point of the diagnostic, since
+ * a single mistyped key is enough to stop the loop on every tick. `do-work`
+ * itself keeps its behaviour to the letter: `resolveSettings` catches this and
+ * routes it straight back into `fail()`, with the same message and the same
+ * `config-error` log line.
+ */
+class SettingsError extends Error {}
+
+function failSettings(message: string): never {
+  throw new SettingsError(message);
+}
+
+/**
  * Parse the whole token, not a prefix of it.
  *
  * `Number.parseInt` accepts "42junk" and "3.5", which for `--issue` means
@@ -218,16 +257,43 @@ function fail(message: string): never {
 function parsePositiveInt(value: string, label: string): number {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) {
-    fail(`${label} must be a positive integer (got "${value}").`);
+    failSettings(`${label} must be a positive integer (got "${value}").`);
   }
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    fail(`${label} must be a positive integer within the safe range (got "${value}").`);
+    failSettings(`${label} must be a positive integer within the safe range (got "${value}").`);
   }
   return parsed;
 }
 
+export type SettingsResult = { ok: true; settings: Settings } | { ok: false; error: string };
+
+/**
+ * Resolve settings without exiting.
+ *
+ * `verifyIdentity` is the one behaviour that differs between callers: a tick
+ * must refuse to run under the wrong `gh` account, while `--dry-run` posts
+ * nothing and `--check` reports the same condition as a finding instead of
+ * dying of it.
+ */
+function resolveSettingsResult(options: DoWorkOptions, verifyIdentity: boolean): SettingsResult {
+  try {
+    return { ok: true, settings: buildSettings(options, verifyIdentity) };
+  } catch (err) {
+    if (err instanceof SettingsError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
 function resolveSettings(options: DoWorkOptions): Settings {
+  // A dry run posts nothing, so the identity that would post is irrelevant; the
+  // guard must not block the primary diagnostic.
+  const result = resolveSettingsResult(options, options.dryRun !== true);
+  if (!result.ok) fail(result.error);
+  return result.settings;
+}
+
+function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Settings {
   let config: AutomataConfig;
   try {
     config = readConfig();
@@ -235,31 +301,31 @@ function resolveSettings(options: DoWorkOptions): Settings {
     // A configured prompt that cannot be resolved is fatal rather than falling
     // back to the built-in default: on an unattended loop a silent fallback
     // would change agent behaviour invisibly.
-    fail((err as Error).message);
+    failSettings((err as Error).message);
   }
 
   if (config.remoteType !== "gh") {
-    fail(
+    failSettings(
       "do-work is only supported for GitHub remotes. Set it with `automata config set type gh`. " +
         "Azure DevOps lacks the issue conversation APIs this needs — see docs/azdo-gap.md.",
     );
   }
 
   if (!config.issueDiscoveryTechnique) {
-    fail("No issue discovery technique configured. Run `automata config set issue-discovery-technique <value>`.");
+    failSettings("No issue discovery technique configured. Run `automata config set issue-discovery-technique <value>`.");
   }
   if (!config.issueDiscoveryValue) {
-    fail("No issue discovery value configured. Run `automata config set issue-discovery-value <value>`.");
+    failSettings("No issue discovery value configured. Run `automata config set issue-discovery-value <value>`.");
   }
 
   const allowedUsers = (config.allowedUsers ?? []).filter((user) => user.trim().length > 0);
   if (allowedUsers.length === 0) {
-    fail("No allowed users configured. Run `automata config set allowed-users <user1,user2>`.");
+    failSettings("No allowed users configured. Run `automata config set allowed-users <user1,user2>`.");
   }
 
   const agentUser = (config.agentUser ?? "").trim();
   if (agentUser.length === 0) {
-    fail("No agent user configured. Run `automata config set agent-user <login>`.");
+    failSettings("No agent user configured. Run `automata config set agent-user <login>`.");
   }
 
   validateDoWorkConfig((config as { doWork?: unknown }).doWork);
@@ -269,15 +335,14 @@ function resolveSettings(options: DoWorkOptions): Settings {
   if (options.with !== undefined) {
     const requested = options.with.toLowerCase();
     if (requested !== "claude" && requested !== "codex") {
-      fail(`--with must be 'claude' or 'codex', got '${options.with}'.`);
+      failSettings(`--with must be 'claude' or 'codex', got '${options.with}'.`);
     }
     withOption = requested;
   }
 
-  // A dry run posts nothing, so the identity that would post is irrelevant; the
-  // guard must not block the primary diagnostic.
-  if (options.dryRun !== true) {
-    checkAuthenticatedIdentity(agentUser, allowedUsers);
+  if (verifyIdentity) {
+    const problem = describeIdentityProblem(agentUser, allowedUsers);
+    if (problem !== null) failSettings(problem);
   }
 
   return {
@@ -313,6 +378,12 @@ function resolveSettings(options: DoWorkOptions): Settings {
 }
 
 /**
+ * The reason this `gh` identity must not run a tick, or null when it may.
+ *
+ * Returns rather than exits so that `--check` can report the misconfiguration
+ * while `do-work` still refuses to run under it — one description of the fault,
+ * two deliveries.
+ *
  * Refuse to run as an account that is allowed to instruct the agent.
  *
  * Everything the agent posts — the marker especially — is attributed to whoever
@@ -327,24 +398,24 @@ function resolveSettings(options: DoWorkOptions): Settings {
  * starts a run on every tick. Only an *unverifiable* login proceeds, with a
  * warning — a GitHub App installation token legitimately has no user.
  */
-function checkAuthenticatedIdentity(agentUser: string, allowedUsers: string[]): void {
+function describeIdentityProblem(agentUser: string, allowedUsers: string[]): string | null {
   const login = getAuthenticatedLogin();
   if (login === null) {
     progress(
       "Warning: could not determine which account `gh` is authenticated as; " +
         `assuming it is the agent (${agentUser}).\n`,
     );
-    return;
+    return null;
   }
 
-  if (login.toLowerCase() === agentUser.toLowerCase()) return;
+  if (login.toLowerCase() === agentUser.toLowerCase()) return null;
 
   if (allowedUsers.some((user) => user.toLowerCase() === login.toLowerCase())) {
-    fail(
+    return (
       `\`gh\` is authenticated as "${login}", which is listed in allowedUsers. ` +
         `Everything do-work posts would be attributed to an account that is allowed to instruct the agent, ` +
         `so its own marker comment would look like a new instruction and each tick would answer the previous tick forever. ` +
-        `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`,
+        `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`
     );
   }
 
@@ -353,12 +424,12 @@ function checkAuthenticatedIdentity(agentUser: string, allowedUsers: string[]): 
   // conversation filter drops it entirely: the boundary never advances and the
   // same human message starts a model run on every tick. Only the unverifiable
   // case below is allowed to proceed.
-  fail(
+  return (
     `\`gh\` is authenticated as "${login}" but agentUser is "${agentUser}". ` +
       "Comments posted under that identity are neither the agent's nor an authorized user's, so they are " +
       "filtered out of the conversation: the answer boundary would never advance and the same message would " +
       "start a run on every tick. " +
-      `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`,
+      `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`
   );
 }
 
@@ -564,7 +635,7 @@ function validateOptionalString(container: Record<string, unknown>, key: string,
   const value = container[key];
   if (value === undefined || value === null) return;
   if (typeof value !== "string" || value.trim().length === 0) {
-    fail(`${path} must be a non-empty string.`);
+    failSettings(`${path} must be a non-empty string.`);
   }
 }
 
@@ -578,7 +649,7 @@ function validateOptionalInt(
   const value = container[key];
   if (value === undefined || value === null) return;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
-    fail(`${path} must be ${hint}, got ${JSON.stringify(value)}.`);
+    failSettings(`${path} must be ${hint}, got ${JSON.stringify(value)}.`);
   }
 }
 
@@ -589,12 +660,12 @@ function validateDoWorkConfig(section: unknown): void {
   // `.trim()` instead of producing the actionable error this promises.
   if (section === undefined || section === null) return;
   if (!isPlainObject(section)) {
-    fail(`doWork must be an object, got ${JSON.stringify(section)}.`);
+    failSettings(`doWork must be an object, got ${JSON.stringify(section)}.`);
   }
 
   const executor = section["executor"];
   if (executor !== undefined && executor !== "claude" && executor !== "codex") {
-    fail(`doWork.executor must be 'claude' or 'codex', got ${JSON.stringify(executor)}.`);
+    failSettings(`doWork.executor must be 'claude' or 'codex', got ${JSON.stringify(executor)}.`);
   }
 
   validateOptionalString(section, "baseBranch", "doWork.baseBranch");
@@ -611,21 +682,21 @@ function validateProtectedBranches(value: unknown): void {
   if (value === undefined || value === null) return;
   const isNonEmptyString = (b: unknown): boolean => typeof b === "string" && b.trim().length > 0;
   if (!Array.isArray(value) || !value.every(isNonEmptyString)) {
-    fail("doWork.protectedBranches must be an array of non-empty strings.");
+    failSettings("doWork.protectedBranches must be an array of non-empty strings.");
   }
 }
 
 function validateSettingContainer(value: unknown, container: string, keys: string[]): void {
   if (value === undefined || value === null) return;
   if (!isPlainObject(value)) {
-    fail(`doWork.${container} must be an object, got ${JSON.stringify(value)}.`);
+    failSettings(`doWork.${container} must be an object, got ${JSON.stringify(value)}.`);
   }
   for (const key of keys) {
     validateOptionalString(value, key, `doWork.${container}.${key}`);
   }
   for (const key of Object.keys(value)) {
     if (!keys.includes(key)) {
-      fail(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
+      failSettings(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
     }
   }
 }
@@ -1493,12 +1564,37 @@ export const doWorkCommand = new Command("do-work")
     "--dry-run",
     "Print the work plan, plus a summary and the exact command that would be launched for each item, and exit without changing anything",
   )
+  .option(
+    "--check",
+    "Print a read-only health report for the loop — run lock, tick history, last work, repository state, " +
+      "per-candidate selection and environment — and exit 0 when it found no problem, 1 when it did",
+  )
+  .option(
+    "--no-fetch",
+    "With --check: make no network call at all — no `git fetch` and no `gh` query. Ahead/behind is reported " +
+      "from the last fetch and the selection section does not run",
+  )
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
+    const startedAt = Date.now();
+
+    if (options.check === true) {
+      // Before `loggableInvocation` is armed and before the lock: the check
+      // writes nothing, including to the very logs it reports on.
+      if (options.dryRun === true) {
+        process.stderr.write(
+          "Error: --check and --dry-run are two different read-only reports; run one or the other.\n",
+        );
+        process.exit(1);
+      }
+      const exitCode = runCheck(options);
+      if (exitCode !== 0) process.exit(exitCode);
+      return;
+    }
+
     // Before `resolveSettings`, which exits through `fail()` on any bad
     // configuration: arming this first is what lets that path be logged.
-    const startedAt = Date.now();
     if (options.dryRun !== true) loggableInvocation = { startedAt };
 
     const settings = resolveSettings(options);
@@ -1576,6 +1672,233 @@ export const doWorkCommand = new Command("do-work")
 
     if (exitCode !== 0) process.exit(exitCode);
   });
+
+/* ========================================================================= *
+ * `--check`: the read-only health report.
+ *
+ * Everything below reads. Between them these functions must never call
+ * `acquireRunLock`, `recordTick`, `runRepoHygiene`, any GitHub write or any
+ * executor — the contract in `specs/036-do-work-check/contracts/check-report.md`
+ * lists the forbidden calls and `tests/unit/doWorkCheck.cmd.test.ts` asserts
+ * them, because "read-only" is a property nobody can see in a diff once the
+ * function is long enough.
+ * ========================================================================= */
+
+/** The slug, or null when it cannot be resolved — itself worth reporting. */
+function resolveRepoSlug(): string | null {
+  try {
+    const slug = getRepoSlug();
+    return `${slug.owner}/${slug.repo}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The real selection path, stopped at the first mutation.
+ *
+ * These are the same calls `runTick` makes, in the same order, up to and
+ * including `skipDuplicateHeadBranches` — everything before `processItem`, which
+ * is where the first write happens. Reusing them rather than simulating them is
+ * the whole value of the section: the skip reason the operator reads here is the
+ * skip reason the next tick will act on.
+ */
+function collectSelection(settings: Settings): Decision[] {
+  const issues = discoverIssues(settings);
+  const linkMap = getOpenPrLinkMap();
+  const policy = {
+    baseBranch: settings.baseBranch,
+    defaultBranch: linkMap.defaultBranch,
+    protectedBranches: settings.protectedBranches,
+  };
+  return skipDuplicateHeadBranches([
+    ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
+    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
+      decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
+    ),
+  ]);
+}
+
+function selectionSection(settings: Settings | null, offline: boolean): CheckSection {
+  const section = (lines: string[], problems: string[], data: Record<string, unknown>): CheckSection => ({
+    id: "selection",
+    title: sectionTitle("selection"),
+    lines,
+    problems: problems.map((summary) => ({ section: "selection" as const, summary })),
+    data,
+  });
+
+  if (offline) {
+    return section(
+      ["not run: --no-fetch makes no network call, and the selection needs live GitHub data"],
+      [],
+      { ran: false, detail: "offline", plan: [] },
+    );
+  }
+  if (settings === null) {
+    return section(
+      ["not run: the configuration could not be resolved — see Environment below"],
+      [],
+      { ran: false, detail: "configuration invalid", plan: [] },
+    );
+  }
+
+  let decisions: Decision[];
+  try {
+    decisions = collectSelection(settings);
+  } catch (err) {
+    const detail = (err as Error).message;
+    return section(
+      [`could not be computed: ${detail}`],
+      [`the GitHub selection could not be computed: ${detail}`],
+      { ran: false, detail, plan: [] },
+    );
+  }
+
+  const work = decisions.filter((decision) => decision.kind === "work").length;
+  const lines = [
+    `${String(work)} of ${String(decisions.length)} candidate(s) would be picked up`,
+    ...describePlan(decisions).trimEnd().split("\n"),
+  ];
+  return section(lines, [], { ran: true, detail: null, plan: decisions.map(toPlanJson) });
+}
+
+/**
+ * The preconditions that make `do-work` exit before it attempts anything.
+ *
+ * Each is reported rather than fatal — a report that dies on the first fault
+ * tells the operator about one of six sections, and the fault most likely to be
+ * present is exactly the one being diagnosed.
+ */
+function environmentSection(options: DoWorkOptions, resolved: SettingsResult, repo: string | null): CheckSection {
+  const lines: string[] = [`automata ${version}`];
+  const problems: string[] = [];
+  const data: Record<string, unknown> = {
+    version,
+    repo,
+    configValid: resolved.ok,
+    configError: resolved.ok ? null : resolved.error,
+  };
+
+  if (repo === null) {
+    lines.push("repository slug could not be resolved from `origin`");
+    problems.push(
+      "the repository slug could not be resolved; `gh` needs an `origin` remote pointing at GitHub to read " +
+        "issues, and the operation logs cannot attribute their lines without it",
+    );
+  } else {
+    lines.push(`repository ${repo}`);
+  }
+
+  if (!resolved.ok) {
+    lines.push(`configuration is not usable: ${resolved.error}`);
+    problems.push(`the configuration is not usable: ${resolved.error}`);
+    return {
+      id: "environment",
+      title: sectionTitle("environment"),
+      lines,
+      problems: problems.map((summary) => ({ section: "environment" as const, summary })),
+      data,
+    };
+  }
+
+  const settings = resolved.settings;
+  lines.push("configuration parses and validates");
+  lines.push(`discovery: ${settings.technique} = ${settings.discoveryValue}`);
+  lines.push(`base branch: ${settings.baseBranch}`);
+  lines.push(
+    `run cap: ${settings.maxRuns === 0 ? "unlimited" : String(settings.maxRuns)}; lock stale after ${String(settings.lockStaleMinutes)} minutes`,
+  );
+
+  // The tick's own default, resolved the same way: `--with`, then the
+  // configured executor, then claude. A directive on an individual message can
+  // still override it per item, which is why this is labelled "default".
+  const executor: Executor = settings.withOption ?? settings.configExecutor ?? "claude";
+  const command = executor === "codex" ? "codex" : "claude";
+  const resolvedPath = resolveCommand(command);
+  const onPath = resolvedPath !== command;
+  lines.push(`default executor: ${executor} (${onPath ? resolvedPath : "not found on PATH"})`);
+  if (!onPath) {
+    problems.push(
+      `the \`${command}\` command is not on PATH, so every run this tick would attempt fails. Under cron the ` +
+        "PATH is not your login shell's — set it in the crontab or use an absolute path",
+    );
+  }
+
+  let ghLogin: string | null = null;
+  let identityProblem: string | null = null;
+  if (options.fetch === false) {
+    lines.push("`gh` authentication not checked: --no-fetch");
+  } else {
+    try {
+      ghLogin = getAuthenticatedLogin();
+      if (ghLogin === null) {
+        lines.push("`gh` is available but its account could not be determined (an app installation token has none)");
+      } else {
+        lines.push(`\`gh\` is authenticated as ${ghLogin}`);
+      }
+      identityProblem = describeIdentityProblem(settings.participants.agentUser, settings.participants.allowedUsers);
+      if (identityProblem !== null) problems.push(identityProblem);
+    } catch (err) {
+      const detail = (err as Error).message;
+      lines.push(`\`gh\` could not be queried: ${detail}`);
+      problems.push(`\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``);
+    }
+  }
+
+  return {
+    id: "environment",
+    title: sectionTitle("environment"),
+    lines,
+    problems: problems.map((summary) => ({ section: "environment" as const, summary })),
+    data: {
+      ...data,
+      discovery: { technique: settings.technique, value: settings.discoveryValue },
+      baseBranch: settings.baseBranch,
+      maxRuns: settings.maxRuns,
+      lockStaleMinutes: settings.lockStaleMinutes,
+      executor,
+      executorCommand: command,
+      executorOnPath: onPath,
+      ghLogin,
+      identityProblem,
+    },
+  };
+}
+
+/**
+ * Assemble and print the report. Returns the exit code; never exits itself, so
+ * a section that throws cannot take the other five with it.
+ */
+function runCheck(options: DoWorkOptions): number {
+  const now = new Date();
+  const offline = options.fetch === false;
+  const repo = resolveRepoSlug();
+
+  // `verifyIdentity: false` — the check reports that misconfiguration in the
+  // environment section instead of exiting on it.
+  const resolved = resolveSettingsResult(options, false);
+  const settings = resolved.ok ? resolved.settings : null;
+  const staleMinutes = settings?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
+  const baseBranch = settings?.baseBranch ?? DEFAULT_DO_WORK.baseBranch;
+
+  const report = assembleReport({
+    generatedAt: now,
+    repo,
+    offline,
+    sections: [
+      lockSection(inspectRunLock(staleMinutes), staleMinutes),
+      tickSection(readExecutionTicks({ repo, limit: TICK_HISTORY }), now),
+      workSection(readWorkRecords({ repo, limit: WORK_HISTORY }), now),
+      gitSection(inspectRepoStatus({ baseBranch, fetch: !offline })),
+      selectionSection(settings, offline),
+      environmentSection(options, resolved, repo),
+    ],
+  });
+
+  out(options.json === true ? JSON.stringify(toJson(report), null, 2) + "\n" : renderText(report));
+  return report.exitCode;
+}
 
 /** An item report as the operation log wants it, mirroring `toItemJson`. */
 function toTickLogItem(report: ItemReport): TickLogItem {

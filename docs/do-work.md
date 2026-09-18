@@ -14,6 +14,7 @@ automata do-work --dry-run          # show the work plan, change nothing
 automata do-work --issue 42         # restrict the tick to one issue
 automata do-work --pr 61            # restrict the tick to one orphan pull request
 automata do-work --json             # machine-readable plan and outcomes
+automata do-work --check            # read-only health report: is the loop working?
 ```
 
 ---
@@ -30,7 +31,9 @@ automata do-work --json             # machine-readable plan and outcomes
 | `--limit <n>` | Maximum **issues** to fetch (default: `10`). A note is printed when the result was truncated. It does not bound the orphan pass, whose candidates come out of the pull-request query that is always read in full. |
 | `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. The issue items and the orphan pull-request items share this one budget, and the issues are offered it first. Default: `doWork.maxRunsPerTick`. |
 | `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
-| `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. |
+| `--check` | Print a read-only health report for the loop and exit — see [Checking the loop's health](#checking-the-loops-health). Exits `0` when it found no problem, `1` when it did. Cannot be combined with `--dry-run`. |
+| `--no-fetch` | With `--check`: make **no network call at all** — no `git fetch` and no `gh` query. Ahead/behind is reported from the last fetch, and the selection section does not run. |
+| `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. With `--check`, emits the whole report as one JSON document. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
 The directive in the newest triggering message takes precedence over the command-line options, which take precedence over the `doWork` configuration section, which takes precedence over the built-in defaults. Only the executor and the model can be named in a message; the reasoning effort follows whichever executor ends up running — see [Steering one turn from a message](#steering-one-turn-from-a-message).
@@ -315,6 +318,145 @@ Every `--json` entry — in `plan`, `items` and `runs` — carries both `issue` 
 
 `--dry-run --json` carries the same information as `executor`, `model`, `effort`, `executorSource`, `modelSource`, `effortSource` and `refusal` on each entry of `runs`; a real tick's `--json` carries the first six on each entry of `items`. `effortSource` is never `message` — no directive names a level — but it does change to the new executor's `config` when a `tool:` directive switches executor.
 
+---
+
+## Checking the loop's health
+
+```bash
+automata do-work --check [--no-fetch] [--json] [--issue <n>] [--pr <n>]
+```
+
+`do-work` normally runs from a scheduler and discards its own stdout, so when the loop quietly stops
+picking work up there is nowhere to look. `--check` is the one command that answers "is it working,
+and if not, why": it reads everything automata knows about itself, judges it, and exits `0` when it
+found no problem or `1` when it did.
+
+It **changes nothing**. It does not take the run lock, so it is safe to run while a tick is in
+flight; it does not record a tick, so reporting on the operation logs does not alter them; and it
+makes no GitHub write and starts no executor. See [what it never does](#what---check-never-does).
+
+### The six sections
+
+| Section | Answers | Read from |
+|---|---|---|
+| `Run lock` | Is a tick running right now? Is a dead one blocking every future tick? | `.automata/automata.lock` |
+| `Recent ticks` | Is the scheduler still firing, and how did the recent ticks end? | `automata-execution.log` |
+| `Last work` | What did the loop last actually do, and to which item? | `automata-work.log` |
+| `Repository` | Is the checkout in a state that lets a tick work at all? | `git`, read-only |
+| `Selection` | Per candidate: picked up, or skipped and why? | live `gh` |
+| `Environment` | Are the configuration, `gh` and the executor sound? | config, `gh`, `PATH` |
+
+Every section is printed even when it has nothing to say, and a section that fails to collect
+reports the failure instead of aborting the report — a check that dies on the first fault tells you
+about one section out of six, and the fault most likely to be present is the one you are chasing.
+
+### What counts as a problem
+
+| Finding | Problem? |
+|---|---|
+| A tick is running and holds the lock | **No.** A tick in flight is the normal state of a scheduled loop. |
+| The lock is stale (its holder is dead) | Yes — though the next tick reclaims it by itself. |
+| The lock is *suspect* — held past `doWork.lockStaleMinutes` by a process whose identity cannot be verified | Yes. See [the run lock](#the-run-lock). |
+| No execution log, or none for this repository | Yes: no tick has ever run here. |
+| The newest tick exited non-zero | Yes. |
+| No tick for much longer than the usual interval | Yes — see [scheduler silence](#scheduler-silence) below. |
+| Every recorded tick was turned away by a held lock | Yes: a previous tick is wedged. |
+| Recent ticks answered nothing | **No.** An idle loop with no matching work is healthy. |
+| The work log is empty | **No.** Same reason. |
+| Detached HEAD, uncommitted changes, a missing base branch, a base branch with no upstream, a *diverged* base branch, a failed `git fetch` | Yes. |
+| The checkout is on a branch other than the base | **No.** The pre-flight checks the base branch out itself. |
+| The base branch is only behind, or only ahead | **No.** The pre-flight fast-forwards it; local commits are your business. |
+| A `gh` call failed | Yes. |
+| The discovery filter matched nothing | **No.** |
+| The configuration does not parse or validate | Yes — reported, not fatal. |
+| `gh` is authenticated as an account in `allowedUsers`, or as one that is neither the agent nor unverifiable | Yes: that is the self-triggering-loop misconfiguration [`do-work` itself refuses to run under](#required-configuration). |
+| The executor's command is not on `PATH` | Yes. Under cron the `PATH` is not your login shell's. |
+
+### Scheduler silence
+
+`--check` does not know your cron interval, and deliberately inspects no cron file, no cron log and
+no process table — those are host specifics, and hardcoding one host's makes the check wrong
+everywhere else. Instead it derives the cadence from the execution log itself: the **median**
+interval between the recorded ticks, flagged when the newest tick is older than **three times** that
+median. It withholds the judgement entirely until at least three intervals are on record, so a fresh
+installation is never accused of a failure it cannot have had.
+
+The median rather than the mean, so that one past outage in the history cannot inflate the
+expectation far enough to mask an outage happening right now.
+
+### Selection runs the real thing
+
+The `Selection` section is not a simulation. It calls the same functions a tick calls — the
+candidate query, each issue's surface, the open-pull-request link map, and the same
+[detection rules](#detection-rules) — and stops immediately before the first mutation. The skip
+reason you read here is the skip reason the next tick will act on.
+
+`--issue <n>` and `--pr <n>` narrow it, which is the direct way to ask "why is *this* one not being
+picked up".
+
+### Offline
+
+`--no-fetch` makes **no network call at all**: no `git fetch`, and no `gh`. The `Repository` section
+then labels its ahead/behind figures `(not refreshed)` — they come from the last successful fetch —
+and the `Selection` section reports that it did not run, which is not itself counted as a problem.
+Useful when the machine has lost connectivity and that is what you are diagnosing.
+
+### `--check` exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The report was produced and found no problem. The last line reads `RESULT: healthy`. |
+| `1` | The report was produced and found at least one problem (`RESULT: <n> problem(s) found`), **or** the invocation was refused — `--check` with `--dry-run` is refused, because they are two different read-only reports and silently preferring one would make the other flag a lie. |
+
+These are `--check`'s own codes; they are not the [tick exit codes](#exit-codes), and in particular
+`--check` never exits `2`.
+
+### `--json`
+
+`--check --json` emits one JSON document on stdout:
+
+```jsonc
+{
+  "generatedAt": "2026-09-18T14:41:26.000Z",
+  "repo": "owner/name",
+  "offline": false,
+  "exitCode": 0,
+  "problems": [{ "section": "git", "summary": "…" }],
+  "sections": {
+    "lock":        { "title": "Run lock",     "lines": ["…"], "problems": [], "data": { "status": "free", "staleMinutes": 120 } },
+    "ticks":       { "…": "newest, history, lockHeldCount, medianIntervalMs, sinceNewestMs, silent, logPath" },
+    "work":        { "…": "records" },
+    "git":         { "…": "branch, dirtyPaths, baseLocal, upstream, ahead, behind, refreshed, fetchError" },
+    "selection":   { "…": "ran, detail, plan" },
+    "environment": { "…": "version, configValid, configError, ghLogin, executor, executorOnPath" }
+  }
+}
+```
+
+`sections` is keyed by section id rather than being an array, so a consumer can reach one section
+without searching. `sections.selection.data.plan` uses exactly the shape `--dry-run --json` puts in
+its `plan`, so a script that already parses one parses the other.
+
+### What `--check` never does
+
+Asserted by tests, not merely intended:
+
+- never acquires the run lock, and never creates `.automata/automata.lock`;
+- never records a tick — reporting on the operation logs does not alter them;
+- never posts, edits or deletes a marker, and never assigns an issue or a pull request;
+- never runs the [pre-flight](#the-repository-hygiene-pre-flight): nothing is rescued, committed,
+  pushed, pruned, checked out or pulled;
+- never launches an executor;
+- inspects no cron file, no cron log and no process table;
+- offers no repair action — `do-work` already fast-forwards and rescues in its own pre-flight, and a
+  diagnostic that can change things is one you cannot run while worried.
+
+The only network effects are the read-only `gh` queries the `Selection` section makes and a single
+`git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>`, which updates one remote-tracking
+ref and nothing else.
+
+---
+
 ## Turn kinds
 
 | Turn | When | What the model is told |
@@ -502,6 +644,8 @@ The two views differ on purpose. A plan line names only what the tick would *do*
 
 A tick is one or more full model sessions, and cron fires on a fixed interval, so overlap is normal. `do-work` holds `.automata/automata.lock` for the whole tick.
 
+To see who holds it right now, without taking it, run [`do-work --check`](#checking-the-loops-health) — it reads this file and classifies it by the same rules described below.
+
 - Another **live** instance holds it → print a message and exit 0. Nothing is assigned, posted or invoked.
 - The lock is **stale** → it is reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness wins over age**: a long-running tick keeps its lock however old it is, because stealing it would put two model sessions in one checkout.
 - Reclaiming a stale lock is exclusive: a contender must first win an atomic rename of the stale file out of the way, and only the winner may create the replacement. Renaming one's *own* candidate over the lock would not be enough — `rename` replaces unconditionally, so two contenders could each write and each read their own token back.
@@ -537,6 +681,8 @@ A healthy idle loop stays quiet at exit 0, which keeps cron mail meaningful.
 ---
 
 ## The operation log
+
+[`do-work --check`](#checking-the-loops-health) reads both of these files back and summarises them, which is usually easier than reading them by hand.
 
 Every non-dry-run `do-work` invocation appends to two plain-text files in the **parent directory of the working directory** — so a checkout at `~/workspaces/my-repo` writes to `~/workspaces/`:
 
@@ -650,6 +796,8 @@ chmod a-w .. && automata do-work --limit 1 ; echo "exit=$?" ; chmod u+w ..
 Pick an interval comfortably shorter than how long you are willing to wait for a reply, and do not worry about it being shorter than a tick — the lock handles that. See [wiki/Operations.md](wiki/Operations.md).
 
 You do not have to redirect anywhere to keep a record: [the operation log](#the-operation-log) is maintained regardless, and survives the cron mail you never read.
+
+When the loop seems to have stopped, run [`do-work --check`](#checking-the-loops-health) from the same checkout. It reports whether the scheduler is still firing, entirely from automata's own records — it inspects nothing of cron itself, which is not automata's to manage.
 
 ---
 

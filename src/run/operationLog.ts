@@ -390,3 +390,281 @@ export function recordTick(tick: TickLog, dir: string = operationLogDirectory())
     // As above.
   }
 }
+
+/* ------------------------------------------------------------------------- *
+ * The read side.
+ *
+ * Kept in this module rather than in a reader of its own so that one file owns
+ * both halves of each format: the round-trip tests drive the formatters above
+ * into the parsers below, and a renamed field cannot pass them.
+ *
+ * Every parser here is total. These files are shared between checkouts, trimmed
+ * in place and occasionally hand-edited, so a line that does not fit the format
+ * is skipped and counted — never thrown over, which would make one bad line hide
+ * the whole history it sits in.
+ * ------------------------------------------------------------------------- */
+
+/** One parsed line of the execution log. */
+export interface ExecutionTick {
+  timestamp: Date;
+  command: string;
+  /** `owner/name`; null for the `-` the writer emits when the slug was unresolvable. */
+  repo: string | null;
+  items: number;
+  counts: Record<OperationOutcome, number>;
+  runs: number;
+  exitCode: number;
+  durationSeconds: number;
+  note: string | null;
+}
+
+export interface WorkRecordItem {
+  subject: string;
+  turn: string | null;
+  outcome: OperationOutcome;
+  executor: string | null;
+  model: string | null;
+  effort: string | null;
+  detail: string;
+}
+
+/** One `=== <iso> <slug> ===` block of the work log. */
+export interface WorkRecord {
+  timestamp: Date;
+  repo: string | null;
+  items: WorkRecordItem[];
+}
+
+export interface LogReadOptions {
+  /** Keep only entries for this slug. Undefined keeps every entry. */
+  repo?: string | null;
+  /** Newest-first cap. Undefined keeps all. */
+  limit?: number;
+  dir?: string;
+}
+
+export interface LogReadResult<T> {
+  entries: T[];
+  /** True when the file exists and could be read, whatever it contained. */
+  present: boolean;
+  /** Set when the file exists but could not be read. */
+  error: string | null;
+  /** Entries that did not fit the format. */
+  skipped: number;
+  /** Well-formed entries belonging to a different repository. */
+  otherRepos: number;
+  path: string;
+}
+
+function isOutcome(value: string): value is OperationOutcome {
+  return (OUTCOMES as readonly string[]).includes(value);
+}
+
+/** Read a log file, distinguishing "absent" from "unreadable" — they mean different things. */
+function readLogFile(path: string): { content: string | null; error: string | null } {
+  try {
+    return { content: readFileSync(path, "utf8"), error: null };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { content: null, error: null };
+    return { content: null, error: (err as Error).message };
+  }
+}
+
+function emptyResult<T>(path: string, error: string | null): LogReadResult<T> {
+  return { entries: [], present: false, error, skipped: 0, otherRepos: 0, path };
+}
+
+/**
+ * Apply the repository filter.
+ *
+ * A null `repo` on the *entry* means the writer could not resolve its slug, and
+ * such an entry is kept whatever the filter: excluding it would hide precisely
+ * the ticks that ran in a checkout with a broken remote, which is a fault worth
+ * reporting rather than one worth hiding.
+ */
+function matchesRepo(entryRepo: string | null, want: string | null | undefined): boolean {
+  if (want === undefined || want === null) return true;
+  return entryRepo === null || entryRepo === want;
+}
+
+function parseExecutionLine(line: string): ExecutionTick | null {
+  const fields = line
+    .trim()
+    .split(" ")
+    .filter((field) => field.length > 0);
+  if (fields.length < 2) return null;
+
+  const timestamp = new Date(fields[0]);
+  if (Number.isNaN(timestamp.getTime())) return null;
+
+  const pairs = new Map<string, string>();
+  for (const field of fields.slice(2)) {
+    const eq = field.indexOf("=");
+    if (eq <= 0) continue;
+    pairs.set(field.slice(0, eq), field.slice(eq + 1));
+  }
+
+  // `exit` is the one field with no sensible default: a line without it was not
+  // written by `formatExecutionLine` and guessing 0 would report a failed tick
+  // as clean.
+  const exit = pairs.get("exit");
+  if (exit === undefined) return null;
+  const exitCode = Number.parseInt(exit, 10);
+  if (Number.isNaN(exitCode)) return null;
+
+  const counts = {} as Record<OperationOutcome, number>;
+  for (const outcome of OUTCOMES) {
+    // Absent means "written by an older automata", not "malformed": the line is
+    // still worth reporting, so the bucket reads zero rather than voiding it.
+    counts[outcome] = Number.parseInt(pairs.get(outcome) ?? "0", 10) || 0;
+  }
+
+  const repo = pairs.get("repo");
+  const duration = pairs.get("dur");
+  const note = pairs.get("note");
+  return {
+    timestamp,
+    command: fields[1],
+    repo: repo === undefined || repo === "-" ? null : repo,
+    items: Number.parseInt(pairs.get("items") ?? "0", 10) || 0,
+    counts,
+    runs: Number.parseInt(pairs.get("runs") ?? "0", 10) || 0,
+    exitCode,
+    durationSeconds: duration === undefined ? 0 : Number.parseFloat(duration) || 0,
+    note: note === undefined || note.length === 0 ? null : note,
+  };
+}
+
+/**
+ * The execution log, newest first.
+ *
+ * Newest first because every consumer wants the last tick, and reversing at the
+ * reader means the `limit` cap keeps the *recent* history rather than the
+ * oldest lines still in the file.
+ */
+export function readExecutionTicks(options: LogReadOptions = {}): LogReadResult<ExecutionTick> {
+  const path = join(options.dir ?? operationLogDirectory(), EXECUTION_LOG_FILE);
+  const { content, error } = readLogFile(path);
+  if (content === null) return emptyResult(path, error);
+
+  const entries: ExecutionTick[] = [];
+  let skipped = 0;
+  let otherRepos = 0;
+  for (const line of content.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const tick = parseExecutionLine(line);
+    if (tick === null) {
+      skipped++;
+      continue;
+    }
+    if (!matchesRepo(tick.repo, options.repo)) {
+      otherRepos++;
+      continue;
+    }
+    entries.push(tick);
+  }
+
+  entries.reverse();
+  return {
+    entries: options.limit === undefined ? entries : entries.slice(0, options.limit),
+    present: true,
+    error: null,
+    skipped,
+    otherRepos,
+    path,
+  };
+}
+
+/**
+ * `#42` / `PR #61` / `#?`, then the turn, then the outcome, then an optional
+ * `[executor model=… effort=…]`, then the detail after an em dash.
+ *
+ * Anchored on the outcome rather than on field positions: the subject is one or
+ * two tokens depending on whether the item had an issue, so counting from the
+ * left would mis-split every `pr-orphan` record.
+ */
+const WORK_ITEM_LINE =
+  /^(#\S+|PR #\S+) (\S+) (answered-no-reply|answered|skipped|failed|deferred)(?: \[([^\]]*)\])? — (.*)$/;
+
+function parseExecution(
+  bracket: string | undefined,
+): Pick<WorkRecordItem, "executor" | "model" | "effort"> {
+  if (bracket === undefined) return { executor: null, model: null, effort: null };
+  const parts = bracket.split(" ").filter((part) => part.length > 0);
+  const executor = parts[0] ?? null;
+  const find = (key: string): string | null => {
+    const hit = parts.find((part) => part.startsWith(`${key}=`));
+    return hit === undefined ? null : hit.slice(key.length + 1);
+  };
+  return { executor, model: find("model"), effort: find("effort") };
+}
+
+/**
+ * The work log, newest record first.
+ *
+ * A record is a `=== <iso> <slug> ===` header and the item lines under it. Text
+ * before the first header, and any line inside a record that does not parse, is
+ * counted as skipped — `pruneOldRecords` deliberately preserves both, so a
+ * reader meets them.
+ */
+export function readWorkRecords(options: LogReadOptions = {}): LogReadResult<WorkRecord> {
+  const path = join(options.dir ?? operationLogDirectory(), WORK_LOG_FILE);
+  const { content, error } = readLogFile(path);
+  if (content === null) return emptyResult(path, error);
+
+  const entries: WorkRecord[] = [];
+  let skipped = 0;
+  let otherRepos = 0;
+  let current: WorkRecord | null = null;
+
+  const close = (): void => {
+    if (current === null) return;
+    if (matchesRepo(current.repo, options.repo)) {
+      entries.push(current);
+    } else {
+      otherRepos++;
+    }
+    current = null;
+  };
+
+  for (const line of content.split("\n")) {
+    if (line.trim().length === 0) continue;
+
+    const header = /^=== (\S+) (\S+) ===$/.exec(line);
+    if (header !== null) {
+      close();
+      const timestamp = new Date(header[1]);
+      if (Number.isNaN(timestamp.getTime())) {
+        skipped++;
+        continue;
+      }
+      current = { timestamp, repo: header[2] === "-" ? null : header[2], items: [] };
+      continue;
+    }
+
+    const item = WORK_ITEM_LINE.exec(line);
+    if (item === null || current === null) {
+      skipped++;
+      continue;
+    }
+    current.items.push({
+      subject: item[1],
+      turn: item[2] === "-" ? null : item[2],
+      // The alternation in the pattern admits nothing else.
+      outcome: isOutcome(item[3]) ? item[3] : "skipped",
+      ...parseExecution(item[4]),
+      detail: item[5],
+    });
+  }
+  close();
+
+  entries.reverse();
+  return {
+    entries: options.limit === undefined ? entries : entries.slice(0, options.limit),
+    present: true,
+    error: null,
+    skipped,
+    otherRepos,
+    path,
+  };
+}
