@@ -87,10 +87,10 @@ import {
   type CheckSection,
 } from "../run/checkReport.js";
 import { version } from "../version.js";
-import { runClaude, buildClaudeArgs, resolveCommand } from "../claude/claudeService.js";
+import { runClaude, buildClaudeArgs } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
-import { shellQuote, resolveEffortOption } from "../cli/spawnUtils.js";
+import { shellQuote, resolveEffortOption, resolveCommand } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
 
@@ -293,24 +293,24 @@ function resolveSettings(options: DoWorkOptions): Settings {
   return result.settings;
 }
 
-function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Settings {
-  let config: AutomataConfig;
-  try {
-    config = readConfig();
-  } catch (err) {
-    // A configured prompt that cannot be resolved is fatal rather than falling
-    // back to the built-in default: on an unattended loop a silent fallback
-    // would change agent behaviour invisibly.
-    failSettings((err as Error).message);
-  }
-
+/**
+ * The configuration every turn needs before any GitHub call is worth making.
+ *
+ * Each miss names the `automata config set` that fixes it: on an unattended
+ * loop the message in the log is the only thing the operator gets.
+ */
+function requireParticipants(config: AutomataConfig): {
+  allowedUsers: string[];
+  agentUser: string;
+  technique: NonNullable<AutomataConfig["issueDiscoveryTechnique"]>;
+  discoveryValue: string;
+} {
   if (config.remoteType !== "gh") {
     failSettings(
       "do-work is only supported for GitHub remotes. Set it with `automata config set type gh`. " +
         "Azure DevOps lacks the issue conversation APIs this needs — see docs/azdo-gap.md.",
     );
   }
-
   if (!config.issueDiscoveryTechnique) {
     failSettings("No issue discovery technique configured. Run `automata config set issue-discovery-technique <value>`.");
   }
@@ -328,17 +328,39 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
     failSettings("No agent user configured. Run `automata config set agent-user <login>`.");
   }
 
+  return {
+    allowedUsers,
+    agentUser,
+    technique: config.issueDiscoveryTechnique,
+    discoveryValue: config.issueDiscoveryValue,
+  };
+}
+
+/** `--with`, validated against the two executors automata knows how to drive. */
+function resolveWithOption(value: string | undefined): Executor | undefined {
+  if (value === undefined) return undefined;
+  const requested = value.toLowerCase();
+  if (requested !== "claude" && requested !== "codex") {
+    failSettings(`--with must be 'claude' or 'codex', got '${value}'.`);
+  }
+  return requested;
+}
+
+function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Settings {
+  let config: AutomataConfig;
+  try {
+    config = readConfig();
+  } catch (err) {
+    // A configured prompt that cannot be resolved is fatal rather than falling
+    // back to the built-in default: on an unattended loop a silent fallback
+    // would change agent behaviour invisibly.
+    failSettings((err as Error).message);
+  }
+
+  const { allowedUsers, agentUser, technique, discoveryValue } = requireParticipants(config);
   validateDoWorkConfig((config as { doWork?: unknown }).doWork);
   const doWork = config.doWork ?? {};
-
-  let withOption: Executor | undefined;
-  if (options.with !== undefined) {
-    const requested = options.with.toLowerCase();
-    if (requested !== "claude" && requested !== "codex") {
-      failSettings(`--with must be 'claude' or 'codex', got '${options.with}'.`);
-    }
-    withOption = requested;
-  }
+  const withOption = resolveWithOption(options.with);
 
   if (verifyIdentity) {
     const problem = describeIdentityProblem(agentUser, allowedUsers);
@@ -370,8 +392,8 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
       "pr-work": doWork.prompts?.prWork ?? DEFAULT_DO_WORK_PR_WORK_PROMPT,
       "pr-orphan": doWork.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
     },
-    technique: config.issueDiscoveryTechnique,
-    discoveryValue: config.issueDiscoveryValue,
+    technique,
+    discoveryValue,
     onlyIssue: options.issue === undefined ? undefined : parsePositiveInt(options.issue, "--issue"),
     onlyPr: options.pr === undefined ? undefined : parsePositiveInt(options.pr, "--pr"),
   };
@@ -1770,6 +1792,65 @@ function selectionSection(settings: Settings | null, offline: boolean): CheckSec
  * tells the operator about one of six sections, and the fault most likely to be
  * present is exactly the one being diagnosed.
  */
+/**
+ * The tick's own default executor, resolved the same way: `--with`, then the
+ * configured executor, then claude. A directive on an individual message can
+ * still override it per item, which is why the line says "default".
+ */
+function describeExecutor(
+  settings: Settings,
+  lines: string[],
+  problems: string[],
+): { executor: Executor; command: string; onPath: boolean } {
+  const executor: Executor = settings.withOption ?? settings.configExecutor ?? "claude";
+  const command = executor === "codex" ? "codex" : "claude";
+  const resolvedPath = resolveCommand(command);
+  const onPath = resolvedPath !== command;
+  lines.push(`default executor: ${executor} (${onPath ? resolvedPath : "not found on PATH"})`);
+  if (!onPath) {
+    problems.push(
+      `the \`${command}\` command is not on PATH, so every run this tick would attempt fails. Under cron the ` +
+        "PATH is not your login shell's — set it in the crontab or use an absolute path",
+    );
+  }
+  return { executor, command, onPath };
+}
+
+/**
+ * Who `gh` says it is, and whether that identity can drive the loop. Skipped
+ * entirely under `--no-fetch`, which promises no network call at all.
+ */
+function describeGitHubIdentity(
+  options: DoWorkOptions,
+  settings: Settings,
+  lines: string[],
+  problems: string[],
+): { ghLogin: string | null; identityProblem: string | null } {
+  if (options.fetch === false) {
+    lines.push("`gh` authentication not checked: --no-fetch");
+    return { ghLogin: null, identityProblem: null };
+  }
+  try {
+    const ghLogin = getAuthenticatedLogin();
+    lines.push(
+      ghLogin === null
+        ? "`gh` is available but its account could not be determined (an app installation token has none)"
+        : `\`gh\` is authenticated as ${ghLogin}`,
+    );
+    const identityProblem = describeIdentityProblem(
+      settings.participants.agentUser,
+      settings.participants.allowedUsers,
+    );
+    if (identityProblem !== null) problems.push(identityProblem);
+    return { ghLogin, identityProblem };
+  } catch (err) {
+    const detail = (err as Error).message;
+    lines.push(`\`gh\` could not be queried: ${detail}`);
+    problems.push(`\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``);
+    return { ghLogin: null, identityProblem: null };
+  }
+}
+
 function environmentSection(options: DoWorkOptions, resolved: SettingsResult, repo: string | null): CheckSection {
   const lines: string[] = [`automata ${version}`];
   const problems: string[] = [];
@@ -1803,48 +1884,16 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
   }
 
   const settings = resolved.settings;
-  lines.push("configuration parses and validates");
-  lines.push(`discovery: ${settings.technique} = ${settings.discoveryValue}`);
-  lines.push(`base branch: ${settings.baseBranch}`);
+  const runCap = settings.maxRuns === 0 ? "unlimited" : String(settings.maxRuns);
   lines.push(
-    `run cap: ${settings.maxRuns === 0 ? "unlimited" : String(settings.maxRuns)}; lock stale after ${String(settings.lockStaleMinutes)} minutes`,
+    "configuration parses and validates",
+    `discovery: ${settings.technique} = ${settings.discoveryValue}`,
+    `base branch: ${settings.baseBranch}`,
+    `run cap: ${runCap}; lock stale after ${String(settings.lockStaleMinutes)} minutes`,
   );
 
-  // The tick's own default, resolved the same way: `--with`, then the
-  // configured executor, then claude. A directive on an individual message can
-  // still override it per item, which is why this is labelled "default".
-  const executor: Executor = settings.withOption ?? settings.configExecutor ?? "claude";
-  const command = executor === "codex" ? "codex" : "claude";
-  const resolvedPath = resolveCommand(command);
-  const onPath = resolvedPath !== command;
-  lines.push(`default executor: ${executor} (${onPath ? resolvedPath : "not found on PATH"})`);
-  if (!onPath) {
-    problems.push(
-      `the \`${command}\` command is not on PATH, so every run this tick would attempt fails. Under cron the ` +
-        "PATH is not your login shell's — set it in the crontab or use an absolute path",
-    );
-  }
-
-  let ghLogin: string | null = null;
-  let identityProblem: string | null = null;
-  if (options.fetch === false) {
-    lines.push("`gh` authentication not checked: --no-fetch");
-  } else {
-    try {
-      ghLogin = getAuthenticatedLogin();
-      if (ghLogin === null) {
-        lines.push("`gh` is available but its account could not be determined (an app installation token has none)");
-      } else {
-        lines.push(`\`gh\` is authenticated as ${ghLogin}`);
-      }
-      identityProblem = describeIdentityProblem(settings.participants.agentUser, settings.participants.allowedUsers);
-      if (identityProblem !== null) problems.push(identityProblem);
-    } catch (err) {
-      const detail = (err as Error).message;
-      lines.push(`\`gh\` could not be queried: ${detail}`);
-      problems.push(`\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``);
-    }
-  }
+  const { executor, command, onPath } = describeExecutor(settings, lines, problems);
+  const { ghLogin, identityProblem } = describeGitHubIdentity(options, settings, lines, problems);
 
   return {
     id: "environment",

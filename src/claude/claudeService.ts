@@ -1,18 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
-import { truncate, handleSpawnError, handleExitCode } from "../cli/spawnUtils.js";
+import { truncate, handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
-
-export function resolveCommand(name: string): string {
-  const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
-  for (const dir of pathDirs) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return name;
-}
 
 export interface InvokeClaudeOptions {
   yolo?: boolean;

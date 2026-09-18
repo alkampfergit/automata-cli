@@ -6,6 +6,11 @@ vi.mock("node:child_process", () => ({
   spawnSync: (...a: unknown[]) => mockSpawnSync(...a),
 }));
 
+vi.mock("../../src/cli/spawnUtils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/cli/spawnUtils.js")>();
+  return { ...actual, resolveCommand: (name: string) => `/usr/bin/${name}` };
+});
+
 const { inspectRepoStatus } = await import("../../src/git/repoStatus.js");
 
 /**
@@ -21,6 +26,7 @@ type Result = { stdout?: string; stderr?: string; status?: number };
 
 let responses: { match: (args: string[]) => boolean; result: Result }[] = [];
 let calls: string[][] = [];
+let commands: string[] = [];
 
 function respond(prefix: string[], result: Result): void {
   responses.push({
@@ -32,8 +38,10 @@ function respond(prefix: string[], result: Result): void {
 beforeEach(() => {
   responses = [];
   calls = [];
+  commands = [];
   mockSpawnSync.mockReset();
-  mockSpawnSync.mockImplementation((_cmd: string, args: string[]) => {
+  mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+    commands.push(cmd);
     calls.push(args);
     // Last registered wins, so a test can override a default set up by `clean()`.
     const hit = [...responses].reverse().find((candidate) => candidate.match(args));
@@ -228,5 +236,15 @@ describe("inspectRepoStatus", () => {
 
     expect(status.ahead).toBeNull();
     expect(status.behind).toBeNull();
+  });
+
+  it("spawns a git resolved against PATH rather than letting the child search it", () => {
+    clean();
+    inspectRepoStatus({ baseBranch: "develop", fetch: true });
+
+    // Every command, not just the first: one unqualified call is enough to let
+    // a `git` earlier on PATH than the real one decide what the report says.
+    expect(commands.length).toBeGreaterThan(0);
+    expect(commands.every((cmd) => cmd === "/usr/bin/git")).toBe(true);
   });
 });

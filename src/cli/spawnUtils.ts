@@ -1,3 +1,24 @@
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+
+/**
+ * Fully qualify an executable name against `PATH`.
+ *
+ * Callers spawn the result instead of the bare name, so what gets executed is
+ * decided here, once, rather than by the child process' own `PATH` search. When
+ * nothing on `PATH` matches, the bare name is returned: the caller then either
+ * reports "not on PATH" (`do-work --check`) or lets `spawnSync` fail with
+ * ENOENT, both of which are better than this function throwing.
+ */
+export function resolveCommand(name: string): string {
+  const pathDirs = (process.env["PATH"] ?? "").split(delimiter);
+  for (const dir of pathDirs) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return name;
+}
+
 /**
  * Quote one argv entry so the printed command can be pasted into a shell and
  * behave identically. Single quotes are literal in POSIX shells apart from the

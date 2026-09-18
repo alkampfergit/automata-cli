@@ -249,58 +249,85 @@ function describeTick(tick: ExecutionTick, now: Date): string {
   return `${tick.timestamp.toISOString()} (${age} ago) exit=${String(tick.exitCode)} ${counts}${note}`;
 }
 
+/** Why the log has nothing to say; null when it does. */
+function describeMissingTicks(read: LogReadResult<ExecutionTick>): { line: string; problem: string } | null {
+  if (read.error !== null) {
+    return {
+      line: `the execution log could not be read: ${read.error}`,
+      problem: `the execution log \`${read.path}\` could not be read: ${read.error}`,
+    };
+  }
+  if (!read.present) {
+    return {
+      line: `no execution log at ${read.path}`,
+      problem:
+        `no execution log at \`${read.path}\` — no tick has ever run here, or automata cannot write to the ` +
+        "workspace root; check that the scheduler runs `do-work` from inside the checkout",
+    };
+  }
+  if (read.entries.length === 0) {
+    return {
+      line: "the execution log holds no tick for this repository",
+      problem:
+        "the execution log holds no tick for this repository — the scheduler has never successfully run `do-work` here",
+    };
+  }
+  return null;
+}
+
+/** The newest tick, the shape of the history behind it, and the cadence it implies. */
+function describeTickHistory(
+  ticks: ExecutionTick[],
+  cadence: TickCadence,
+  now: Date,
+  lines: string[],
+  problems: string[],
+): void {
+  lines.push(`last tick: ${describeTick(ticks[0], now)}`);
+  if (ticks[0].exitCode !== 0) {
+    problems.push(
+      `the last tick exited ${String(ticks[0].exitCode)} — see \`Last work\` below and the work log for the item that failed`,
+    );
+  }
+
+  const lockHeld = ticks.filter((tick) => tick.note === "lock-held").length;
+  const withRuns = ticks.filter((tick) => tick.runs > 0).length;
+  lines.push(
+    `history: ${String(ticks.length)} tick(s), ${String(withRuns)} invoked the executor, ` +
+      `${String(lockHeld)} were turned away by a held lock`,
+  );
+  if (lockHeld === ticks.length && ticks.length > 1) {
+    problems.push(
+      "every recorded tick was turned away by a held run lock — a previous tick is wedged; see `Run lock` above",
+    );
+  }
+
+  if (cadence.medianIntervalMs === null) {
+    lines.push("cadence: not enough history to judge whether the scheduler is still firing");
+    return;
+  }
+  lines.push(`cadence: about one tick every ${describeDuration(cadence.medianIntervalMs)}`);
+  if (cadence.silent) {
+    problems.push(
+      `no tick for ${describeDuration(cadence.sinceNewestMs ?? 0)}, against a usual interval of ` +
+        `${describeDuration(cadence.medianIntervalMs)} — the scheduler appears to have stopped firing ` +
+        "(automata does not manage the scheduler; check it on this host)",
+    );
+  }
+}
+
 export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): CheckSection {
   const lines: string[] = [];
   const problems: string[] = [];
   const ticks = read.entries;
   const cadence = tickCadence(ticks, now);
 
-  if (read.error !== null) {
-    lines.push(`the execution log could not be read: ${read.error}`);
-    problems.push(`the execution log \`${read.path}\` could not be read: ${read.error}`);
-  } else if (!read.present) {
-    lines.push(`no execution log at ${read.path}`);
-    problems.push(
-      `no execution log at \`${read.path}\` — no tick has ever run here, or automata cannot write to the ` +
-        "workspace root; check that the scheduler runs `do-work` from inside the checkout",
-    );
-  } else if (ticks.length === 0) {
-    lines.push("the execution log holds no tick for this repository");
-    problems.push(
-      "the execution log holds no tick for this repository — the scheduler has never successfully run `do-work` here",
-    );
+  const missing = describeMissingTicks(read);
+  if (missing !== null) {
+    lines.push(missing.line);
+    problems.push(missing.problem);
   } else {
-    lines.push(`last tick: ${describeTick(ticks[0], now)}`);
-    if (ticks[0].exitCode !== 0) {
-      problems.push(
-        `the last tick exited ${String(ticks[0].exitCode)} — see \`Last work\` below and the work log for the item that failed`,
-      );
-    }
-
-    const lockHeld = ticks.filter((tick) => tick.note === "lock-held").length;
-    const withRuns = ticks.filter((tick) => tick.runs > 0).length;
-    lines.push(
-      `history: ${String(ticks.length)} tick(s), ${String(withRuns)} invoked the executor, ` +
-        `${String(lockHeld)} were turned away by a held lock`,
-    );
-    if (lockHeld === ticks.length && ticks.length > 1) {
-      problems.push(
-        "every recorded tick was turned away by a held run lock — a previous tick is wedged; see `Run lock` above",
-      );
-    }
-
-    if (cadence.medianIntervalMs === null) {
-      lines.push("cadence: not enough history to judge whether the scheduler is still firing");
-    } else {
-      lines.push(`cadence: about one tick every ${describeDuration(cadence.medianIntervalMs)}`);
-      if (cadence.silent) {
-        problems.push(
-          `no tick for ${describeDuration(cadence.sinceNewestMs ?? 0)}, against a usual interval of ` +
-            `${describeDuration(cadence.medianIntervalMs)} — the scheduler appears to have stopped firing ` +
-            "(automata does not manage the scheduler; check it on this host)",
-        );
-      }
-    }
+    describeTickHistory(ticks, cadence, now, lines, problems);
   }
 
   if (read.skipped > 0)
@@ -369,6 +396,65 @@ export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSe
 
 /* ------------------------------- git ------------------------------------- */
 
+/** Where HEAD is, and whether the tree under it is clean. */
+function describeCheckout(status: RepoStatus, lines: string[], problems: string[]): void {
+  if (status.branch === null) {
+    lines.push(`HEAD is detached at ${status.head ?? "an unknown commit"}`);
+    problems.push("HEAD is detached; the pre-flight expects a branch, so check one out");
+  } else {
+    const at = status.head === null ? "" : ` at ${status.head}`;
+    lines.push(`on ${status.branch}${at}`);
+  }
+
+  if (status.dirtyPaths.length === 0) {
+    lines.push("working tree is clean");
+    return;
+  }
+  lines.push(`working tree has ${String(status.dirtyPaths.length)} uncommitted change(s):`);
+  for (const path of status.dirtyPaths) lines.push(`  ${path}`);
+  problems.push(
+    `the working tree has ${String(status.dirtyPaths.length)} uncommitted change(s); the pre-flight will try to ` +
+      "rescue them onto a branch, and every item skips as `dirty-tree` if that fails",
+  );
+}
+
+/** The base branch against its upstream: present, tracked, and fast-forwardable? */
+function describeBaseBranch(status: RepoStatus, lines: string[], problems: string[]): void {
+  if (!status.baseLocal) {
+    lines.push(`base branch ${status.baseBranch} does not exist in this checkout`);
+    problems.push(
+      `the base branch \`${status.baseBranch}\` does not exist locally; either check it out or correct ` +
+        "`doWork.baseBranch` with `automata config set do-work-base-branch <branch>`",
+    );
+    return;
+  }
+  if (status.upstream === null) {
+    lines.push(`base branch ${status.baseBranch} has no upstream`);
+    problems.push(
+      `the base branch \`${status.baseBranch}\` has no upstream, so the pre-flight cannot fast-forward it`,
+    );
+    return;
+  }
+
+  const freshness = status.refreshed ? "" : " (not refreshed)";
+  const ahead = status.ahead === null ? "?" : String(status.ahead);
+  const behind = status.behind === null ? "?" : String(status.behind);
+  lines.push(`base branch ${status.baseBranch} vs ${status.upstream}: ahead ${ahead}, behind ${behind}${freshness}`);
+
+  if (status.ahead === null || status.ahead === 0) return;
+  if (status.behind !== null && status.behind > 0) {
+    problems.push(
+      `the base branch \`${status.baseBranch}\` has diverged from ${status.upstream} ` +
+        `(${String(status.ahead)} ahead, ${String(status.behind)} behind); the pre-flight's fast-forward pull ` +
+        "will fail until that is resolved by hand",
+    );
+    return;
+  }
+  // Ahead-only is reported but not a problem: a fast-forward pull succeeds,
+  // and unpushed commits on the base branch are the operator's business.
+  lines.push(`  ${String(status.ahead)} local commit(s) not on ${status.upstream}`);
+}
+
 /**
  * The checkout, judged by what would stop a tick.
  *
@@ -393,54 +479,8 @@ export function gitSection(status: RepoStatus): CheckSection {
     );
   }
 
-  if (status.branch === null) {
-    lines.push(`HEAD is detached at ${status.head ?? "an unknown commit"}`);
-    problems.push("HEAD is detached; the pre-flight expects a branch, so check one out");
-  } else {
-    lines.push(`on ${status.branch}${status.head === null ? "" : ` at ${status.head}`}`);
-  }
-
-  if (status.dirtyPaths.length === 0) {
-    lines.push("working tree is clean");
-  } else {
-    lines.push(`working tree has ${String(status.dirtyPaths.length)} uncommitted change(s):`);
-    for (const path of status.dirtyPaths) lines.push(`  ${path}`);
-    problems.push(
-      `the working tree has ${String(status.dirtyPaths.length)} uncommitted change(s); the pre-flight will try to ` +
-        "rescue them onto a branch, and every item skips as `dirty-tree` if that fails",
-    );
-  }
-
-  if (!status.baseLocal) {
-    lines.push(`base branch ${status.baseBranch} does not exist in this checkout`);
-    problems.push(
-      `the base branch \`${status.baseBranch}\` does not exist locally; either check it out or correct ` +
-        "`doWork.baseBranch` with `automata config set do-work-base-branch <branch>`",
-    );
-  } else if (status.upstream === null) {
-    lines.push(`base branch ${status.baseBranch} has no upstream`);
-    problems.push(
-      `the base branch \`${status.baseBranch}\` has no upstream, so the pre-flight cannot fast-forward it`,
-    );
-  } else {
-    const freshness = status.refreshed ? "" : " (not refreshed)";
-    lines.push(
-      `base branch ${status.baseBranch} vs ${status.upstream}: ` +
-        `ahead ${status.ahead === null ? "?" : String(status.ahead)}, ` +
-        `behind ${status.behind === null ? "?" : String(status.behind)}${freshness}`,
-    );
-    if (status.ahead !== null && status.behind !== null && status.ahead > 0 && status.behind > 0) {
-      problems.push(
-        `the base branch \`${status.baseBranch}\` has diverged from ${status.upstream} ` +
-          `(${String(status.ahead)} ahead, ${String(status.behind)} behind); the pre-flight's fast-forward pull ` +
-          "will fail until that is resolved by hand",
-      );
-    } else if (status.ahead !== null && status.ahead > 0) {
-      // Ahead-only is reported but not a problem: a fast-forward pull succeeds,
-      // and unpushed commits on the base branch are the operator's business.
-      lines.push(`  ${String(status.ahead)} local commit(s) not on ${status.upstream}`);
-    }
-  }
+  describeCheckout(status, lines, problems);
+  describeBaseBranch(status, lines, problems);
 
   if (status.fetchError !== null) {
     lines.push(`fetch failed: ${status.fetchError}`);
