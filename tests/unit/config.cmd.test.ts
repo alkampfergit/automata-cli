@@ -377,3 +377,23 @@ describe("automata config set do-work-*", () => {
     expect(config.doWork).toEqual({ baseBranch: "main" });
   });
 });
+
+describe("automata config set git-trunk-branch", () => {
+  it("pins the trunk branch", () => {
+    const output = run(["config", "set", "git-trunk-branch", "main"]);
+    expect(output.trim()).toBe("git trunk branch set to: main");
+    expect(readConfigFile().git).toEqual({ trunkBranch: "main" });
+  });
+
+  it("rejects an empty branch name", () => {
+    expect(runExpectingFailure(["config", "set", "git-trunk-branch", "  "])).toMatch(/non-empty branch name/);
+  });
+
+  it("leaves the rest of the config alone", () => {
+    run(["config", "set", "type", "gh"]);
+    run(["config", "set", "git-trunk-branch", "trunk"]);
+    const config = readConfigFile();
+    expect(config.remoteType).toBe("gh");
+    expect(config.git).toEqual({ trunkBranch: "trunk" });
+  });
+});

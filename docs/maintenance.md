@@ -120,7 +120,8 @@ notice — not the commit subject and not the file that changed.
 ### The version headings come from the git tags
 
 `package.json` has read `0.1.0` since the first commit and is **not** the release version. The CI `publish` job derives
-the version from the tag `automata git publish-release` put on `master` and rewrites the field with
+the version from the tag `automata git publish-release` put on the trunk branch — `master` in this repository, though
+the command now resolves that name from the remote rather than assuming it — and rewrites the field with
 `npm version --no-git-tag-version` before publishing (`.github/workflows/ci.yml`). So the authority for "which versions
 exist" is `git tag`, which is what `tests/unit/changelog.test.ts` checks the file against. Note that two tags exist per
 release — the bare `0.6.0` from `publish-release` and the `v0.6.0` the GitHub release job creates; they are one version.

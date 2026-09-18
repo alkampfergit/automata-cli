@@ -3,6 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ── Unit tests for publish-release service functions ─────────────────────────
 
 const mockSpawnSync = vi.fn();
+const mockReadConfig = vi.fn(() => ({}) as Record<string, unknown>);
+
+vi.mock("../../src/config/configStore.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
+  return { ...actual, readConfig: () => mockReadConfig() };
+});
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -34,32 +40,151 @@ describe("gitService.bumpMinorVersion", () => {
   });
 });
 
-describe("gitService.getLatestTagOnMaster", () => {
+describe("gitService.getLatestTagOnTrunk", () => {
   beforeEach(() => mockSpawnSync.mockReset());
   afterEach(() => vi.resetModules());
 
   it("returns bare semver from git describe output", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "1.2.0\n", stderr: "", status: 0 });
-    const { getLatestTagOnMaster } = await import("../../src/git/gitService.js");
-    expect(getLatestTagOnMaster()).toBe("1.2.0");
+    const { getLatestTagOnTrunk } = await import("../../src/git/gitService.js");
+    expect(getLatestTagOnTrunk("origin/main")).toBe("1.2.0");
+  });
+
+  it("describes the ref it was given, not a hardcoded branch", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "1.2.0\n", stderr: "", status: 0 });
+    const { getLatestTagOnTrunk } = await import("../../src/git/gitService.js");
+    getLatestTagOnTrunk("origin/main");
+    const args = (mockSpawnSync.mock.calls[0] as [string, string[]])[1];
+    expect(args[0]).toBe("describe");
+    expect(args.at(-1)).toBe("origin/main");
+    expect(args).not.toContain("master");
   });
 
   it("strips v prefix", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "v3.4.5\n", stderr: "", status: 0 });
-    const { getLatestTagOnMaster } = await import("../../src/git/gitService.js");
-    expect(getLatestTagOnMaster()).toBe("3.4.5");
+    const { getLatestTagOnTrunk } = await import("../../src/git/gitService.js");
+    expect(getLatestTagOnTrunk("origin/master")).toBe("3.4.5");
   });
 
   it("returns null when git describe fails", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "fatal: No names found", status: 128 });
-    const { getLatestTagOnMaster } = await import("../../src/git/gitService.js");
-    expect(getLatestTagOnMaster()).toBeNull();
+    const { getLatestTagOnTrunk } = await import("../../src/git/gitService.js");
+    expect(getLatestTagOnTrunk("origin/main")).toBeNull();
   });
 
   it("returns null when tag is not valid semver", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "some-non-semver-tag\n", stderr: "", status: 0 });
-    const { getLatestTagOnMaster } = await import("../../src/git/gitService.js");
-    expect(getLatestTagOnMaster()).toBeNull();
+    const { getLatestTagOnTrunk } = await import("../../src/git/gitService.js");
+    expect(getLatestTagOnTrunk("origin/main")).toBeNull();
+  });
+});
+
+describe("gitService.resolveTrunkBranch", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    mockReadConfig.mockReturnValue({});
+  });
+  afterEach(() => vi.resetModules());
+
+  it("uses the configured branch and runs no git command", async () => {
+    mockReadConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "trunk", source: "config" });
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("ignores a blank configured branch and falls back to detection", async () => {
+    mockReadConfig.mockReturnValue({ git: { trunkBranch: "   " } });
+    mockSpawnSync.mockReturnValue({ stdout: "refs/remotes/origin/main\n", stderr: "", status: 0 });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "main", source: "origin-head" });
+  });
+
+  it("reads origin/HEAD first", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "refs/remotes/origin/master\n", stderr: "", status: 0 });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "master", source: "origin-head" });
+    const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
+    expect(calls).toEqual(["symbolic-ref --quiet refs/remotes/origin/HEAD"]);
+  });
+
+  it("falls back to ls-remote --symref when origin/HEAD is absent", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 1 }) // symbolic-ref
+      .mockReturnValueOnce({
+        stdout: "ref: refs/heads/master\tHEAD\n0f0dba2\tHEAD\n",
+        stderr: "",
+        status: 0,
+      });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "master", source: "ls-remote" });
+  });
+
+  it("probes main then master when neither HEAD source answers", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 1 }) // symbolic-ref
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 }) // ls-remote --symref, no ref line
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // ls-remote --heads main → absent
+      .mockReturnValueOnce({ stdout: "abc\trefs/heads/master\n", stderr: "", status: 0 });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "master", source: "probe" });
+  });
+
+  it("reports every candidate it tried when nothing resolves", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 1 })
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 })
+      .mockReturnValue({ stdout: "", stderr: "", status: 2 });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({
+      ok: false,
+      attempted: ["origin/HEAD", "git ls-remote --symref origin HEAD", "origin/main", "origin/master"],
+    });
+  });
+});
+
+describe("gitService.fetchTrunkAndTags", () => {
+  beforeEach(() => mockSpawnSync.mockReset());
+  afterEach(() => vi.resetModules());
+
+  it("fetches tags with an explicit refspec so a single-branch clone gets the ref", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { fetchTrunkAndTags } = await import("../../src/git/gitService.js");
+    expect(fetchTrunkAndTags("main")).toEqual({ ok: true });
+    const args = (mockSpawnSync.mock.calls[0] as [string, string[]])[1];
+    expect(args).toEqual(["fetch", "--tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
+  });
+
+  it("carries git's stderr when the fetch fails", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "fatal: could not read from remote\n", status: 128 });
+    const { fetchTrunkAndTags } = await import("../../src/git/gitService.js");
+    expect(fetchTrunkAndTags("main")).toEqual({
+      ok: false,
+      message: "fatal: could not read from remote",
+    });
+  });
+});
+
+describe("gitService.trunkBehindCount", () => {
+  beforeEach(() => mockSpawnSync.mockReset());
+  afterEach(() => vi.resetModules());
+
+  it("returns 0 without asking rev-list when there is no local branch", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 1 }); // rev-parse --verify
+    const { trunkBehindCount } = await import("../../src/git/gitService.js");
+    expect(trunkBehindCount("master")).toBe(0);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts commits the local branch is missing", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "0f0dba2\n", stderr: "", status: 0 }) // rev-parse --verify
+      .mockReturnValueOnce({ stdout: "3\n", stderr: "", status: 0 });
+    const { trunkBehindCount } = await import("../../src/git/gitService.js");
+    expect(trunkBehindCount("master")).toBe(3);
+    const args = (mockSpawnSync.mock.calls[1] as [string, string[]])[1];
+    expect(args).toEqual(["rev-list", "--count", "refs/heads/master..refs/remotes/origin/master"]);
   });
 });
 
@@ -90,42 +215,73 @@ describe("gitService.publishRelease", () => {
   beforeEach(() => mockSpawnSync.mockReset());
   afterEach(() => vi.resetModules());
 
-  it("executes the 8-step GitFlow sequence in order", async () => {
-    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+  it("executes the 8-step GitFlow sequence in order against the resolved trunk", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 }); // incl. rev-parse → exists
     const { publishRelease } = await import("../../src/git/gitService.js");
-    publishRelease("1.3.0", false);
+    publishRelease("1.3.0", false, "main");
 
-    const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
+    const calls = mockSpawnSync.mock.calls
+      .map((c) => (c as [string, string[]])[1].join(" "))
+      .filter((c) => !c.startsWith("rev-parse"));
     expect(calls).toEqual([
       "checkout -b release/1.3.0",
-      "checkout master",
+      "checkout main",
       "merge --no-ff release/1.3.0",
       "tag 1.3.0",
       "checkout develop",
       "merge --no-ff release/1.3.0",
       "branch -d release/1.3.0",
-      "push origin develop master 1.3.0",
+      "push origin develop main 1.3.0",
     ]);
+  });
+
+  it("creates the local trunk from origin when it is missing, without --track", async () => {
+    // Dispatches on argv rather than on call order, so the assertion survives a
+    // step being added. `args` is optional because vitest's own teardown reaches
+    // the mocked `spawnSync` once, with no arguments.
+    mockSpawnSync.mockImplementation((_cmd?: string, args?: string[]) =>
+      args?.[0] === "rev-parse"
+        ? { stdout: "", stderr: "", status: 1 } // no local trunk
+        : { stdout: "", stderr: "", status: 0 },
+    );
+    const { publishRelease } = await import("../../src/git/gitService.js");
+    publishRelease("1.3.0", false, "master");
+
+    const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
+    // `--track` is deliberately absent: git refuses it in a --single-branch
+    // clone, which is the clone shape this whole feature exists for.
+    expect(calls).toContain("checkout -b master origin/master");
+    expect(calls.join("\n")).not.toContain("--track");
   });
 
   it("throws with descriptive error when a step fails", async () => {
     mockSpawnSync
+      .mockReturnValueOnce({ stdout: "0f0dba2", stderr: "", status: 0 }) // rev-parse → trunk exists
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 }) // checkout -b
-      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 }) // checkout master
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 }) // checkout trunk
       .mockReturnValueOnce({ stdout: "", stderr: "CONFLICT (content)", status: 1 }); // merge fails
     const { publishRelease } = await import("../../src/git/gitService.js");
-    expect(() => publishRelease("1.3.0", false)).toThrow("CONFLICT (content)");
+    expect(() => publishRelease("1.3.0", false, "master")).toThrow("CONFLICT (content)");
   });
 
-  it("prints dry-run lines without calling spawnSync for git steps", async () => {
+  it("runs no mutating git command in a dry run", async () => {
+    // Asserted against an explicit list rather than "spawnSync was never called":
+    // the dry run legitimately probes for the local trunk, so a blanket
+    // assertion would have to be loosened — and would then stop catching a new
+    // mutation added later.
+    const MUTATORS = ["checkout", "merge", "tag", "branch", "push", "fetch", "commit", "reset"];
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    mockSpawnSync.mockReturnValue({ stdout: "0f0dba2", stderr: "", status: 0 });
     const { publishRelease } = await import("../../src/git/gitService.js");
-    publishRelease("1.3.0", true);
+    publishRelease("1.3.0", true, "main");
 
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    const executed = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1][0]);
+    for (const mutator of MUTATORS) {
+      expect(executed).not.toContain(mutator);
+    }
     const output = writeSpy.mock.calls.map((c) => String(c[0])).join("");
     expect(output).toContain("[dry-run] git checkout -b release/1.3.0");
-    expect(output).toContain("[dry-run] git push origin develop master 1.3.0");
+    expect(output).toContain("[dry-run] git push origin develop main 1.3.0");
     writeSpy.mockRestore();
   });
 });

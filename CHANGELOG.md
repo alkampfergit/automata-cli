@@ -12,6 +12,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Fixed
 
+- `automata git publish-release` no longer assumes the release branch is a local `master`. It resolves the trunk name
+  from `origin` (an explicit `git.trunkBranch` setting, then `origin/HEAD`, then the remote's advertised HEAD, then a
+  probe of `main`/`master`), fetches tags before inferring a version, and reads that version from `origin/<trunk>` — so
+  a clone that only checked out `develop`, and a repository whose trunk is called `main`, both work.
 - `do-work` recovers from a pull-request branch that has diverged from its remote because the same change reached the
   remote under a different sha. When every local-only commit is already on the remote as an equivalent patch, the
   branch is rebased onto the remote instead of being skipped as `pull-failed` on every tick forever. A branch holding
@@ -38,6 +42,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- `git.trunkBranch` in `.automata/config.json` pins the branch `publish-release` releases to, settable with
+  `automata config set git-trunk-branch <name>` or the wizard's new `Git` screen. Unset by default.
+- `publish-release` now refuses to run when a local trunk branch is behind `origin/<trunk>`, rather than silently
+  fast-forwarding it, and prints which branch it resolved and where the name came from.
 - A new `rebase-conflict` skip reason for a pull-request branch whose automatic rebase conflicted. The rebase is
   aborted first, so the branch is back on the tip it started from and the next tick does not see a conflicted index as
   a dirty working tree. It means a conflict and nothing else: a `git rebase` that git refused before replaying
