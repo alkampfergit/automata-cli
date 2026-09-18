@@ -146,7 +146,11 @@ function readDirtyPaths(): string[] {
  * "refreshed" means the same thing to the check as it does to the tick.
  */
 function refreshBase(baseBranch: string): { refreshed: boolean; fetchError: string | null } {
-  const fetched = git(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+  const fetched = git([
+    "fetch",
+    "origin",
+    `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+  ]);
   if (fetched.status === 0) return { refreshed: true, fetchError: null };
   return { refreshed: false, fetchError: fetched.stderr.trim() || "git fetch failed" };
 }
@@ -158,7 +162,12 @@ function refreshBase(baseBranch: string): { refreshed: boolean; fetchError: stri
  */
 function resolveUpstream(baseBranch: string, baseLocal: boolean): string | null {
   if (baseLocal) {
-    const configured = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${baseBranch}@{u}`]);
+    const configured = git([
+      "rev-parse",
+      "--abbrev-ref",
+      "--symbolic-full-name",
+      `${baseBranch}@{u}`,
+    ]);
     if (configured.status === 0) return configured.stdout.trim();
   }
   if (git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${baseBranch}`]).status === 0) {
@@ -187,7 +196,8 @@ export function inspectRepoStatus(options: RepoStatusOptions): RepoStatus {
   const branch = symbolic.status === 0 ? symbolic.stdout.trim() : null;
 
   const dirtyPaths = readDirtyPaths();
-  const baseLocal = git(["rev-parse", "--verify", "--quiet", `refs/heads/${baseBranch}`]).status === 0;
+  const baseLocal =
+    git(["rev-parse", "--verify", "--quiet", `refs/heads/${baseBranch}`]).status === 0;
 
   const { refreshed, fetchError } = options.fetch
     ? refreshBase(baseBranch)

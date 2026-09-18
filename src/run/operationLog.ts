@@ -425,6 +425,8 @@ export interface WorkRecordItem {
   executor: string | null;
   model: string | null;
   effort: string | null;
+  /** The `sync=` field when the writer emitted one; null when the branch needed nothing unusual. */
+  sync: string | null;
   detail: string;
 }
 
@@ -577,14 +579,20 @@ export function readExecutionTicks(options: LogReadOptions = {}): LogReadResult<
 
 /**
  * `#42` / `PR #61` / `#?`, then the turn, then the outcome, then an optional
- * `[executor model=… effort=…]`, then the detail after an em dash.
+ * `[executor model=… effort=…]`, then an optional `sync=…`, then the detail
+ * after an em dash.
  *
  * Anchored on the outcome rather than on field positions: the subject is one or
  * two tokens depending on whether the item had an issue, so counting from the
  * left would mis-split every `pr-orphan` record.
+ *
+ * The `sync=` group is lazy so a value holding a space still stops at the em
+ * dash. It has to be matched rather than tolerated: an unmatched line is
+ * counted as skipped, which would have dropped from the report exactly the
+ * items whose branch needed more than a fast-forward.
  */
 const WORK_ITEM_LINE =
-  /^(#\S+|PR #\S+) (\S+) (answered-no-reply|answered|skipped|failed|deferred)(?: \[([^\]]*)\])? — (.*)$/;
+  /^(#\S+|PR #\S+) (\S+) (answered-no-reply|answered|skipped|failed|deferred)(?: \[([^\]]*)\])?(?: sync=(.*?))? — (.*)$/;
 
 function parseExecution(
   bracket: string | undefined,
@@ -625,7 +633,8 @@ function parseWorkItem(line: string): WorkRecord["items"][number] | null {
     // The alternation in the pattern admits nothing else.
     outcome: isOutcome(item[3]) ? item[3] : "skipped",
     ...parseExecution(item[4]),
-    detail: item[5],
+    sync: item[5] === undefined || item[5].length === 0 ? null : item[5],
+    detail: item[6],
   };
 }
 

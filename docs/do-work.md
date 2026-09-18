@@ -341,7 +341,7 @@ makes no GitHub write and starts no executor. See [what it never does](#what---c
 |---|---|---|
 | `Run lock` | Is a tick running right now? Is a dead one blocking every future tick? | `.automata/automata.lock` |
 | `Recent ticks` | Is the scheduler still firing, and how did the recent ticks end? | `automata-execution.log` |
-| `Last work` | What did the loop last actually do, and to which item? | `automata-work.log` |
+| `Last work` | What did the loop last actually do, to which item, and how was each branch synchronised (`sync=`)? | `automata-work.log` |
 | `Repository` | Is the checkout in a state that lets a tick work at all? | `git`, read-only |
 | `Selection` | Per candidate: picked up, or skipped and why? | live `gh` |
 | `Environment` | Are the configuration, `gh` and the executor sound? | config, `gh`, `PATH` |
