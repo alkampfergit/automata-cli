@@ -250,7 +250,9 @@ function describeTick(tick: ExecutionTick, now: Date): string {
 }
 
 /** Why the log has nothing to say; null when it does. */
-function describeMissingTicks(read: LogReadResult<ExecutionTick>): { line: string; problem: string } | null {
+function describeMissingTicks(
+  read: LogReadResult<ExecutionTick>,
+): { line: string; problem: string } | null {
   if (read.error !== null) {
     return {
       line: `the execution log could not be read: ${read.error}`,
@@ -375,7 +377,12 @@ export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSe
           item.executor === null
             ? ""
             : ` [${[item.executor, item.model, item.effort].filter((part) => part !== null).join(" ")}]`;
-        lines.push(`  ${item.subject} ${item.turn ?? "-"} ${item.outcome}${how} — ${item.detail}`);
+        // The synchronisation strategy is reported because a branch that stops
+        // synchronising is otherwise indistinguishable from one with nothing to do.
+        const sync = item.sync === null ? "" : ` sync=${item.sync}`;
+        lines.push(
+          `  ${item.subject} ${item.turn ?? "-"} ${item.outcome}${how}${sync} — ${item.detail}`,
+        );
       }
     }
   }
@@ -439,7 +446,9 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
   const freshness = status.refreshed ? "" : " (not refreshed)";
   const ahead = status.ahead === null ? "?" : String(status.ahead);
   const behind = status.behind === null ? "?" : String(status.behind);
-  lines.push(`base branch ${status.baseBranch} vs ${status.upstream}: ahead ${ahead}, behind ${behind}${freshness}`);
+  lines.push(
+    `base branch ${status.baseBranch} vs ${status.upstream}: ahead ${ahead}, behind ${behind}${freshness}`,
+  );
 
   if (status.ahead === null || status.ahead === 0) return;
   if (status.behind !== null && status.behind > 0) {

@@ -265,6 +265,7 @@ describe("workSection", () => {
         executor: "claude",
         model: "opus",
         effort: "high",
+        sync: null,
         detail: "posted an answer",
       },
     ],
@@ -275,6 +276,13 @@ describe("workSection", () => {
     expect(section.lines[0]).toContain("(30m ago)");
     expect(section.lines[1]).toBe(
       "  #42 issue-discuss answered [claude opus high] — posted an answer",
+    );
+  });
+
+  it("names the synchronisation strategy when one was recorded", () => {
+    const rebased = { ...record, items: [{ ...record.items[0], sync: "rebase" }] };
+    expect(workSection(read([rebased]), NOW).lines[1]).toBe(
+      "  #42 issue-discuss answered [claude opus high] sync=rebase — posted an answer",
     );
   });
 

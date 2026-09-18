@@ -215,6 +215,7 @@ describe("readWorkRecords", () => {
         executor: "claude",
         model: "opus",
         effort: "high",
+        sync: null,
         detail: "posted an answer",
       },
       {
@@ -224,9 +225,30 @@ describe("readWorkRecords", () => {
         executor: "claude",
         model: "opus",
         effort: "high",
+        sync: null,
         detail: "executor exited 1",
       },
     ]);
+  });
+
+  it("round-trips the synchronisation strategy the writer records", () => {
+    // The `sync=` field sits between the executor bracket and the em dash. A
+    // reader that does not expect it counts the line as unparsable, which drops
+    // from the report precisely the items whose branch needed more than a
+    // fast-forward — the failure `sync=` exists to make visible.
+    writeWork(
+      tick({
+        items: [
+          item({ sync: "rebase" }),
+          item({ subject: "PR #61", sync: "pull-failed", outcome: "skipped" }),
+        ],
+      }),
+    );
+
+    const record = readWorkRecords({ dir }).entries[0];
+    expect(record.items.map((entry) => entry.sync)).toEqual(["rebase", "pull-failed"]);
+    expect(record.items[0].detail).toBe("posted an answer");
+    expect(record.items[0].executor).toBe("claude");
   });
 
   it("parses a two-token subject without mis-splitting the turn", () => {
