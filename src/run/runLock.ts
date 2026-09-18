@@ -93,6 +93,20 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The I/O failure behind an unreadable lock, or null when the bytes were read —
+ * whatever they turned out to contain. Kept separate from `readOwner`, whose
+ * null is load-bearing in the acquisition path and must stay "no usable owner".
+ */
+function readOwnerError(path: string): string | null {
+  try {
+    readFileSync(path, "utf8");
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
 function readOwner(path: string): LockOwner | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<LockOwner>;
@@ -520,6 +534,13 @@ export function inspectRunLock(staleMinutes: number, now: number = Date.now()): 
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "free" };
     return { kind: "unreadable", detail: (err as Error).message };
   }
+
+  // A lock that exists but cannot be *opened* is not stale. `readOwner` answers
+  // null for an unreadable file and for malformed contents alike, and calling
+  // the first "stale" would promise the operator that the next tick reclaims it
+  // — when that tick will fail on the same permissions.
+  const readError = readOwnerError(path);
+  if (readError !== null) return { kind: "unreadable", detail: readError };
 
   const owner = readOwner(path);
   if (isStale(owner, staleMinutes)) {

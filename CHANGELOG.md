@@ -12,6 +12,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Fixed
 
+- The executor's command is resolved against `PATH` the way `spawn` resolves it: only a regular file with an
+  execute bit counts. A directory sharing the name, or a mode-644 file left behind by a half-finished install,
+  is now skipped instead of being launched and failing with `EISDIR` / `EACCES`.
 - `automata git publish-release` no longer assumes the release branch is a local `master`. It resolves the trunk name
   from `origin` (an explicit `git.trunkBranch` setting, then `origin/HEAD`, then the remote's advertised HEAD, then a
   probe of `main`/`master`), fetches tags before inferring a version, and reads that version from `origin/<trunk>` — so

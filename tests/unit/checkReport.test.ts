@@ -77,9 +77,11 @@ function repoStatus(overrides: Partial<RepoStatus> = {}): RepoStatus {
     branch: "develop",
     head: "abc1234",
     dirtyPaths: [],
+    statusError: null,
     baseBranch: "develop",
     baseLocal: true,
     upstream: "origin/develop",
+    upstreamTracked: true,
     ahead: 0,
     behind: 0,
     refreshed: true,
@@ -361,8 +363,32 @@ describe("gitSection", () => {
   });
 
   it("flags a base branch with no upstream", () => {
-    const section = gitSection(repoStatus({ upstream: null }));
+    const section = gitSection(repoStatus({ upstream: null, upstreamTracked: false }));
     expect(section.problems[0].summary).toContain("no upstream");
+  });
+
+  it("flags a base branch whose upstream was only inferred from the remote-tracking ref", () => {
+    // `prepareBaseBranch` runs a bare `git pull --ff-only`, which reads the
+    // branch's tracking configuration. Showing `origin/develop` as the upstream
+    // without saying it was inferred promises a fast-forward that cannot happen.
+    const section = gitSection(repoStatus({ upstreamTracked: false }));
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("git branch --set-upstream-to=origin/develop");
+    expect(section.lines.some((line) => line.includes("no tracking configuration"))).toBe(true);
+  });
+
+  it("flags a working tree that could not be inspected instead of calling it clean", () => {
+    const section = gitSection(repoStatus({ statusError: "fatal: unable to read index" }));
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("unable to read index");
+    expect(section.lines).not.toContain("working tree is clean");
+  });
+
+  it("flags a divergence that could not be read rather than exiting healthy", () => {
+    const section = gitSection(repoStatus({ ahead: null, behind: null }));
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("could not be read");
+    expect(section.lines.some((line) => line.includes("ahead ?, behind ?"))).toBe(true);
   });
 
   it("labels unrefreshed figures and flags a failed fetch", () => {

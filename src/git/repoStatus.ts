@@ -51,11 +51,24 @@ export interface RepoStatus {
   head: string | null;
   /** `git status --porcelain` entries, minus automata's own lock file. */
   dirtyPaths: string[];
+  /**
+   * Set when `git status` itself failed, so `dirtyPaths` says nothing.
+   * Distinguished from an empty list because "clean" and "could not be read"
+   * lead an operator to opposite conclusions.
+   */
+  statusError: string | null;
   baseBranch: string;
   /** Does `refs/heads/<base>` exist in this checkout? */
   baseLocal: boolean;
   /** The base branch's upstream, e.g. `origin/develop`; null when it has none. */
   upstream: string | null;
+  /**
+   * True only when `<base>@{u}` resolved — i.e. the branch really has tracking
+   * configuration. False with a non-null `upstream` means the name was inferred
+   * from `refs/remotes/origin/<base>`, which the pre-flight's bare
+   * `git pull --ff-only` cannot use.
+   */
+  upstreamTracked: boolean;
   /** The base branch against its upstream. Null when either side is missing. */
   ahead: number | null;
   behind: number | null;
@@ -72,9 +85,11 @@ function notARepo(baseBranch: string, detail: string): RepoStatus {
     branch: null,
     head: null,
     dirtyPaths: [],
+    statusError: null,
     baseBranch,
     baseLocal: false,
     upstream: null,
+    upstreamTracked: false,
     ahead: null,
     behind: null,
     refreshed: false,
@@ -130,14 +145,25 @@ function readHead(): { head: string | null; fatal: string | null } {
   return { head: null, fatal: head.stderr.trim() || "not a git repository" };
 }
 
-/** `git status --porcelain` entries, minus automata's own lock file. */
-function readDirtyPaths(): string[] {
+/**
+ * `git status --porcelain` entries, minus automata's own lock file.
+ *
+ * A failure is carried rather than flattened into an empty list: an unreadable
+ * index would otherwise be reported as a clean working tree, which is the one
+ * answer that makes a broken checkout look healthy.
+ */
+function readDirtyPaths(): { paths: string[]; error: string | null } {
   const porcelain = git(["status", "--porcelain"]);
-  if (porcelain.status !== 0) return [];
-  return porcelain.stdout
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .filter((line) => !isOwnLockFile(line));
+  if (porcelain.status !== 0) {
+    return { paths: [], error: porcelain.stderr.trim() || "git status --porcelain failed" };
+  }
+  return {
+    paths: porcelain.stdout
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .filter((line) => !isOwnLockFile(line)),
+    error: null,
+  };
 }
 
 /**
@@ -159,8 +185,17 @@ function refreshBase(baseBranch: string): { refreshed: boolean; fetchError: stri
  * The configured upstream when the branch exists locally and has one; otherwise
  * `origin/<base>` if that ref is present, which is the case for a base branch
  * that was fetched but never checked out here.
+ *
+ * The two are reported separately rather than collapsed. `prepareBaseBranch`
+ * runs a bare `git pull --ff-only`, which reads the branch's *tracking
+ * configuration* and fails without it; a report that showed an inferred
+ * `origin/<base>` as the upstream would print reassuring ahead/behind counts for
+ * a branch on which every tick stops at `pull-failed`.
  */
-function resolveUpstream(baseBranch: string, baseLocal: boolean): string | null {
+function resolveUpstream(
+  baseBranch: string,
+  baseLocal: boolean,
+): { upstream: string | null; tracked: boolean } {
   if (baseLocal) {
     const configured = git([
       "rev-parse",
@@ -168,12 +203,12 @@ function resolveUpstream(baseBranch: string, baseLocal: boolean): string | null 
       "--symbolic-full-name",
       `${baseBranch}@{u}`,
     ]);
-    if (configured.status === 0) return configured.stdout.trim();
+    if (configured.status === 0) return { upstream: configured.stdout.trim(), tracked: true };
   }
   if (git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${baseBranch}`]).status === 0) {
-    return `origin/${baseBranch}`;
+    return { upstream: `origin/${baseBranch}`, tracked: false };
   }
-  return null;
+  return { upstream: null, tracked: false };
 }
 
 /**
@@ -195,7 +230,7 @@ export function inspectRepoStatus(options: RepoStatusOptions): RepoStatus {
   const symbolic = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = symbolic.status === 0 ? symbolic.stdout.trim() : null;
 
-  const dirtyPaths = readDirtyPaths();
+  const { paths: dirtyPaths, error: statusError } = readDirtyPaths();
   const baseLocal =
     git(["rev-parse", "--verify", "--quiet", `refs/heads/${baseBranch}`]).status === 0;
 
@@ -203,16 +238,18 @@ export function inspectRepoStatus(options: RepoStatusOptions): RepoStatus {
     ? refreshBase(baseBranch)
     : { refreshed: false, fetchError: null };
 
-  const upstream = resolveUpstream(baseBranch, baseLocal);
+  const { upstream, tracked } = resolveUpstream(baseBranch, baseLocal);
   const counts = baseLocal && upstream !== null ? divergence(upstream, baseBranch) : null;
 
   return {
     branch,
     head,
     dirtyPaths,
+    statusError,
     baseBranch,
     baseLocal,
     upstream,
+    upstreamTracked: tracked,
     ahead: counts?.ahead ?? null,
     behind: counts?.behind ?? null,
     refreshed,

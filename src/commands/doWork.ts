@@ -19,16 +19,19 @@ import {
   getIssueSurface,
   getOpenPrLinkMap,
   getPrSurface,
+  getAuthenticatedIdentity,
   getAuthenticatedLogin,
   getRepoSlug,
   listCandidateIssues,
   postMarker,
   updateMarker,
+  type GhIdentity,
   type MarkerRef,
   type IssueSurface,
   type OpenPrLinkMap,
   type OrphanPr,
 } from "../github/ghWorkService.js";
+import { identityProblemFor } from "../github/identity.js";
 import type { RawMessage, Participants } from "../github/conversation.js";
 import {
   claimStates,
@@ -90,7 +93,7 @@ import { version } from "../version.js";
 import { runClaude, buildClaudeArgs } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
 import { terminateTrackedChildren } from "../cli/childRegistry.js";
-import { shellQuote, resolveEffortOption, resolveCommand } from "../cli/spawnUtils.js";
+import { shellQuote, normalizeEffortOption, resolveCommand } from "../cli/spawnUtils.js";
 
 type Outcome = "answered" | "answered-no-reply" | "skipped" | "failed" | "deferred";
 
@@ -346,6 +349,13 @@ function resolveWithOption(value: string | undefined): Executor | undefined {
   return requested;
 }
 
+/** `--effort`, rejected as a settings fault rather than as an exit. */
+function resolveEffort(value: string | undefined): string | undefined {
+  const result = normalizeEffortOption(value);
+  if (!result.ok) failSettings(result.error);
+  return result.value;
+}
+
 function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Settings {
   let config: AutomataConfig;
   try {
@@ -377,8 +387,10 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
     // Rejected here rather than per item: an empty `--effort` is an operator
     // mistake on this invocation, not a property of any one work item. The
     // configured per-executor defaults are trimmed inside `resolveExecution`,
-    // which is where the executor in use is finally known.
-    effortOption: resolveEffortOption(options.effort),
+    // which is where the executor in use is finally known. Routed through
+    // `failSettings` rather than `resolveEffortOption`, whose rejection exits the
+    // process — which would take `--check` down before it printed a section.
+    effortOption: resolveEffort(options.effort),
     configEfforts: doWork.effort,
     maxRuns:
       options.maxRuns !== undefined
@@ -429,30 +441,7 @@ function describeIdentityProblem(agentUser: string, allowedUsers: string[]): str
     );
     return null;
   }
-
-  if (login.toLowerCase() === agentUser.toLowerCase()) return null;
-
-  if (allowedUsers.some((user) => user.toLowerCase() === login.toLowerCase())) {
-    return (
-      `\`gh\` is authenticated as "${login}", which is listed in allowedUsers. ` +
-        `Everything do-work posts would be attributed to an account that is allowed to instruct the agent, ` +
-        `so its own marker comment would look like a new instruction and each tick would answer the previous tick forever. ` +
-        `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`
-    );
-  }
-
-  // Any known mismatch is fatal, not just an authorized one. The marker would be
-  // posted by an account that is neither the agent nor authorized, so the
-  // conversation filter drops it entirely: the boundary never advances and the
-  // same human message starts a model run on every tick. Only the unverifiable
-  // case below is allowed to proceed.
-  return (
-    `\`gh\` is authenticated as "${login}" but agentUser is "${agentUser}". ` +
-      "Comments posted under that identity are neither the agent's nor an authorized user's, so they are " +
-      "filtered out of the conversation: the answer boundary would never advance and the same message would " +
-      "start a run on every tick. " +
-      `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`
-  );
+  return identityProblemFor(login, agentUser, allowedUsers);
 }
 
 interface PlannedRun {
@@ -1809,7 +1798,7 @@ function describeExecutor(
   lines.push(`default executor: ${executor} (${onPath ? resolvedPath : "not found on PATH"})`);
   if (!onPath) {
     problems.push(
-      `the \`${command}\` command is not on PATH, so every run this tick would attempt fails. Under cron the ` +
+      `the \`${command}\` command is not on PATH, so every run this tick would fail. Under cron the ` +
         "PATH is not your login shell's — set it in the crontab or use an absolute path",
     );
   }
@@ -1825,38 +1814,69 @@ function describeGitHubIdentity(
   settings: Settings,
   lines: string[],
   problems: string[],
-): { ghLogin: string | null; identityProblem: string | null } {
+): { ghAvailable: boolean | null; ghLogin: string | null; identityProblem: string | null } {
   if (options.fetch === false) {
     lines.push("`gh` authentication not checked: --no-fetch");
-    return { ghLogin: null, identityProblem: null };
+    return { ghAvailable: null, ghLogin: null, identityProblem: null };
   }
+  let identity: GhIdentity;
   try {
-    const ghLogin = getAuthenticatedLogin();
-    lines.push(
-      ghLogin === null
-        ? "`gh` is available but its account could not be determined (an app installation token has none)"
-        : `\`gh\` is authenticated as ${ghLogin}`,
-    );
-    const identityProblem = describeIdentityProblem(
-      settings.participants.agentUser,
-      settings.participants.allowedUsers,
-    );
-    if (identityProblem !== null) problems.push(identityProblem);
-    return { ghLogin, identityProblem };
+    // One query, whose status is kept. `getAuthenticatedLogin` answers null for
+    // an app installation token *and* for a `gh` that is not authenticated at
+    // all; only the second stops the loop, and only the first is acceptable.
+    identity = getAuthenticatedIdentity();
   } catch (err) {
     const detail = (err as Error).message;
     lines.push(`\`gh\` could not be queried: ${detail}`);
     problems.push(`\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``);
-    return { ghLogin: null, identityProblem: null };
+    return { ghAvailable: false, ghLogin: null, identityProblem: null };
+  }
+
+  if (identity.kind === "unavailable") {
+    lines.push(`\`gh\` could not name an account: ${identity.detail}`);
+    problems.push(
+      `\`gh api user\` failed (${identity.detail}), so \`gh\` is not authenticated here and every GitHub ` +
+        "call a tick makes would fail; run `gh auth login`, or set `GH_TOKEN` in the scheduler's environment",
+    );
+    return { ghAvailable: false, ghLogin: null, identityProblem: null };
+  }
+
+  const ghLogin = identity.kind === "login" ? identity.login : null;
+  lines.push(
+    ghLogin === null
+      ? "`gh` is available but its account could not be determined (an app installation token has none)"
+      : `\`gh\` is authenticated as ${ghLogin}`,
+  );
+  const identityProblem = identityProblemFor(
+    ghLogin,
+    settings.participants.agentUser,
+    settings.participants.allowedUsers,
+  );
+  if (identityProblem !== null) problems.push(identityProblem);
+  return { ghAvailable: true, ghLogin, identityProblem };
+}
+
+/**
+ * The configured backend, read straight from the file rather than from
+ * `Settings` — the settings only exist when the configuration was usable, and
+ * `remoteType` is one of the things an operator needs to see when it was not.
+ */
+function readRemoteType(): string | null {
+  try {
+    return readConfig().remoteType ?? null;
+  } catch {
+    return null;
   }
 }
 
 function environmentSection(options: DoWorkOptions, resolved: SettingsResult, repo: string | null): CheckSection {
   const lines: string[] = [`automata ${version}`];
   const problems: string[] = [];
+  const remoteType = readRemoteType();
   const data: Record<string, unknown> = {
     version,
     repo,
+    remoteType,
     configValid: resolved.ok,
     configError: resolved.ok ? null : resolved.error,
   };
@@ -1879,7 +1899,9 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
       title: sectionTitle("environment"),
       lines,
       problems: problems.map((summary) => ({ section: "environment" as const, summary })),
-      data,
+      // `ghAvailable` is null rather than false: nothing was asked of `gh`,
+      // which is not the same as having asked and been refused.
+      data: { ...data, ghAvailable: null, ghLogin: null, identityProblem: null },
     };
   }
 
@@ -1893,7 +1915,12 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
   );
 
   const { executor, command, onPath } = describeExecutor(settings, lines, problems);
-  const { ghLogin, identityProblem } = describeGitHubIdentity(options, settings, lines, problems);
+  const { ghAvailable, ghLogin, identityProblem } = describeGitHubIdentity(
+    options,
+    settings,
+    lines,
+    problems,
+  );
 
   return {
     id: "environment",
@@ -1909,6 +1936,7 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
       executor,
       executorCommand: command,
       executorOnPath: onPath,
+      ghAvailable,
       ghLogin,
       identityProblem,
     },

@@ -15,6 +15,7 @@ const gh = {
   getPrSurface: vi.fn(),
   getRepoSlug: vi.fn(),
   getAuthenticatedLogin: vi.fn(),
+  getAuthenticatedIdentity: vi.fn(),
   // Every write `do-work` can perform. The check must call none of them, and
   // the only way to know that is to have them here and assert zero calls.
   assignIssueToAgent: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getPrSurface: (...a: unknown[]) => gh.getPrSurface(...a),
   getRepoSlug: () => gh.getRepoSlug(),
   getAuthenticatedLogin: () => gh.getAuthenticatedLogin(),
+  getAuthenticatedIdentity: () => gh.getAuthenticatedIdentity(),
   assignIssueToAgent: (...a: unknown[]) => gh.assignIssueToAgent(...a),
   assignPrToAgent: (...a: unknown[]) => gh.assignPrToAgent(...a),
   postMarker: (...a: unknown[]) => gh.postMarker(...a),
@@ -165,7 +167,15 @@ function settled(number: number): IssueSurface {
 }
 
 function emptyRead<T>(): LogReadResult<T> {
-  return { entries: [], present: true, error: null, skipped: 0, otherRepos: 0, path: "/w/log" };
+  return {
+    entries: [],
+    present: true,
+    error: null,
+    skipped: 0,
+    otherRepos: 0,
+    filtered: true,
+    path: "/w/log",
+  };
 }
 
 function cleanRepoStatus(overrides: Partial<RepoStatus> = {}): RepoStatus {
@@ -173,9 +183,11 @@ function cleanRepoStatus(overrides: Partial<RepoStatus> = {}): RepoStatus {
     branch: "develop",
     head: "abc1234",
     dirtyPaths: [],
+    statusError: null,
     baseBranch: "develop",
     baseLocal: true,
     upstream: "origin/develop",
+    upstreamTracked: true,
     ahead: 0,
     behind: 0,
     refreshed: true,
@@ -245,6 +257,7 @@ beforeEach(() => {
   mockReadConfig.mockReturnValue({ ...CONFIG });
   gh.getRepoSlug.mockReturnValue({ owner: "acme", repo: "widgets" });
   gh.getAuthenticatedLogin.mockReturnValue("automata-bot");
+  gh.getAuthenticatedIdentity.mockReturnValue({ kind: "login", login: "automata-bot" });
   gh.listCandidateIssues.mockReturnValue([]);
   gh.getOpenPrLinkMap.mockReturnValue({
     byIssue: new Map(),
@@ -342,7 +355,7 @@ describe("do-work --check", () => {
     await runCheck();
 
     expect(stdout).toContain("default executor: claude (not found on PATH)");
-    expect(stdout).toContain("is not on PATH, so every run this tick would attempt fails");
+    expect(stdout).toContain("is not on PATH, so every run this tick would fail");
     expect(exitCode).toBe(1);
   });
 
@@ -419,6 +432,7 @@ describe("do-work --check", () => {
     expect(gh.listCandidateIssues).not.toHaveBeenCalled();
     expect(gh.getOpenPrLinkMap).not.toHaveBeenCalled();
     expect(gh.getAuthenticatedLogin).not.toHaveBeenCalled();
+    expect(gh.getAuthenticatedIdentity).not.toHaveBeenCalled();
     expect(stdout).toContain("--no-fetch makes no network call");
   });
 
@@ -460,7 +474,7 @@ describe("do-work --check", () => {
   });
 
   it("reports a self-triggering `gh` identity as a problem instead of exiting", async () => {
-    gh.getAuthenticatedLogin.mockReturnValue("alice");
+    gh.getAuthenticatedIdentity.mockReturnValue({ kind: "login", login: "alice" });
 
     await runCheck();
 
@@ -551,5 +565,87 @@ describe("do-work --check", () => {
     const plan = parsed.sections["selection"].data.plan;
     expect(plan).toHaveLength(1);
     expect(plan[0]).toMatchObject({ issue: 42, turn: "issue-discuss" });
+  });
+  it("reports an unauthenticated `gh` instead of calling it an app token", async () => {
+    // `getAuthenticatedLogin` answers null for an app installation token *and*
+    // for a `gh` that is not logged in. Only the second stops the loop, and it
+    // used to be reported as the first — i.e. not reported at all.
+    gh.getAuthenticatedIdentity.mockReturnValue({
+      kind: "unavailable",
+      detail: "gh: Not Found (HTTP 404)",
+    });
+
+    await runCheck();
+
+    expect(stdout).toContain("`gh` could not name an account");
+    expect(stdout).toContain("gh auth login");
+    expect(exitCode).toBe(1);
+  });
+
+  it("accepts an app installation token, which has no account, without a problem", async () => {
+    gh.getAuthenticatedIdentity.mockReturnValue({ kind: "no-user" });
+
+    await runCheck();
+
+    expect(stdout).toContain("an app installation token has none");
+    expect(stdout).not.toContain("could not name an account");
+    expect(stdout).not.toContain("gh auth login");
+  });
+
+  it("queries `gh` for its identity exactly once", async () => {
+    // The identity was read twice — once for the line, once inside
+    // `describeIdentityProblem` — and the second call wrote a warning to stderr
+    // on an otherwise healthy check.
+    await runCheck();
+
+    expect(gh.getAuthenticatedIdentity).toHaveBeenCalledTimes(1);
+    expect(gh.getAuthenticatedLogin).not.toHaveBeenCalled();
+    expect(stderr).not.toContain("could not determine which account");
+  });
+
+  it("reports an invalid --effort instead of exiting on it", async () => {
+    // `resolveEffortOption` exits the process; a diagnostic that dies before
+    // printing a section is no diagnostic.
+    await runCheck(["--effort", "  "]);
+
+    expect(stdout).toContain("--effort must be a non-empty level");
+    expect(stdout).toContain("Run lock");
+    expect(exitCode).toBe(1);
+  });
+
+  it("says when the operation logs were not filtered by repository", async () => {
+    gh.getRepoSlug.mockImplementation(() => {
+      throw new Error("no origin remote");
+    });
+    mockReadExecutionTicks.mockReturnValue({ ...emptyRead<ExecutionTick>(), filtered: false });
+    mockReadWorkRecords.mockReturnValue({ ...emptyRead<WorkRecord>(), filtered: false });
+
+    await runCheck();
+
+    // Without the slug the readers keep every checkout's entries; presenting
+    // them as this repository's history is the wrong answer to "why has *this*
+    // checkout done nothing".
+    expect(stdout).toContain("not filtered by repository");
+  });
+
+  it("publishes remoteType and ghAvailable in --json, as the contract says", async () => {
+    await runCheck(["--json"]);
+
+    const parsed = JSON.parse(stdout) as {
+      sections: Record<string, { data: Record<string, unknown> }>;
+    };
+    expect(parsed.sections["environment"].data["remoteType"]).toBe("gh");
+    expect(parsed.sections["environment"].data["ghAvailable"]).toBe(true);
+  });
+
+  it("publishes ghAvailable as false when `gh` could not name an account", async () => {
+    gh.getAuthenticatedIdentity.mockReturnValue({ kind: "unavailable", detail: "not logged in" });
+
+    await runCheck(["--json"]);
+
+    const parsed = JSON.parse(stdout) as {
+      sections: Record<string, { data: Record<string, unknown> }>;
+    };
+    expect(parsed.sections["environment"].data["ghAvailable"]).toBe(false);
   });
 });
