@@ -74,12 +74,12 @@ Checks that the PR exists and is merged, the working tree is clean, and the remo
 Execute the full GitFlow release sequence and push to `origin`. Only requires `git`.
 
 ```bash
-automata git publish-release            # auto-detect version from master tag
+automata git publish-release            # auto-detect version from the trunk tag
 automata git publish-release 2.0.0      # explicit version
 automata git publish-release --dry-run  # preview without executing
 ```
 
-When no version is given, the latest semver tag on `master` is detected and the minor segment is incremented (e.g. `1.2.0 → 1.3.0`).
+When no version is given, the trunk branch is resolved from `origin` (`main`, `master` or whatever the remote calls it), tags are fetched, and the latest semver tag on `origin/<trunk>` is detected and the minor segment incremented (e.g. `1.2.0 → 1.3.0`). See [docs/git.md](docs/git.md#automata-git-publish-release).
 
 ---
 

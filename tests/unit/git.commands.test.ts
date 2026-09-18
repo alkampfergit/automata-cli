@@ -1055,11 +1055,65 @@ describe("git get-pr-info: azdo dispatch", () => {
 
 // ── publish-release CLI preconditions ─────────────────────────────────────────
 
+/**
+ * `publish-release` now runs several read-only probes before it mutates
+ * anything, so the stub dispatches on argv rather than on call order — a
+ * `mockReturnValueOnce` chain breaks the moment a probe is added or reordered.
+ */
+type GitResult = { stdout: string; stderr: string; status: number };
+
+function classifyGitCall(args: string[]): string {
+  const [a0, a1] = args;
+  if (a0 === "rev-parse" && a1 === "--abbrev-ref") return "current-branch";
+  if (a0 === "rev-parse" && a1 === "--verify") return "local-trunk";
+  if (a0 === "status") return "status";
+  if (a0 === "symbolic-ref") return "origin-head";
+  if (a0 === "ls-remote" && a1 === "--symref") return "symref";
+  if (a0 === "ls-remote") return "probe";
+  if (a0 === "fetch") return "fetch";
+  if (a0 === "describe") return "describe";
+  if (a0 === "tag") return "tag-list";
+  if (a0 === "rev-list") return "behind";
+  return "other";
+}
+
+/** Happy path: on develop, clean, trunk is master, one 1.2.0 tag, no local trunk. */
+function publishDefaults(): Record<string, GitResult> {
+  return {
+    "current-branch": ok("develop\n"),
+    status: ok(""),
+    "origin-head": ok("refs/remotes/origin/master\n"),
+    symref: ok("ref: refs/heads/master\tHEAD\n"),
+    probe: ok("abc\trefs/heads/master\n"),
+    fetch: ok(""),
+    describe: ok("1.2.0\n"),
+    "tag-list": ok(""),
+    "local-trunk": fail("", 1),
+    behind: ok("0\n"),
+    other: ok(""),
+  };
+}
+
+function stubPublish(overrides: Record<string, GitResult> = {}): void {
+  const table = { ...publishDefaults(), ...overrides };
+  mockSpawnSync.mockImplementation((_cmd?: string, args?: string[]) =>
+    args === undefined ? ok("") : table[classifyGitCall(args)],
+  );
+}
+
+function executedGitArgs(): string[][] {
+  return (mockSpawnSync.mock.calls as [string, string[] | undefined][])
+    .map(([, args]) => args)
+    .filter((args): args is string[] => args !== undefined);
+}
+
 describe("git publish-release command: preconditions", () => {
   let out: ReturnType<typeof captureStreams>;
 
   beforeEach(() => {
     mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    mockReadConfig.mockReturnValue({});
     out = captureStreams();
   });
 
@@ -1069,7 +1123,7 @@ describe("git publish-release command: preconditions", () => {
   });
 
   it("exits 1 with error when not on develop branch", async () => {
-    mockSpawnSync.mockReturnValueOnce(ok("feature/some-branch\n")); // getCurrentBranch
+    stubPublish({ "current-branch": ok("feature/some-branch\n") });
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await expect(
@@ -1081,9 +1135,7 @@ describe("git publish-release command: preconditions", () => {
   });
 
   it("exits 1 with error when working tree is dirty", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
-      .mockReturnValueOnce(ok("M src/foo.ts\n")); // hasUncommittedChanges → dirty
+    stubPublish({ status: ok("M src/foo.ts\n") });
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await expect(
@@ -1095,9 +1147,7 @@ describe("git publish-release command: preconditions", () => {
   });
 
   it("exits 1 with error when version is not valid semver", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
-      .mockReturnValueOnce(ok("")); // hasUncommittedChanges → clean
+    stubPublish();
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await expect(
@@ -1109,10 +1159,7 @@ describe("git publish-release command: preconditions", () => {
   });
 
   it("exits 1 with error when tag already exists", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
-      .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
-      .mockReturnValueOnce(ok("1.3.0\n")); // tagExists → true
+    stubPublish({ "tag-list": ok("1.3.0\n") });
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await expect(
@@ -1123,19 +1170,120 @@ describe("git publish-release command: preconditions", () => {
     expect(out.exitCode).toBe(1);
   });
 
-  it("exits 1 when no semver tag found on master and no version supplied", async () => {
-    mockSpawnSync
-      .mockReturnValueOnce(ok("develop\n")) // getCurrentBranch
-      .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
-      .mockReturnValueOnce(fail("fatal: No names found", 128)); // getLatestTagOnMaster → null
+  it("exits 1 naming the trunk ref when it carries no semver tag", async () => {
+    stubPublish({ describe: fail("fatal: No names found", 128) });
 
     const { gitCommand } = await import("../../src/commands/git.js");
     await expect(
       gitCommand.parseAsync(["node", "git", "publish-release"]),
     ).rejects.toThrow("process.exit(1)");
 
-    expect(out.stderr).toContain("No semver tag found");
+    expect(out.stderr).toContain("No semver tag found on origin/master");
     expect(out.exitCode).toBe(1);
+  });
+
+  it("exits 1 listing every candidate when the trunk cannot be resolved", async () => {
+    stubPublish({
+      "origin-head": fail("", 1),
+      symref: ok(""),
+      probe: fail("", 2),
+    });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("Could not determine the trunk branch");
+    expect(out.stderr).toContain("origin/main");
+    expect(out.stderr).toContain("origin/master");
+    expect(out.stderr).toContain("automata config set git-trunk-branch");
+    expect(out.exitCode).toBe(1);
+    // Nothing was fetched, so the repository is untouched.
+    expect(executedGitArgs().map((args) => args[0])).not.toContain("fetch");
+  });
+
+  it("exits 1 when the fetch fails, before inferring a version", async () => {
+    stubPublish({ fetch: fail("fatal: could not read from remote repository", 128) });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("Failed to fetch master and tags from origin");
+    expect(out.stderr).toContain("could not read from remote repository");
+    expect(out.exitCode).toBe(1);
+    expect(executedGitArgs().map((args) => args[0])).not.toContain("describe");
+  });
+
+  it("exits 1 rather than fast-forwarding a local trunk that is behind", async () => {
+    stubPublish({ "local-trunk": ok("0f0dba2\n"), behind: ok("2\n") });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("'master' is 2 commit(s) behind origin/master");
+    expect(out.exitCode).toBe(1);
+    const verbs = executedGitArgs().map((args) => args[0]);
+    expect(verbs).not.toContain("merge");
+    expect(verbs).not.toContain("checkout");
+    expect(verbs).not.toContain("push");
+  });
+
+  it("uses the configured trunk branch and skips detection", async () => {
+    mockReadConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
+    stubPublish();
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0", "--dry-run"]);
+
+    expect(out.stdout).toContain("Trunk branch: trunk (configured as git.trunkBranch)");
+    const verbs = executedGitArgs().map((args) => args[0]);
+    expect(verbs).not.toContain("symbolic-ref");
+    expect(verbs).not.toContain("ls-remote");
+    expect(out.stdout).toContain("git push origin develop trunk 1.3.0");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("infers the version from origin/<trunk> in a develop-only clone, mutating nothing", async () => {
+    // origin/HEAD is absent, exactly as in a --single-branch clone; the remote
+    // advertises main as its HEAD.
+    stubPublish({
+      "origin-head": fail("", 1),
+      symref: ok("ref: refs/heads/main\tHEAD\n"),
+      describe: ok("0.7.0\n"),
+    });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "--dry-run"]);
+
+    expect(out.stdout).toContain("Trunk branch: main (from the remote's advertised HEAD)");
+    expect(out.stdout).toContain("Auto-detected version: 0.7.0 → 0.8.0");
+    expect(out.stdout).toContain("[dry-run] git checkout -b main origin/main");
+    expect(out.stdout).toContain("[dry-run] git push origin develop main 0.8.0");
+
+    const describeArgs = executedGitArgs().find((args) => args[0] === "describe");
+    expect(describeArgs?.at(-1)).toBe("origin/main");
+    // The fetch runs even in a dry run; nothing else that writes does. Asserted
+    // against the exact commands of the transcript above, because `git tag -l`
+    // is a read and only `git tag <version>` is a write.
+    const executed = executedGitArgs().map((args) => args.join(" "));
+    expect(executed.map((c) => c.split(" ")[0])).toContain("fetch");
+    for (const mutation of [
+      "checkout -b release/0.8.0",
+      "checkout -b main origin/main",
+      "merge --no-ff release/0.8.0",
+      "tag 0.8.0",
+      "checkout develop",
+      "branch -d release/0.8.0",
+      "push origin develop main 0.8.0",
+    ]) {
+      expect(executed).not.toContain(mutation);
+    }
+    expect(out.exitCode).toBeUndefined();
   });
 });
 

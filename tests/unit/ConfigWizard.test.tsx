@@ -44,6 +44,7 @@ const DO_WORK_CODEX_EFFORT_SCREEN_TEXT = "Default reasoning effort when the exec
 const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 const DO_WORK_PR_ORPHAN_SCREEN_TEXT = "Instructions for a pull request with no linked issue:";
+const GIT_TRUNK_SCREEN_TEXT = "Branch publish-release releases to";
 
 // ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
 // tell it apart from the start of a longer escape sequence, so advancing only
@@ -404,6 +405,15 @@ async function navigateToDoWork(stdin: { write: (s: string) => void }) {
   await tick();
 }
 
+async function navigateToGit(stdin: { write: (s: string) => void }) {
+  // Main menu: …, Do Work(4), Git(5). New entries are appended, so the counts
+  // the other navigation helpers use stay valid.
+  for (let i = 0; i < 5; i += 1) stdin.write(DOWN);
+  await tick();
+  stdin.write(ENTER);
+  await tick();
+}
+
 async function navigateToPromptsEntry(stdin: { write: (s: string) => void }, downs: number) {
   await navigateToPromptsMenu(stdin);
   for (let i = 0; i < downs; i += 1) stdin.write(DOWN);
@@ -757,5 +767,41 @@ describe("ConfigWizard — Do Work prompts", () => {
     const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToPromptsEntry(stdin, 0);
     expect(lastFrame()).toContain(SONAR_SCREEN_TEXT);
+  });
+});
+
+describe("ConfigWizard — Git section", () => {
+  it("reaches the trunk branch screen, blank because detection is the default", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    expect(lastFrame()).toContain(GIT_TRUNK_SCREEN_TEXT);
+  });
+
+  it("saves the typed branch under git.trunkBranch", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write("trunk");
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: "trunk" } }));
+  });
+
+  it("clears the key when the field is left blank, restoring detection", async () => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: undefined } }));
+  });
+
+  it("goes back to the main menu from the trunk branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain("Configure Automata");
   });
 });

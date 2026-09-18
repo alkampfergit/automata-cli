@@ -2,6 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readConfig } from "../config/configStore.js";
 import * as azdoService from "../config/azdoService.js";
+import {
+  TRUNK_CANDIDATES,
+  parseLsRemoteSymref,
+  parseOriginHeadRef,
+  type TrunkSource,
+} from "./trunkDetection.js";
 
 export interface PrCheck {
   name: string;
@@ -1278,12 +1284,109 @@ export function resolveCurrentBranchComments(): PrCommentsResult {
 
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
-export function getLatestTagOnMaster(): string | null {
+/**
+ * `ls-remote` probe in the positive sense the trunk search reads in. Shares the
+ * one implementation with `isUpstreamGone` so there is a single answer to "does
+ * origin have this branch?".
+ */
+export function remoteBranchExists(branch: string): boolean {
+  return !isUpstreamGone(branch);
+}
+
+export type TrunkResolution =
+  | { ok: true; branch: string; source: TrunkSource }
+  | { ok: false; attempted: string[] };
+
+/**
+ * Work out which branch `origin` treats as its trunk.
+ *
+ * The order matters. `origin/HEAD` is a local ref and costs nothing, but a clone
+ * made with `--single-branch` never writes it — which is exactly the situation
+ * this exists for — so the remote's advertised symref has to back it up, and a
+ * probe of the usual names backs *that* up for a remote that advertises no HEAD.
+ */
+export function resolveTrunkBranch(): TrunkResolution {
+  const configured = readConfig().git?.trunkBranch?.trim();
+  if (configured) {
+    return { ok: true, branch: configured, source: "config" };
+  }
+
+  const attempted: string[] = [];
+
+  attempted.push("origin/HEAD");
+  const head = run("git", ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  if (head.status === 0) {
+    const branch = parseOriginHeadRef(head.stdout);
+    if (branch !== null) return { ok: true, branch, source: "origin-head" };
+  }
+
+  attempted.push("git ls-remote --symref origin HEAD");
+  const symref = run("git", ["ls-remote", "--symref", "origin", "HEAD"]);
+  if (symref.status === 0) {
+    const branch = parseLsRemoteSymref(symref.stdout);
+    if (branch !== null) return { ok: true, branch, source: "ls-remote" };
+  }
+
+  for (const candidate of TRUNK_CANDIDATES) {
+    attempted.push(`origin/${candidate}`);
+    if (remoteBranchExists(candidate)) {
+      return { ok: true, branch: candidate, source: "probe" };
+    }
+  }
+
+  return { ok: false, attempted };
+}
+
+export type FetchResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * Bring down every tag plus the trunk ref itself.
+ *
+ * The refspec is explicit on purpose: a `--single-branch` clone configures
+ * `remote.origin.fetch` for its one branch, so `git fetch origin <trunk>` would
+ * update `FETCH_HEAD` and never create `refs/remotes/origin/<trunk>` — which is
+ * the ref the version is inferred from.
+ */
+export function fetchTrunkAndTags(trunk: string): FetchResult {
+  const { status, stderr } = run("git", [
+    "fetch", "--tags", "origin",
+    `+refs/heads/${trunk}:refs/remotes/origin/${trunk}`,
+  ]);
+  if (status !== 0) {
+    return { ok: false, message: stderr.trim() || `git fetch --tags origin ${trunk} failed.` };
+  }
+  return { ok: true };
+}
+
+export function localBranchExists(branch: string): boolean {
+  const { status } = run("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  return status === 0;
+}
+
+/**
+ * Commits on `origin/<trunk>` that the local branch of the same name does not
+ * have. Zero when there is no local branch at all — that is "nothing to be
+ * behind", not "behind by nothing", and `rev-list` would exit 128 on the missing
+ * ref if it were asked.
+ */
+export function trunkBehindCount(trunk: string): number {
+  if (!localBranchExists(trunk)) return 0;
+  const { stdout, status } = run("git", [
+    "rev-list", "--count",
+    `refs/heads/${trunk}..refs/remotes/origin/${trunk}`,
+  ]);
+  if (status !== 0) return 0;
+  const count = Number.parseInt(stdout.trim(), 10);
+  return Number.isNaN(count) ? 0 : count;
+}
+
+/** Latest semver tag reachable from `ref`, which is normally `origin/<trunk>`. */
+export function getLatestTagOnTrunk(ref: string): string | null {
   const { stdout, status } = run("git", [
     "describe", "--tags", "--abbrev=0",
     "--match", "[0-9]*.[0-9]*.[0-9]*",
     "--match", "v[0-9]*.[0-9]*.[0-9]*",
-    "master",
+    ref,
   ]);
   if (status !== 0) return null;
   const tag = stdout.trim();
@@ -1306,18 +1409,36 @@ export function tagExists(version: string): boolean {
   return stdout.trim().length > 0;
 }
 
-export function publishRelease(version: string, dryRun: boolean): void {
+export function publishRelease(version: string, dryRun: boolean, trunk: string): void {
   const releaseBranch = `release/${version}`;
+
+  // Read-only, so it runs in a dry run too: it decides which checkout line the
+  // transcript shows, and a dry run that prints a different command from the one
+  // a real run would execute is worse than no dry run.
+  //
+  // `-b <trunk> origin/<trunk>` deliberately omits `--track`: in a clone made
+  // with `--single-branch`, git refuses to set an upstream from a ref its
+  // configured refspec does not cover, which is the very clone shape this
+  // feature exists to support.
+  const checkoutTrunk = localBranchExists(trunk)
+    ? { args: ["checkout", trunk], desc: `git checkout ${trunk}` }
+    : {
+        args: ["checkout", "-b", trunk, `origin/${trunk}`],
+        desc: `git checkout -b ${trunk} origin/${trunk}`,
+      };
 
   const steps: Array<{ args: string[]; desc: string }> = [
     { args: ["checkout", "-b", releaseBranch], desc: `git checkout -b ${releaseBranch}` },
-    { args: ["checkout", "master"], desc: `git checkout master` },
+    checkoutTrunk,
     { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
     { args: ["tag", version], desc: `git tag ${version}` },
     { args: ["checkout", "develop"], desc: `git checkout develop` },
     { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
     { args: ["branch", "-d", releaseBranch], desc: `git branch -d ${releaseBranch}` },
-    { args: ["push", "origin", "develop", "master", version], desc: `git push origin develop master ${version}` },
+    {
+      args: ["push", "origin", "develop", trunk, version],
+      desc: `git push origin develop ${trunk} ${version}`,
+    },
   ];
 
   for (const step of steps) {

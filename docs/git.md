@@ -273,10 +273,44 @@ If any precondition fails the command prints a descriptive error to stderr and e
 Execute the full GitFlow release sequence and push the results to `origin`. Does **not** require the `gh` CLI — only `git` is needed.
 
 ```bash
-automata git publish-release            # auto-detect version from master tag
+automata git publish-release            # auto-detect version from the trunk tag
 automata git publish-release 2.0.0      # explicit version
 automata git publish-release --dry-run  # preview commands without executing
 ```
+
+### The trunk branch is detected, not assumed
+
+The branch a release is published to is resolved from `origin` on every run, in this order:
+
+| Order | Source | Notes |
+|---|---|---|
+| 1 | `git.trunkBranch` in `.automata/config.json` | Skips detection entirely. Unset by default — see [docs/config.md](config.md#git). |
+| 2 | `git symbolic-ref refs/remotes/origin/HEAD` | Free and local, but a clone made with `--single-branch` never writes it. |
+| 3 | `git ls-remote --symref origin HEAD` | What the remote itself advertises. Works in every clone shape. |
+| 4 | `origin/main`, then `origin/master` | Probed with `git ls-remote --heads`, for a remote that advertises no HEAD. |
+
+The resolved name is printed before anything else happens, with the source it came from:
+
+```
+Trunk branch: main (from origin/HEAD)
+```
+
+If none of the four answers, the command exits `1` listing every candidate it tried, before touching the repository.
+
+### It fetches first, including in --dry-run
+
+Before the version is inferred, the command runs:
+
+```
+git fetch --tags origin +refs/heads/<trunk>:refs/remotes/origin/<trunk>
+```
+
+The refspec is explicit so that a `--single-branch` clone — one that has only `develop` locally — gets
+`refs/remotes/origin/<trunk>` as well as the tags. The version is then read from `origin/<trunk>`, so **no local trunk
+branch is needed** and none is created until a real publish reaches the checkout step.
+
+The fetch runs in `--dry-run` too: it writes nothing but refs under `refs/remotes/` and `refs/tags/`, and it is what
+makes the version a dry run prints the same one a real run would use. A fetch that fails stops the command.
 
 ### Before you run it
 
@@ -288,7 +322,7 @@ three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-i
 
 | Argument | Description |
 |---|---|
-| `[version]` | Optional. Release version in `X.Y.Z` semver format. When omitted, the latest semver tag on `master` is detected and the minor segment is incremented (e.g. `1.2.0 → 1.3.0`). |
+| `[version]` | Optional. Release version in `X.Y.Z` semver format. When omitted, the latest semver tag on `origin/<trunk>` is detected and the minor segment is incremented (e.g. `1.2.0 → 1.3.0`). |
 
 ### Options
 
@@ -301,13 +335,16 @@ three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-i
 The command executes these git operations in order:
 
 1. `git checkout -b release/<version>` — create release branch from `develop`
-2. `git checkout master` — switch to master
-3. `git merge --no-ff release/<version>` — merge release into master
-4. `git tag <version>` — tag the release on master
+2. `git checkout <trunk>` — switch to the trunk. When the branch does not exist locally this is
+   `git checkout -b <trunk> origin/<trunk>` instead, which creates it. `--track` is deliberately not used: git refuses
+   to set an upstream from a ref a `--single-branch` clone's refspec does not cover, and the push below names its refs
+   explicitly anyway.
+3. `git merge --no-ff release/<version>` — merge release into the trunk
+4. `git tag <version>` — tag the release on the trunk
 5. `git checkout develop` — switch back to develop
 6. `git merge --no-ff release/<version>` — merge release back into develop
 7. `git branch -d release/<version>` — delete the local release branch
-8. `git push origin develop master <version>` — push all refs
+8. `git push origin develop <trunk> <version>` — push all refs
 
 ### Preconditions (all must pass before any changes are made)
 
@@ -315,11 +352,19 @@ The command executes these git operations in order:
 |---|---|
 | Current branch is `develop` | `publish-release must be run from the 'develop' branch` |
 | Clean working tree | `You have uncommitted changes...` |
+| Trunk branch resolves | `Could not determine the trunk branch of 'origin'` |
+| `git fetch` from `origin` succeeds | `Failed to fetch <trunk> and tags from origin` |
 | Version matches `X.Y.Z` (if provided) | `Version '...' is not valid semver. Use X.Y.Z format` |
+| Semver tag found on the trunk (if auto-detecting) | `No semver tag found on origin/<trunk>` |
 | Tag does not already exist | `Tag '...' already exists` |
-| Semver tag found on master (if auto-detecting) | `No semver tag found on master` |
+| A local trunk branch is not behind the remote | `Local branch '<trunk>' is N commit(s) behind origin/<trunk>` |
 
-If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. No git operations are performed.
+Every precondition is read-only and runs in `--dry-run` as well. A local trunk that is behind is **refused, never
+fast-forwarded** — it may carry work this command knows nothing about; update it with
+`git merge --ff-only origin/<trunk>` or delete it and re-run.
+
+If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. No branch is
+created, merged, tagged or pushed.
 
 ### Exit codes
 

@@ -49,8 +49,11 @@ A command-line interface tool built with TypeScript and commander.js.
 - TypeScript 5.x (strict mode) + commander.js, node:child_process (022-unify-ai-options)
 - TypeScript 5.x (strict mode) + commander.js, `gh` CLI via `spawnSync` (033-orphan-pull-requests)
 - TypeScript 5.x (strict mode) + `git cherry` / `git rebase` via `spawnSync` in `src/git/gitService.ts` (036-explicit-rebase-sync)
+- TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync` (036-release-trunk-detection)
 
 ## Recent Changes
+- 036-release-trunk-detection: `publish-release` resolves the trunk branch from `origin` instead of assuming a local
+  `master`, fetches tags first (in `--dry-run` too), and gained the `git.trunkBranch` config key
 - 036-explicit-rebase-sync: `do-work` names every pull strategy explicitly, rebases a pull-request branch whose
   local-only commits are all already upstream as the same patch, adds the `rebase-conflict` skip reason, and records
   the synchronisation strategy in the operation log

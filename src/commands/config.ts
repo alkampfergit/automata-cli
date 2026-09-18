@@ -257,6 +257,20 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);
   });
 
+const configSetGitTrunkBranch = new Command("git-trunk-branch")
+  .description("Pin the branch `publish-release` releases to, instead of detecting it")
+  .argument("<value>", "Branch name (unset = detect it from the remote)")
+  .action((value: string) => {
+    const branch = value.trim();
+    if (branch.length === 0) {
+      process.stderr.write("Error: git-trunk-branch requires a non-empty branch name.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeConfig({ ...current, git: { ...current.git, trunkBranch: branch } });
+    process.stdout.write(`git trunk branch set to: ${branch}\n`);
+  });
+
 const configSet = new Command("set")
   .description("Set a configuration value")
   .addCommand(configSetType)
@@ -272,7 +286,8 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
-  .addCommand(configSetDoWorkPrompt);
+  .addCommand(configSetDoWorkPrompt)
+  .addCommand(configSetGitTrunkBranch);
 
 export const configCommand = new Command("config")
   .description("Configure automata settings")
