@@ -4,10 +4,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockSpawnSync = vi.fn();
 const mockReadConfig = vi.fn(() => ({}) as Record<string, unknown>);
+const mockReadRawConfig = vi.fn(() => ({}) as Record<string, unknown>);
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
-  return { ...actual, readConfig: () => mockReadConfig() };
+  return {
+    ...actual,
+    readConfig: () => mockReadConfig(),
+    readRawConfig: () => mockReadRawConfig(),
+  };
 });
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -84,18 +89,33 @@ describe("gitService.resolveTrunkBranch", () => {
     mockSpawnSync.mockReset();
     mockReadConfig.mockReset();
     mockReadConfig.mockReturnValue({});
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
   });
   afterEach(() => vi.resetModules());
 
   it("uses the configured branch and runs no git command", async () => {
-    mockReadConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
+    mockReadRawConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
     const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
     expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "trunk", source: "config" });
     expect(mockSpawnSync).not.toHaveBeenCalled();
   });
 
+  it("reads the raw config, so an unrelated missing prompt file cannot block it", async () => {
+    // `readConfig()` resolves every prompt reference and throws when one is
+    // missing. Release publishing reads none of those prompts, so a stale
+    // `doWork.prompts` path must not stop the trunk from resolving.
+    mockReadConfig.mockImplementation(() => {
+      throw new Error("Prompt file not found: .automata/missing.md");
+    });
+    mockReadRawConfig.mockReturnValue({ git: { trunkBranch: "trunk" } });
+    const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
+    expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "trunk", source: "config" });
+    expect(mockReadConfig).not.toHaveBeenCalled();
+  });
+
   it("ignores a blank configured branch and falls back to detection", async () => {
-    mockReadConfig.mockReturnValue({ git: { trunkBranch: "   " } });
+    mockReadRawConfig.mockReturnValue({ git: { trunkBranch: "   " } });
     mockSpawnSync.mockReturnValue({ stdout: "refs/remotes/origin/main\n", stderr: "", status: 0 });
     const { resolveTrunkBranch } = await import("../../src/git/gitService.js");
     expect(resolveTrunkBranch()).toEqual({ ok: true, branch: "main", source: "origin-head" });
@@ -283,5 +303,50 @@ describe("gitService.publishRelease", () => {
     expect(output).toContain("[dry-run] git checkout -b release/1.3.0");
     expect(output).toContain("[dry-run] git push origin develop main 1.3.0");
     writeSpy.mockRestore();
+  });
+});
+
+describe("gitService.checkReleasePreconditions", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    mockReadConfig.mockReturnValue({});
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
+  });
+  afterEach(() => vi.resetModules());
+
+  it("passes on develop with a clean tree", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "develop\n", stderr: "", status: 0 })
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
+    expect(checkReleasePreconditions()).toEqual({ ok: true });
+  });
+
+  it("names the current branch when it is not develop", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "feature/x\n", stderr: "", status: 0 });
+    const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
+    const result = checkReleasePreconditions();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain("currently on 'feature/x'");
+  });
+
+  it("refuses a dirty working tree", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "develop\n", stderr: "", status: 0 })
+      .mockReturnValueOnce({ stdout: " M src/index.ts\n", stderr: "", status: 0 });
+    const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
+    const result = checkReleasePreconditions();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain("uncommitted changes");
+  });
+
+  it("reports the failure when the current branch cannot be read", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "fatal: not a git repository", status: 128 });
+    const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
+    const result = checkReleasePreconditions();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain("Failed to determine current branch");
   });
 });

@@ -156,7 +156,7 @@ Steps 3–8 are read-only and all run under `--dry-run`.
 | # | Command | Change |
 |---|---|---|
 | 1 | `git checkout -b release/<version>` | — |
-| 2 | `git checkout <trunk>` or `git checkout -b <trunk> --track origin/<trunk>` | trunk name; second form when the local branch is absent |
+| 2 | `git checkout <trunk>` or `git checkout -b <trunk> origin/<trunk>` | trunk name; second form when the local branch is absent, without `--track` (D-003) |
 | 3 | `git merge --no-ff release/<version>` | — |
 | 4 | `git tag <version>` | — |
 | 5 | `git checkout develop` | — |

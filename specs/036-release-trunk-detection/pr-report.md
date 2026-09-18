@@ -83,7 +83,26 @@ release sequence.
   real release** from a develop-only clone against a bare remote (trunk created from `origin/master`,
   merged, tagged, pushed — verified on the remote); the behind-refusal; and the unresolvable-trunk
   error.
-- **Gate**: `npm test` → 37 files, 1180 tests passing (after rebasing onto `develop`, which added 48 tests of its own). `npm run lint` (`eslint src/`) clean, `npm run typecheck` clean.
+- **Gate**: `npm test` → 38 files, 1189 tests passing. `npm run lint` (`eslint src/`) clean, `npm run typecheck` clean.
+
+## Review follow-up
+
+Three findings from the code review, all addressed:
+
+- **`resolveTrunkBranch` read the resolved config.** `readConfig()` expands every prompt-file
+  reference and throws when one is missing, so a repository with a stale `doWork.prompts` path could
+  not resolve its trunk even though release publishing reads none of those prompts. It now uses
+  `readRawConfig()`, like the `config` commands do. Covered by a test that makes `readConfig` throw.
+- **Cognitive complexity of the `publish-release` action (Sonar `typescript:S3776`, 17 > 15).** Two
+  blocks moved out of the command, which was the repository's rule anyway: `checkReleasePreconditions()`
+  in `gitService.ts` (on `develop`, clean tree) and a new pure `src/git/releaseVersion.ts` holding
+  `resolveReleaseVersion()`. The latter takes the tag lookup as a thunk, so it stays lazy for an
+  explicit version and testable without a repository. Every operator-visible string is unchanged.
+- **Plan and spec described a form the implementation avoids.** `plan.md`'s release-sequence table
+  said `git checkout -b <trunk> --track origin/<trunk>`, and FR-009 plus its acceptance scenario said
+  the new branch *tracks* `origin/<trunk>`. `--track` fails in a `--single-branch` clone (D-003), so
+  both now say the branch is created *from* `origin/<trunk>`, with FR-009 stating why no upstream is
+  configured.
 
 ## Notes
 

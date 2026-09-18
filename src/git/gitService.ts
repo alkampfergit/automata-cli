@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readConfig } from "../config/configStore.js";
+import { readConfig, readRawConfig } from "../config/configStore.js";
 import * as azdoService from "../config/azdoService.js";
 import {
   TRUNK_CANDIDATES,
@@ -1306,7 +1306,10 @@ export type TrunkResolution =
  * probe of the usual names backs *that* up for a remote that advertises no HEAD.
  */
 export function resolveTrunkBranch(): TrunkResolution {
-  const configured = readConfig().git?.trunkBranch?.trim();
+  // Raw, not `readConfig()`: that one resolves every prompt-file reference and
+  // throws when one is missing, so an unrelated stale `doWork.prompts` path
+  // would block a release that never reads those prompts.
+  const configured = readRawConfig().git?.trunkBranch?.trim();
   if (configured) {
     return { ok: true, branch: configured, source: "config" };
   }
@@ -1407,6 +1410,38 @@ export function tagExists(version: string): boolean {
     throw new Error(`Command failed: git tag -l ${version}\n${stderr.trim()}`);
   }
   return stdout.trim().length > 0;
+}
+
+export type ReleasePreconditionResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * The checks that must hold before `publish-release` touches anything: the run
+ * starts from `develop` and the working tree is clean.
+ *
+ * They live here rather than in the command so the command stays a thin printer
+ * of whatever this decides. `develop` is deliberately literal — only the trunk
+ * side of the release is detected.
+ */
+export function checkReleasePreconditions(): ReleasePreconditionResult {
+  let branch: string;
+  try {
+    branch = getCurrentBranch();
+  } catch (err) {
+    return { ok: false, message: (err as Error).message };
+  }
+  if (branch !== "develop") {
+    return {
+      ok: false,
+      message: `publish-release must be run from the 'develop' branch (currently on '${branch}').`,
+    };
+  }
+  if (hasUncommittedChanges()) {
+    return {
+      ok: false,
+      message: "You have uncommitted changes. Commit or stash them before publishing a release.",
+    };
+  }
+  return { ok: true };
 }
 
 export function publishRelease(version: string, dryRun: boolean, trunk: string): void {
