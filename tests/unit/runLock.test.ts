@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { acquireRunLock, claimStaleLock } from "../../src/run/runLock.js";
+import { acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(process.cwd(), "tmp-test-runlock");
@@ -328,5 +328,94 @@ describe("acquireRunLock", () => {
     if (!first.ok) return;
     first.handle.release();
     expect(acquireRunLock("do-work", 120).ok).toBe(true);
+  });
+});
+
+describe("inspectRunLock", () => {
+  it("reports a clean repository as free without creating anything", () => {
+    expect(inspectRunLock(120)).toEqual({ kind: "free" });
+    // The whole point of not reusing `acquireRunLock`: a diagnostic must not
+    // plant a lock file in a repository that has not ignored it.
+    expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("reports a live same-host lock as held, and names its owner", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.owner.pid).toBe(process.pid);
+    expect(status.owner.command).toBe("do-work");
+    expect(status.owner.host).toBe(hostname());
+    expect(status.heldForMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("reports a lock whose pid is dead as stale", () => {
+    // A pid far above the default pid_max, so it cannot be alive.
+    writeLock({ pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("stale");
+    if (status.kind !== "stale") return;
+    expect(status.owner?.pid).toBe(4194304);
+  });
+
+  it("reports an unparseable lock as stale with no owner", () => {
+    writeLock("{ not json");
+    expect(inspectRunLock(120)).toEqual({ kind: "stale", owner: null, heldForMs: null });
+  });
+
+  it("reports a live same-host lock past the staleness window as suspect", () => {
+    // No `pidStartedAt`, so the holder's identity cannot be verified — the
+    // pid-reuse case `acquireRunLock` flags rather than reclaiming.
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      host: hostname(),
+      command: "do-work",
+    });
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("suspect");
+    if (status.kind !== "suspect") return;
+    expect(status.heldForMs).toBeGreaterThan(2 * 60 * 60 * 1000);
+  });
+
+  it("does not call a live in-window lock suspect", () => {
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      host: hostname(),
+      command: "do-work",
+    });
+    expect(inspectRunLock(120).kind).toBe("held");
+  });
+
+  it("reports a foreign-host lock inside the window as held and past it as stale", () => {
+    writeLock({
+      pid: 1,
+      startedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      host: "another-host",
+      command: "do-work",
+    });
+    expect(inspectRunLock(120).kind).toBe("held");
+
+    writeLock({
+      pid: 1,
+      startedAt: new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString(),
+      host: "another-host",
+      command: "do-work",
+    });
+    expect(inspectRunLock(120).kind).toBe("stale");
+  });
+
+  it("leaves the lock file exactly as it found it", () => {
+    const owner = { pid: 4194304, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" };
+    writeLock(owner);
+    const before = readFileSync(lockFile(), "utf8");
+    inspectRunLock(120);
+    inspectRunLock(1);
+    expect(readFileSync(lockFile(), "utf8")).toBe(before);
+    expect(readdirSync(join(TEST_CWD, ".automata"))).toEqual(["automata.lock"]);
   });
 });

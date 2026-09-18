@@ -52,6 +52,9 @@ A command-line interface tool built with TypeScript and commander.js.
 - TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync` (036-release-trunk-detection)
 
 ## Recent Changes
+- 036-do-work-check: `do-work` gained `--check` (a read-only six-section health report, exit 0/1) and
+  `--no-fetch`; `inspectRunLock`, `readExecutionTicks`/`readWorkRecords`, `src/git/repoStatus.ts` and
+  `src/run/checkReport.ts` are the read-side modules behind it
 - 036-release-trunk-detection: `publish-release` resolves the trunk branch from `origin` instead of assuming a local
   `master`, fetches tags first (in `--dry-run` too), and gained the `git.trunkBranch` config key
 - 036-explicit-rebase-sync: `do-work` names every pull strategy explicitly, rebases a pull-request branch whose

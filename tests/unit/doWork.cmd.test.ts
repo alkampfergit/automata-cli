@@ -81,16 +81,21 @@ const CLEAN_HYGIENE = {
   degraded: false,
 };
 
-vi.mock("../../src/run/runLock.js", () => ({
-  acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a),
-}));
+// Spread the original: `RUN_LOCK_RELATIVE_PATH` and `inspectRunLock` are
+// imported by the command and by `repoStatus.ts`, and a literal factory naming
+// only `acquireRunLock` breaks the suite at import time.
+vi.mock("../../src/run/runLock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/runLock.js")>();
+  return { ...actual, acquireRunLock: (...a: unknown[]) => mockAcquireRunLock(...a) };
+});
 
 // Stubbed rather than pointed at a temp directory: the real module writes to
 // the *parent* of the working directory, so an unmocked test run would litter
 // the directory above the checkout on any machine where it is writable.
-vi.mock("../../src/run/operationLog.js", () => ({
-  recordTick: (...a: unknown[]) => mockRecordTick(...a),
-}));
+vi.mock("../../src/run/operationLog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/operationLog.js")>();
+  return { ...actual, recordTick: (...a: unknown[]) => mockRecordTick(...a) };
+});
 
 vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/claude/claudeService.js")>();

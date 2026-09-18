@@ -42,6 +42,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- `do-work --check`: a read-only health report for the autonomous loop — run lock, tick history, last work records,
+  repository state, per-candidate GitHub selection and environment — exiting `0` when it found no problem and `1` when
+  it did. `--no-fetch` makes it run without any network call, and `--json` emits the whole report as one document.
+  See [docs/do-work.md](docs/do-work.md#checking-the-loops-health).
 - `git.trunkBranch` in `.automata/config.json` pins the branch `publish-release` releases to, settable with
   `automata config set git-trunk-branch <name>` or the wizard's new `Git` screen. Unset by default.
 - `publish-release` now refuses to run when a local trunk branch is behind `origin/<trunk>`, rather than silently
