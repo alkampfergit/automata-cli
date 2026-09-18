@@ -600,6 +600,36 @@ function parseExecution(
 }
 
 /**
+ * A `=== <iso> <slug> ===` record header.
+ *
+ * Three outcomes, kept distinct because the caller treats them differently: the
+ * sentinel `"not-a-header"` means the line is an item and should be parsed as
+ * one, `null` means it *is* a header but its timestamp is unreadable, and a
+ * record means a new one has started.
+ */
+function parseWorkHeader(line: string): WorkRecord | null | "not-a-header" {
+  const header = /^=== (\S+) (\S+) ===$/.exec(line);
+  if (header === null) return "not-a-header";
+  const timestamp = new Date(header[1]);
+  if (Number.isNaN(timestamp.getTime())) return null;
+  return { timestamp, repo: header[2] === "-" ? null : header[2], items: [] };
+}
+
+/** One item line under a record header; null when it does not parse. */
+function parseWorkItem(line: string): WorkRecord["items"][number] | null {
+  const item = WORK_ITEM_LINE.exec(line);
+  if (item === null) return null;
+  return {
+    subject: item[1],
+    turn: item[2] === "-" ? null : item[2],
+    // The alternation in the pattern admits nothing else.
+    outcome: isOutcome(item[3]) ? item[3] : "skipped",
+    ...parseExecution(item[4]),
+    detail: item[5],
+  };
+}
+
+/**
  * The work log, newest record first.
  *
  * A record is a `=== <iso> <slug> ===` header and the item lines under it. Text
@@ -630,31 +660,20 @@ export function readWorkRecords(options: LogReadOptions = {}): LogReadResult<Wor
   for (const line of content.split("\n")) {
     if (line.trim().length === 0) continue;
 
-    const header = /^=== (\S+) (\S+) ===$/.exec(line);
-    if (header !== null) {
+    const header = parseWorkHeader(line);
+    if (header !== "not-a-header") {
       close();
-      const timestamp = new Date(header[1]);
-      if (Number.isNaN(timestamp.getTime())) {
-        skipped++;
-        continue;
-      }
-      current = { timestamp, repo: header[2] === "-" ? null : header[2], items: [] };
+      if (header === null) skipped++;
+      else current = header;
       continue;
     }
 
-    const item = WORK_ITEM_LINE.exec(line);
+    const item = parseWorkItem(line);
     if (item === null || current === null) {
       skipped++;
       continue;
     }
-    current.items.push({
-      subject: item[1],
-      turn: item[2] === "-" ? null : item[2],
-      // The alternation in the pattern admits nothing else.
-      outcome: isOutcome(item[3]) ? item[3] : "skipped",
-      ...parseExecution(item[4]),
-      detail: item[5],
-    });
+    current.items.push(item);
   }
   close();
 

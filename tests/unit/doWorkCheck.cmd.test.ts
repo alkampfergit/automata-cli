@@ -37,6 +37,7 @@ const mockAddClosesRefToPr = vi.fn();
 const mockGetCurrentBranchPr = vi.fn();
 const mockRunClaude = vi.fn();
 const mockRunCodex = vi.fn();
+const mockResolveCommand = vi.fn();
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
@@ -101,9 +102,16 @@ vi.mock("../../src/config/githubService.js", () => ({
 
 vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/claude/claudeService.js")>();
-  // `resolveCommand` stays real: the environment section's "is the executor on
-  // PATH" answer is one of the things under test.
   return { ...actual, runClaude: (...a: unknown[]) => mockRunClaude(...a) };
+});
+
+// `resolveCommand` is stubbed rather than left real. The environment section's
+// "is the executor on PATH" answer is under test, and with the real lookup the
+// answer would be whatever happens to be installed on the machine running the
+// suite — green on a developer box with Claude Code installed, red on CI.
+vi.mock("../../src/cli/spawnUtils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/cli/spawnUtils.js")>();
+  return { ...actual, resolveCommand: (name: string) => mockResolveCommand(name) as string };
 });
 
 vi.mock("../../src/codex/codexService.js", async (importOriginal) => {
@@ -247,6 +255,8 @@ beforeEach(() => {
   mockReadExecutionTicks.mockReturnValue(emptyRead<ExecutionTick>());
   mockReadWorkRecords.mockReturnValue(emptyRead<WorkRecord>());
   mockInspectRepoStatus.mockReturnValue(cleanRepoStatus());
+  // The executor is installed unless a test says otherwise.
+  mockResolveCommand.mockImplementation((name: string) => `/usr/local/bin/${name}`);
 });
 
 /* ── tests ──────────────────────────────────────────────────────────────── */
@@ -321,7 +331,19 @@ describe("do-work --check", () => {
     await runCheck();
 
     expect(stdout).toContain("RESULT: healthy");
+    expect(stdout).toContain("default executor: claude (/usr/local/bin/claude)");
     expect(exitCode).toBeUndefined();
+  });
+
+  it("reports an executor that is not on PATH as a problem", async () => {
+    // What `resolveCommand` returns when nothing on PATH matches: the bare name.
+    mockResolveCommand.mockImplementation((name: string) => name);
+
+    await runCheck();
+
+    expect(stdout).toContain("default executor: claude (not found on PATH)");
+    expect(stdout).toContain("is not on PATH, so every run this tick would attempt fails");
+    expect(exitCode).toBe(1);
   });
 
   it("exits 1 and counts the problems when something is wrong", async () => {

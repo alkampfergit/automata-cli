@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
+import { resolveCommand } from "../cli/spawnUtils.js";
 
 /**
  * A read-only view of the checkout, for `do-work --check`.
@@ -14,13 +15,26 @@ import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
  * than merely intended.
  */
 
-function git(args: string[]): { stdout: string; stderr: string; status: number } {
-  const result = spawnSync("git", args, { encoding: "utf8" });
+/**
+ * Resolved once against `PATH` rather than left for `spawnSync` to search on
+ * every call, so the binary this module runs is decided here and is the same
+ * for every command in the report.
+ */
+const GIT_BIN = resolveCommand("git");
+
+function git(args: string[]): GitResult {
+  const result = spawnSync(GIT_BIN, args, { encoding: "utf8" });
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
     status: result.status ?? 1,
   };
+}
+
+interface GitResult {
+  stdout: string;
+  stderr: string;
+  status: number;
 }
 
 export interface RepoStatusOptions {
@@ -103,6 +117,57 @@ function divergence(upstream: string, branch: string): { ahead: number; behind: 
 }
 
 /**
+ * HEAD's short sha, plus the fatal detail when this is not a repository at all.
+ *
+ * `rev-parse` failing on HEAD means either "not a repository" or "no commits
+ * yet"; `--is-inside-work-tree` tells them apart, and only the first is fatal to
+ * the whole section.
+ */
+function readHead(): { head: string | null; fatal: string | null } {
+  const head = git(["rev-parse", "--short", "HEAD"]);
+  if (head.status === 0) return { head: head.stdout.trim(), fatal: null };
+  if (git(["rev-parse", "--is-inside-work-tree"]).status === 0) return { head: null, fatal: null };
+  return { head: null, fatal: head.stderr.trim() || "not a git repository" };
+}
+
+/** `git status --porcelain` entries, minus automata's own lock file. */
+function readDirtyPaths(): string[] {
+  const porcelain = git(["status", "--porcelain"]);
+  if (porcelain.status !== 0) return [];
+  return porcelain.stdout
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !isOwnLockFile(line));
+}
+
+/**
+ * The one command in this module that writes anything, and it writes a single
+ * remote-tracking ref. The same refspec `gitService.fetchBranch` uses, so
+ * "refreshed" means the same thing to the check as it does to the tick.
+ */
+function refreshBase(baseBranch: string): { refreshed: boolean; fetchError: string | null } {
+  const fetched = git(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+  if (fetched.status === 0) return { refreshed: true, fetchError: null };
+  return { refreshed: false, fetchError: fetched.stderr.trim() || "git fetch failed" };
+}
+
+/**
+ * The configured upstream when the branch exists locally and has one; otherwise
+ * `origin/<base>` if that ref is present, which is the case for a base branch
+ * that was fetched but never checked out here.
+ */
+function resolveUpstream(baseBranch: string, baseLocal: boolean): string | null {
+  if (baseLocal) {
+    const configured = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${baseBranch}@{u}`]);
+    if (configured.status === 0) return configured.stdout.trim();
+  }
+  if (git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${baseBranch}`]).status === 0) {
+    return `origin/${baseBranch}`;
+  }
+  return null;
+}
+
+/**
  * Inspect the checkout without changing it.
  *
  * Never throws: a missing repository, a missing base branch and an unfetchable
@@ -112,15 +177,8 @@ function divergence(upstream: string, branch: string): { ahead: number; behind: 
 export function inspectRepoStatus(options: RepoStatusOptions): RepoStatus {
   const { baseBranch } = options;
 
-  const head = git(["rev-parse", "--short", "HEAD"]);
-  if (head.status !== 0) {
-    // `rev-parse` failing on HEAD means either "not a repository" or "no commits
-    // yet"; the stderr tells them apart and both are worth reporting verbatim.
-    const inside = git(["rev-parse", "--is-inside-work-tree"]);
-    if (inside.status !== 0) {
-      return notARepo(baseBranch, head.stderr.trim() || "not a git repository");
-    }
-  }
+  const { head, fatal } = readHead();
+  if (fatal !== null) return notARepo(baseBranch, fatal);
 
   // `symbolic-ref` is the detached-HEAD test: `rev-parse --abbrev-ref HEAD`
   // answers the literal string "HEAD" when detached, which is indistinguishable
@@ -128,58 +186,19 @@ export function inspectRepoStatus(options: RepoStatusOptions): RepoStatus {
   const symbolic = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   const branch = symbolic.status === 0 ? symbolic.stdout.trim() : null;
 
-  const porcelain = git(["status", "--porcelain"]);
-  const dirtyPaths =
-    porcelain.status === 0
-      ? porcelain.stdout
-          .split("\n")
-          .filter((line) => line.trim().length > 0)
-          .filter((line) => !isOwnLockFile(line))
-      : [];
+  const dirtyPaths = readDirtyPaths();
+  const baseLocal = git(["rev-parse", "--verify", "--quiet", `refs/heads/${baseBranch}`]).status === 0;
 
-  const baseLocal =
-    git(["rev-parse", "--verify", "--quiet", `refs/heads/${baseBranch}`]).status === 0;
+  const { refreshed, fetchError } = options.fetch
+    ? refreshBase(baseBranch)
+    : { refreshed: false, fetchError: null };
 
-  let refreshed = false;
-  let fetchError: string | null = null;
-  if (options.fetch) {
-    // The same refspec `gitService.fetchBranch` uses, so "refreshed" means the
-    // same thing to the check as it does to the tick. It writes one
-    // remote-tracking ref and touches nothing else in the checkout.
-    const fetched = git([
-      "fetch",
-      "origin",
-      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
-    ]);
-    refreshed = fetched.status === 0;
-    if (!refreshed) fetchError = fetched.stderr.trim() || "git fetch failed";
-  }
-
-  // The configured upstream when the branch exists locally and has one;
-  // otherwise `origin/<base>` if that ref is present, which is the case for a
-  // base branch that was fetched but never checked out here.
-  let upstream: string | null = null;
-  if (baseLocal) {
-    const configured = git([
-      "rev-parse",
-      "--abbrev-ref",
-      "--symbolic-full-name",
-      `${baseBranch}@{u}`,
-    ]);
-    if (configured.status === 0) upstream = configured.stdout.trim();
-  }
-  if (upstream === null) {
-    const remoteRef = `refs/remotes/origin/${baseBranch}`;
-    if (git(["rev-parse", "--verify", "--quiet", remoteRef]).status === 0) {
-      upstream = `origin/${baseBranch}`;
-    }
-  }
-
+  const upstream = resolveUpstream(baseBranch, baseLocal);
   const counts = baseLocal && upstream !== null ? divergence(upstream, baseBranch) : null;
 
   return {
     branch,
-    head: head.status === 0 ? head.stdout.trim() : null,
+    head,
     dirtyPaths,
     baseBranch,
     baseLocal,
