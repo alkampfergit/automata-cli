@@ -83,7 +83,7 @@ release sequence.
   real release** from a develop-only clone against a bare remote (trunk created from `origin/master`,
   merged, tagged, pushed — verified on the remote); the behind-refusal; and the unresolvable-trunk
   error.
-- **Gate**: `npm test` → 35 files, 1132 tests passing. `npm run lint` (`eslint src/`) clean.
+- **Gate**: `npm test` → 37 files, 1180 tests passing (after rebasing onto `develop`, which added 48 tests of its own). `npm run lint` (`eslint src/`) clean, `npm run typecheck` clean.
 
 ## Notes
 
