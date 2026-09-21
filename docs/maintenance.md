@@ -135,8 +135,11 @@ no bullet.
 
 ### What a release does to it
 
-`automata git publish-release` does not touch the file — the roll is manual, and it belongs in the release commit on
-`develop` *before* the command runs (it must start from a clean tree anyway, see [docs/git.md](git.md#automata-git-publish-release)):
+`automata git publish-release` does not touch the file, but since 037 it **refuses to run without it**: the command
+checks for a `## [X.Y.Z] - YYYY-MM-DD` heading matching the version being released, and stops before any branch, merge
+or tag is created if there is none. The roll is still manual, and it belongs in the release commit on `develop`
+*before* the command runs (it must start from a clean tree anyway, see
+[docs/git.md](git.md#automata-git-publish-release)):
 
 1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, using the date the release is cut.
 2. Add a fresh, empty `## [Unreleased]` above it.
@@ -144,6 +147,10 @@ no bullet.
 
 Steps 1 and 2 may also land in the last pull request merged before the cut, which is the same thing once it reaches
 `develop` — `0.7.0` was rolled that way, in the branch that rebuilt this file.
+
+Before the precondition existed, skipping this was silent and expensive: `0.8.0` was tagged with its entry still under
+`Unreleased`, the structural test failed on every branch, and because CI's `build` job gates `publish`, the release
+never reached npm at all. That is what the check is there to stop.
 
 ### Why it exists alongside the GitHub release notes
 
@@ -157,7 +164,9 @@ answer to "should I upgrade, and what do I have to change if I do" — which is 
 `tests/unit/changelog.test.ts` fails when `Unreleased` is missing or is not first, when a version heading is malformed
 or undated, when the versions are not in strictly descending order, when an unknown category heading appears, or when a
 semver git tag has no section. The tag-coverage check needs tags to be present; in a shallow clone without them it
-reports that it could not run rather than failing, while the format assertions always run. Sections were reconstructed
+reports that it could not run rather than failing, while the format assertions always run. It is intentionally independent of
+`src/git/changelogGate.ts`, which enforces the same heading shape at release time: a test that imported the code it
+validates would stop being a check, so the two carry the pattern separately and each names the other in a comment. Sections were reconstructed
 from git history for `0.2.0` through `0.6.0`, which had gone unrecorded — that is the failure this test exists to
 prevent repeating.
 

@@ -24,6 +24,7 @@ import {
 } from "../git/gitService.js";
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
+import { checkChangelogSection, readChangelog } from "../git/changelogGate.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 const SKIP_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
@@ -457,7 +458,12 @@ Tags are fetched from origin first, in --dry-run too, so the version a dry run
 prints is the one a real run would use.
 
 When [version] is omitted the latest semver tag on origin/<trunk> is detected
-and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
+and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).
+
+CHANGELOG.md must already carry a '## [<version>] - YYYY-MM-DD' section for the
+version being released; the release is refused otherwise, in --dry-run too, and
+before any branch, merge or tag is created. A repository with no CHANGELOG.md is
+not subject to the check.`,
   )
   .action((version: string | undefined, options: { dryRun?: boolean }) => {
     const dryRun = options.dryRun ?? false;
@@ -503,6 +509,16 @@ and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).`,
     // Precondition: tag must not already exist
     if (tagExists(resolvedVersion)) {
       process.stderr.write(`Error: Tag '${resolvedVersion}' already exists.\n`);
+      process.exit(1);
+    }
+
+    // Precondition: the release must already be written down. Read-only, so it
+    // runs under --dry-run too, and placed before the first ref is written: a
+    // refusal has to predate the tag, because once the tag is pushed the only
+    // remedies left are moving it or burning the version (see issue #80).
+    const changelog = checkChangelogSection(resolvedVersion, readChangelog());
+    if (!changelog.ok) {
+      process.stderr.write(`Error: ${changelog.message}\n`);
       process.exit(1);
     }
 

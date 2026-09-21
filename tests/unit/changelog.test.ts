@@ -14,6 +14,9 @@ const CHANGELOG = fileURLToPath(new URL("../../CHANGELOG.md", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const UNRELEASED_HEADING = "## [Unreleased]";
+// `src/git/changelogGate.ts` builds the same shape, so that `publish-release`
+// refuses a release this test would then fail. The two are deliberately not
+// shared: a test that imports the code it validates stops being a check.
 const VERSION_HEADING = /^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$/;
 const CATEGORY_HEADING = /^### (.+)$/;
 // Keep a Changelog 1.1.0. A typo'd category ("Changes", "Bugfixes") renders as
