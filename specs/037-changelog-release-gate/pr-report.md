@@ -16,6 +16,10 @@ refuse, read-only and before any ref is written, to release a version the change
 - **`CHANGELOG.md`**: the bullets that shipped as 0.8.0 are now filed under `## [0.8.0] - 2026-09-18` — the date the tag
   was created — with a fresh empty `## [Unreleased]` above them. Content is unchanged; only the heading moved, which is
   what the documented roll is.
+- **`CHANGELOG.md`, the 0.8.1 roll**: this PR's own entries are filed under `## [0.8.1] - 2026-09-21`, with a fresh
+  empty `## [Unreleased]` above, so the merged `develop` is ready for `automata git publish-release 0.8.1` without a
+  separate release commit. Rolling in the last pull request before the cut is the documented alternative to rolling at
+  release time (see [docs/maintenance.md](../../docs/maintenance.md#what-a-release-does-to-it)).
 - **`src/git/changelogGate.ts`** (new): a pure `checkChangelogSection(version, changelog)` that looks for a
   `## [X.Y.Z] - YYYY-MM-DD` heading, plus `readChangelog(dir)`, the one function that touches the filesystem. Modelled
   on `src/git/releaseVersion.ts` — release-time decisions kept out of `gitService.ts` and testable without a repository.
@@ -45,9 +49,11 @@ refuse, read-only and before any ref is written, to release a version the change
 - **0.8.0 was never published.** CI's `build` gates `publish`, which gates `release`, so the failing test stopped both:
   `npm view automata-cli dist-tags` still reports `latest: 0.7.0`, there is no `v0.8.0` tag and no GitHub release. This
   PR makes CI green and future releases correct; it does not restore the lost release.
-- **Restoring 0.8.0 is a maintainer decision and is deliberately not in this PR.** Either the published `0.8.0` tag is
-  moved onto a commit that contains this fix and CI re-run, or 0.8.0 is abandoned and 0.8.1 cut from the merged result.
-  Both are irreversible from a consumer's point of view, so neither belongs in an automated change.
+- **The maintainer chose 0.8.1** ([PR comment](https://github.com/alkampfergit/automata-cli/pull/81)): the `0.8.0`
+  tag is left where it is and the next release is cut as a patch from the merged result, carrying 0.8.0's contents to
+  npm along with this PR's. The changelog is rolled accordingly above. The version must be named on the command line —
+  `automata git publish-release 0.8.1` — because with no argument the command bumps the *minor* of the newest trunk
+  tag and would infer `0.9.0` from `0.8.0`.
 - The `## [X.Y.Z] - YYYY-MM-DD` pattern now exists in two places — `src/git/changelogGate.ts` and
   `tests/unit/changelog.test.ts`. That is deliberate: a test that imports the implementation it validates stops being an
   independent check. Each site carries a comment naming the other.

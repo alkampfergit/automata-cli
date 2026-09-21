@@ -150,7 +150,11 @@ Steps 1 and 2 may also land in the last pull request merged before the cut, whic
 
 Before the precondition existed, skipping this was silent and expensive: `0.8.0` was tagged with its entry still under
 `Unreleased`, the structural test failed on every branch, and because CI's `build` job gates `publish`, the release
-never reached npm at all. That is what the check is there to stop.
+never reached npm at all. That is what the check is there to stop. `0.8.0` remains a tag with no npm release; its
+contents ship as part of `0.8.1`, so both headings describe what an upgrade from `0.7.0` gets.
+
+Note that a re-release like that has to name its version: with no argument, `publish-release` bumps the *minor* of the
+newest tag on the trunk, so a tag of `0.8.0` infers `0.9.0`. Run `automata git publish-release 0.8.1` to cut a patch.
 
 ### Why it exists alongside the GitHub release notes
 

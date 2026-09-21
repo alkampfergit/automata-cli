@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-21
+
 ### Added
 
 - `automata git publish-release` refuses to release a version `CHANGELOG.md` does not document. It looks for a
@@ -21,7 +23,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 - The `0.8.0` release is recorded below. It was tagged with its entry still under `Unreleased`, which failed the
   changelog structure test on every branch and, because CI's build gates the publish job, kept the release itself off
-  npm.
+  npm. `0.8.0` is therefore a tag with no npm release, and `0.8.1` is the version that carries its contents there: an
+  upgrade from `0.7.0` gets everything listed under both headings.
 
 ## [0.8.0] - 2026-09-18
 
