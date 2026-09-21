@@ -25,9 +25,27 @@ describe("checkChangelogSection", () => {
     expect(checkChangelogSection("0.9.0", changelog(body)).ok).toBe(true);
   });
 
-  it("rejects a file whose newest released section is an older version", () => {
-    const result = checkChangelogSection("0.9.0", changelog("## [Unreleased]\n\n## [0.8.0] - 2026-09-18\n"));
-    expect(result.ok).toBe(false);
+  it.each([
+    // Nothing but the still-unrolled `## [Unreleased]` heading and the previous
+    // release -- the exact shape of the file that let tag 0.8.0 through.
+    ["the newest released section is an older version", "## [Unreleased]\n\n## [0.8.0] - 2026-09-18\n"],
+    // The structural test in `changelog.test.ts` fails on an undated heading, so
+    // accepting one here would let the release through into the same red build.
+    ["the heading carries no date", "## [0.9.0]\n"],
+    ["the date is a word", "## [0.9.0] - soon\n"],
+    ["the date is not YYYY-MM-DD", "## [0.9.0] - 01/10/2026\n"],
+    ["the version is named only in a bullet", "## [Unreleased]\n\n### Added\n\n- Lands in ## [0.9.0] - 2026-10-01.\n"],
+    // Keep a Changelog files often end in a block of these; a substring search
+    // for the version would treat one as a section.
+    ["the version appears only in a link-reference footer", "[0.9.0]: https://example.test/compare/0.8.0...0.9.0\n"],
+    ["the heading is one level too deep", "### [0.9.0] - 2026-10-01\n"],
+    ["the heading is one level too shallow", "# [0.9.0] - 2026-10-01\n"],
+    // `0.9.0` must not be satisfied by `10.9.0` or `0.9.01`, which a loose
+    // pattern would match as substrings of the bracketed version.
+    ["a longer version contains the requested one", "## [10.9.0] - 2026-10-01\n"],
+    ["the requested version is a prefix of the documented one", "## [0.9.01] - 2026-10-02\n"],
+  ])("rejects a changelog where %s", (_case, body) => {
+    expect(checkChangelogSection("0.9.0", changelog(body)).ok).toBe(false);
   });
 
   it("names the expected heading and the roll procedure in the refusal", () => {
@@ -37,41 +55,6 @@ describe("checkChangelogSection", () => {
     expect(result.message).toContain("## [0.9.0] - YYYY-MM-DD");
     expect(result.message).toContain("[Unreleased]");
     expect(result.message).toContain("docs/maintenance.md");
-  });
-
-  // The structural test in `changelog.test.ts` fails on an undated heading, so
-  // accepting one here would let the release through into the same red build.
-  it("rejects an undated heading", () => {
-    expect(checkChangelogSection("0.9.0", changelog("## [0.9.0]\n")).ok).toBe(false);
-  });
-
-  it("rejects a heading whose date is not YYYY-MM-DD", () => {
-    expect(checkChangelogSection("0.9.0", changelog("## [0.9.0] - soon\n")).ok).toBe(false);
-    expect(checkChangelogSection("0.9.0", changelog("## [0.9.0] - 01/10/2026\n")).ok).toBe(false);
-  });
-
-  it("rejects a version named only in a bullet", () => {
-    const body = "## [Unreleased]\n\n### Added\n\n- Everything that lands in ## [0.9.0] - 2026-10-01 goes here.\n";
-    expect(checkChangelogSection("0.9.0", changelog(body)).ok).toBe(false);
-  });
-
-  // Keep a Changelog files often end in a block of these; a substring search
-  // for the version would treat one as a section.
-  it("rejects a version that appears only in a link-reference footer", () => {
-    const body = "## [Unreleased]\n\n[0.9.0]: https://github.com/alkampfergit/automata-cli/compare/0.8.0...0.9.0\n";
-    expect(checkChangelogSection("0.9.0", changelog(body)).ok).toBe(false);
-  });
-
-  it("rejects a heading at the wrong level", () => {
-    expect(checkChangelogSection("0.9.0", changelog("### [0.9.0] - 2026-10-01\n")).ok).toBe(false);
-    expect(checkChangelogSection("0.9.0", changelog("# [0.9.0] - 2026-10-01\n")).ok).toBe(false);
-  });
-
-  // `0.9.0` must not be satisfied by `10.9.0` or `0.9.01`, which a loose
-  // pattern would match as substrings of the bracketed version.
-  it("does not let a different version satisfy the requested one", () => {
-    const body = "## [10.9.0] - 2026-10-01\n\n## [0.9.01] - 2026-10-02\n";
-    expect(checkChangelogSection("0.9.0", changelog(body)).ok).toBe(false);
   });
 
   it("passes when there is no changelog to check", () => {
