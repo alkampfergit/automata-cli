@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readConfig, readRawConfig } from "../config/configStore.js";
 import * as azdoService from "../config/azdoService.js";
+import { recordCommand } from "../run/commandTrace.js";
 import {
   TRUNK_CANDIDATES,
   parseLsRemoteSymref,
@@ -82,11 +83,15 @@ export interface SonarFailureSummary {
 }
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
+  const startedAt = Date.now();
   const result = spawnSync(cmd, args, { encoding: "utf8" });
+  const status = result.status ?? 1;
+  // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
+  recordCommand(cmd, args, startedAt, status);
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
-    status: result.status ?? 1,
+    status,
   };
 }
 

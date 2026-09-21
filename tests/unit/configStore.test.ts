@@ -285,6 +285,7 @@ describe("doWork configuration", () => {
       executor: "claude",
       maxRunsPerTick: 0,
       lockStaleMinutes: 120,
+      dumpOnBlock: true,
     });
   });
 

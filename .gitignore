@@ -148,5 +148,6 @@ vite.config.ts.timestamp-*
 # Local backups created when linking Claude skills for Codex
 .agents/.claude-skill-backups/
 
-# automata run lock (transient per-tick state)
+# automata run lock and its heartbeat (transient per-tick state)
 .automata/automata.lock
+.automata/automata-heartbeat.json

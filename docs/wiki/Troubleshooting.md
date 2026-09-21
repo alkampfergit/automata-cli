@@ -9,16 +9,29 @@
 | Is the commenter authorized? | Only accounts in `allowedUsers` can trigger a turn. A comment from anyone else is invisible. |
 | Is `agentUser` the login the agent actually posts as? | `gh api user --jq .login` while authenticated as the agent. A mismatch makes the agent's own comments look like a third party's — so it never recognises its own answers and re-answers forever. |
 | Did the tick start? | Exit 0 with "Another automata instance is already running" means the lock was held. See below. |
+| Did the tick say why it did nothing? | It does now: a blocked tick prints the whole six-section health report on stderr, headed by what blocked it. See [do-work.md](../do-work.md#when-a-tick-does-nothing). |
 
 ## "Another automata instance is already running", but nothing is
 
 A stale lock whose process died in a way that could not be detected — usually because the lock was written on a different host (a container that has since been replaced), where liveness cannot be checked.
 
-It expires after `doWork.lockStaleMinutes` (default 120). To clear it immediately:
+It expires after `doWork.lockStaleMinutes` (default 120). Ask `--check` first — it names the holder, the directory
+it runs from, and what phase it is in:
 
 ```bash
-cat .automata/automata.lock      # look at pid, host, startedAt
+automata do-work --check
+```
+
+A `phase:` line whose "updated" age keeps growing is a tick that really is working; one frozen minutes ago is not.
+A `logs to … (this check reads …)` line means the holder runs from a different checkout than the one you are asking
+about, and the two are writing different operation logs.
+
+To clear the lock by hand:
+
+```bash
+cat .automata/automata.lock      # look at pid, host, startedAt, cwd
 rm .automata/automata.lock       # only once you are sure no tick is running
+rm -f .automata/automata-heartbeat.json
 ```
 
 Lower `doWork.lockStaleMinutes` if your ticks are always short.

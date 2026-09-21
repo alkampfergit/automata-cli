@@ -82,13 +82,16 @@ describe("prepareBaseBranch", () => {
     expect(mockPullFastForwardOnly).not.toHaveBeenCalled();
   });
 
-  it("excludes automata's own lock file from the cleanliness check", async () => {
-    // The lock is created before this check runs, so in any repository that has
-    // not gitignored it, it would otherwise read as an untracked change and
-    // every item would be skipped as dirty-tree.
+  it("excludes automata's own bookkeeping files from the cleanliness check", async () => {
+    // Both are created before this check runs, so in any repository that has not
+    // gitignored them, they would otherwise read as untracked changes and every
+    // item would be skipped as dirty-tree.
     const { prepareBaseBranch } = await import("../../src/git/workspaceService.js");
     prepareBaseBranch("develop");
-    expect(mockHasUncommittedChanges).toHaveBeenCalledWith([".automata/automata.lock"]);
+    expect(mockHasUncommittedChanges).toHaveBeenCalledWith([
+      ".automata/automata.lock",
+      ".automata/automata-heartbeat.json",
+    ]);
   });
 
   it("checks out the base branch and fast-forwards it", async () => {

@@ -59,6 +59,14 @@
   stays a problem. **Rationale**: this is exactly the contradiction issue #82 pasted, and it needs no threshold
   and no new configuration key. **Alternatives considered**: a grace period after the lock's `startedAt`.
 
+- **One `AUTOMATA_OWN_PATHS` list rather than a second path constant** (converge-pass decision, taken during
+  implementation): the heartbeat has to be excluded from the working-tree cleanliness check in four places.
+  **Rationale**: a file added to the set and missed at one of them makes every item of every tick skip as
+  `dirty-tree` in any repository that has not ignored it — that was issue #69 for the run lock alone, and the
+  exclusion sites are far enough apart that the next addition would repeat it. The `repoHygiene` and
+  `workspaceService` tests now assert the exact list, so a third file added and missed is a failure rather than a
+  silent gap. **Alternatives considered**: exporting `HEARTBEAT_RELATIVE_PATH` and naming both at each site.
+
 - **Project structure**: the two new modules go in `src/run/` beside `runLock.ts` and `operationLog.ts` — the
   repository's established home for best-effort side channels (pure format/parse functions plus one I/O entry
   point whose body is a silent `try`/`catch`). **Alternatives considered**: extending `runLock.ts`, which is

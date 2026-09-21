@@ -1,5 +1,7 @@
-import type { ExecutionTick, LogReadResult, WorkRecord } from "./operationLog.js";
+import type { ExecutionTick, LogDirectoryStatus, LogReadResult, WorkRecord } from "./operationLog.js";
 import type { LockStatus } from "./runLock.js";
+import type { Heartbeat } from "./heartbeat.js";
+import { describeTracedCommand, type TracedCommand } from "./commandTrace.js";
 import type { RepoStatus } from "../git/repoStatus.js";
 
 /**
@@ -18,6 +20,26 @@ export interface Problem {
   section: SectionId;
   /** One line, in the operator's words: what is wrong and, where there is one, the fix. */
   summary: string;
+  /**
+   * One command that investigates this finding further, or null.
+   *
+   * Null is a real answer, not a gap: a scheduler that has stopped firing is a
+   * property of the host's cron and no automata command says anything about it.
+   * Printing a plausible-looking command there would send an operator down a
+   * path that cannot answer the question, which is worse than printing nothing.
+   */
+  command: string | null;
+}
+
+/** A problem before it knows which section raised it. */
+interface Finding {
+  summary: string;
+  command: string | null;
+}
+
+/** `finding("…", "git status")` — the shape every section builds its problems from. */
+function finding(summary: string, command: string | null): Finding {
+  return { summary, command };
 }
 
 export interface CheckSection {
@@ -38,6 +60,27 @@ export interface CheckReport {
   sections: CheckSection[];
   problems: Problem[];
   exitCode: 0 | 1;
+  /**
+   * The `--verbose` command trace; null when tracing was off.
+   *
+   * Deliberately not a seventh `CheckSection`: it raises no problems — it is
+   * evidence, not a finding — and `SECTION_ORDER` is the contract the check's
+   * six sections are pinned by.
+   */
+  trace: TracedCommand[] | null;
+  /**
+   * What blocked the tick, when this report is a blocked dump rather than a
+   * `--check` run. Null for `--check`.
+   */
+  blocked: BlockedHeader | null;
+}
+
+/** The trigger line a blocked dump is headed by. */
+export interface BlockedHeader {
+  /** The machine-readable reason, e.g. `lock-held`. */
+  reason: string;
+  /** One sentence in the operator's words, e.g. `run lock held by pid 851554 on cisharpai`. */
+  trigger: string;
 }
 
 /** The report order. Fixed, and every section is printed even when it found nothing. */
@@ -148,19 +191,32 @@ export function describeDuration(ms: number): string {
 function build(
   id: SectionId,
   lines: string[],
-  problems: string[],
+  problems: Finding[],
   data: Record<string, unknown>,
 ): CheckSection {
   return {
     id,
     title: SECTION_TITLES[id],
     lines,
-    problems: problems.map((summary) => ({ section: id, summary })),
+    problems: problems.map((item) => ({ section: id, ...item })),
     data,
   };
 }
 
 /* ------------------------------ lock ------------------------------------- */
+
+/**
+ * What the checking process is, so the report can compare itself with the lock's
+ * holder rather than describe it in isolation.
+ */
+export interface LockContext {
+  /** The checking process's working directory. */
+  cwd: string;
+  /** The operation-log directory that working directory implies. */
+  logDirectory: string;
+  /** `dirname`, supplied by the caller so this module stays free of `node:path`. */
+  parentOf: (dir: string) => string;
+}
 
 function describeOwner(owner: {
   pid: number;
@@ -172,6 +228,79 @@ function describeOwner(owner: {
 }
 
 /**
+ * Where the holder runs from, and — when that is not where this check is
+ * running from — where each of the two therefore reads and writes its logs.
+ *
+ * This is the line that closes issue #82. The operation log lives in
+ * `dirname(cwd)`, so a tick the scheduler fires from a different directory logs
+ * somewhere the operator is not looking, and the only visible symptom is a live
+ * lock beside an empty log. Stating both derivations turns that contradiction
+ * into one sentence.
+ *
+ * A lock written by an older automata has no recorded directory. That is
+ * reported as unknown and raises nothing: absence is a version marker here, not
+ * a fault.
+ */
+function describeOwnerLocation(
+  owner: { cwd?: string },
+  context: LockContext,
+  lines: string[],
+  problems: Finding[],
+): void {
+  if (owner.cwd === undefined) {
+    lines.push("  working directory: not recorded (lock written by an older automata)");
+    return;
+  }
+  lines.push(`  working directory: ${owner.cwd}`);
+  if (owner.cwd === context.cwd) return;
+
+  const ownerLogs = context.parentOf(owner.cwd);
+  lines.push(`  logs to ${ownerLogs} (this check reads ${context.logDirectory})`);
+  problems.push(
+    finding(
+      `the tick holding the lock runs from \`${owner.cwd}\` and writes its operation logs to ` +
+        `\`${ownerLogs}\`, while this check reads \`${context.logDirectory}\` — the two will not agree ` +
+        "about what has run; run the check from the directory the scheduler uses",
+      `ls -l ${ownerLogs}/automata-execution.log`,
+    ),
+  );
+}
+
+/**
+ * The live tick's own account of itself: phase, item, executor.
+ *
+ * Rendered with the age of the last update rather than its timestamp, because
+ * the question being asked is "is it still moving?" — and a heartbeat that
+ * stopped advancing is the one signal that distinguishes a slow tick from a
+ * wedged one.
+ */
+function describeHeartbeat(
+  heartbeat: Heartbeat | null | undefined,
+  now: Date,
+  lines: string[],
+): void {
+  if (heartbeat === undefined || heartbeat === null) {
+    lines.push("  phase: not reported (no heartbeat from this holder)");
+    return;
+  }
+
+  const updated = Date.parse(heartbeat.updatedAt);
+  const age = Number.isNaN(updated) ? "unknown" : `${describeDuration(now.getTime() - updated)} ago`;
+  const item =
+    heartbeat.item === null
+      ? ""
+      : ` — item ${String(heartbeat.item.index)} of ${String(heartbeat.item.total)}, ${heartbeat.item.subject}`;
+  lines.push(`  phase: ${heartbeat.phase}${item} (updated ${age})`);
+
+  if (heartbeat.executor === null) return;
+  const started = Date.parse(heartbeat.executor.startedAt);
+  const running = Number.isNaN(started)
+    ? `since ${heartbeat.executor.startedAt}`
+    : `running for ${describeDuration(now.getTime() - started)}`;
+  lines.push(`  executor: ${heartbeat.executor.command}, ${running}`);
+}
+
+/**
  * A *live* lock is not a problem.
  *
  * The shell script in issue #75 treats any running `do-work` as a failure, which
@@ -179,8 +308,18 @@ function describeOwner(owner: {
  * normal case. Only a lock nothing is behind — or one whose holder cannot be
  * identified after the staleness window — stops future ticks.
  */
-export function lockSection(status: LockStatus, staleMinutes: number): CheckSection {
-  const data: Record<string, unknown> = { status: status.kind, staleMinutes };
+export function lockSection(
+  status: LockStatus,
+  staleMinutes: number,
+  context: LockContext,
+  now: Date = new Date(),
+): CheckSection {
+  const data: Record<string, unknown> = {
+    status: status.kind,
+    staleMinutes,
+    cwd: context.cwd,
+    logDirectory: context.logDirectory,
+  };
 
   switch (status.kind) {
     case "free":
@@ -189,24 +328,39 @@ export function lockSection(status: LockStatus, staleMinutes: number): CheckSect
     case "held": {
       const held =
         status.heldForMs === null ? "" : ` (${describeDuration(status.heldForMs)} so far)`;
-      return build("lock", [`a tick is running: ${describeOwner(status.owner)}${held}`], [], {
+      const lines = [`a tick is running: ${describeOwner(status.owner)}${held}`];
+      const problems: Finding[] = [];
+      describeOwnerLocation(status.owner, context, lines, problems);
+      describeHeartbeat(status.heartbeat, now, lines);
+      return build("lock", lines, problems, {
         ...data,
         owner: status.owner,
         heldForMs: status.heldForMs,
+        heartbeat: status.heartbeat ?? null,
       });
     }
 
     case "suspect": {
       const held = status.heldForMs === null ? "unknown" : describeDuration(status.heldForMs);
-      return build(
-        "lock",
-        [`a tick has held the lock for ${held}: ${describeOwner(status.owner)}`],
-        [
+      const lines = [`a tick has held the lock for ${held}: ${describeOwner(status.owner)}`];
+      const problems: Finding[] = [];
+      describeOwnerLocation(status.owner, context, lines, problems);
+      describeHeartbeat(status.heartbeat, now, lines);
+      // Pushed after the location finding so the report reads in the order the
+      // lines above do.
+      problems.push(
+        finding(
           `the run lock has been held longer than ${String(staleMinutes)} minutes by a process whose identity ` +
             "cannot be verified; if no executor is running, kill the holder or delete `.automata/automata.lock`",
-        ],
-        { ...data, owner: status.owner, heldForMs: status.heldForMs },
+          `ps -p ${String(status.owner.pid)} -o pid,lstart,args`,
+        ),
       );
+      return build("lock", lines, problems, {
+        ...data,
+        owner: status.owner,
+        heldForMs: status.heldForMs,
+        heartbeat: status.heartbeat ?? null,
+      });
     }
 
     case "stale":
@@ -218,7 +372,10 @@ export function lockSection(status: LockStatus, staleMinutes: number): CheckSect
             : `a stale run lock is present: ${describeOwner(status.owner)}`,
         ],
         [
-          "a stale run lock is present; the next tick reclaims it automatically, so no action is needed unless ticks keep being turned away",
+          finding(
+            "a stale run lock is present; the next tick reclaims it automatically, so no action is needed unless ticks keep being turned away",
+            "cat .automata/automata.lock",
+          ),
         ],
         { ...data, owner: status.owner, heldForMs: status.heldForMs },
       );
@@ -227,7 +384,12 @@ export function lockSection(status: LockStatus, staleMinutes: number): CheckSect
       return build(
         "lock",
         [`the run lock could not be read: ${status.detail}`],
-        [`the run lock at \`.automata/automata.lock\` could not be read: ${status.detail}`],
+        [
+          finding(
+            `the run lock at \`.automata/automata.lock\` could not be read: ${status.detail}`,
+            "ls -l .automata/automata.lock",
+          ),
+        ],
         { ...data, detail: status.detail },
       );
   }
@@ -249,32 +411,80 @@ function describeTick(tick: ExecutionTick, now: Date): string {
   return `${tick.timestamp.toISOString()} (${age} ago) exit=${String(tick.exitCode)} ${counts}${note}`;
 }
 
-/** Why the log has nothing to say; null when it does. */
+/**
+ * Why the log has nothing to say; null when it does.
+ *
+ * `explained` marks the two cases a *live* tick accounts for: `recordTick` runs
+ * when a tick ends, so a first-ever tick still in flight legitimately has
+ * nothing in the log yet. Reporting that as a fault is the contradiction issue
+ * #82 pasted — a running pid beside "no tick has ever run here". An unreadable
+ * log is not marked, because a live tick explains an empty file and says nothing
+ * at all about a permissions failure.
+ */
 function describeMissingTicks(
   read: LogReadResult<ExecutionTick>,
-): { line: string; problem: string } | null {
+): { line: string; problem: Finding; explainedByLiveTick: boolean } | null {
   if (read.error !== null) {
     return {
       line: `the execution log could not be read: ${read.error}`,
-      problem: `the execution log \`${read.path}\` could not be read: ${read.error}`,
+      problem: finding(
+        `the execution log \`${read.path}\` could not be read: ${read.error}`,
+        `ls -l ${read.path}`,
+      ),
+      explainedByLiveTick: false,
     };
   }
   if (!read.present) {
     return {
       line: `no execution log at ${read.path}`,
-      problem:
+      problem: finding(
         `no execution log at \`${read.path}\` — no tick has ever run here, or automata cannot write to the ` +
-        "workspace root; check that the scheduler runs `do-work` from inside the checkout",
+          "workspace root; check that the scheduler runs `do-work` from inside the checkout",
+        `ls -la ${read.path}`,
+      ),
+      explainedByLiveTick: true,
     };
   }
   if (read.entries.length === 0) {
     return {
       line: "the execution log holds no tick for this repository",
-      problem:
+      problem: finding(
         "the execution log holds no tick for this repository — the scheduler has never successfully run `do-work` here",
+        `tail -5 ${read.path}`,
+      ),
+      explainedByLiveTick: true,
     };
   }
   return null;
+}
+
+/**
+ * The log directory, its derivation and whether a tick could write there —
+ * printed on every run, not only when something is missing.
+ *
+ * The path was always available on `LogReadResult.path`; what was missing was
+ * where it came from. `dirname(process.cwd())` moves with whoever launched the
+ * process, so an operator reading a path they do not recognise had no way to
+ * tell a misconfigured scheduler from an empty history.
+ */
+function describeLogDirectory(
+  directory: LogDirectoryStatus,
+  lines: string[],
+  problems: Finding[],
+): void {
+  const writable = directory.writable ? "writable" : `not writable: ${directory.detail ?? "unknown"}`;
+  lines.push(
+    `log directory: ${directory.dir} (the parent of the working directory ${directory.cwd}), ${writable}`,
+  );
+  if (directory.writable) return;
+  problems.push(
+    finding(
+      `the operation log directory \`${directory.dir}\` is not writable (${directory.detail ?? "unknown"}), so ` +
+        "every tick records nothing and this report can only ever be blank; make it writable by the account " +
+        "the scheduler runs as",
+      `ls -ld ${directory.dir}`,
+    ),
+  );
 }
 
 /** The newest tick, the shape of the history behind it, and the cadence it implies. */
@@ -282,13 +492,17 @@ function describeTickHistory(
   ticks: ExecutionTick[],
   cadence: TickCadence,
   now: Date,
+  logPath: string,
   lines: string[],
-  problems: string[],
+  problems: Finding[],
 ): void {
   lines.push(`last tick: ${describeTick(ticks[0], now)}`);
   if (ticks[0].exitCode !== 0) {
     problems.push(
-      `the last tick exited ${String(ticks[0].exitCode)} — see \`Last work\` below and the work log for the item that failed`,
+      finding(
+        `the last tick exited ${String(ticks[0].exitCode)} — see \`Last work\` below and the work log for the item that failed`,
+        "automata do-work --check --verbose",
+      ),
     );
   }
 
@@ -300,7 +514,10 @@ function describeTickHistory(
   );
   if (lockHeld === ticks.length && ticks.length > 1) {
     problems.push(
-      "every recorded tick was turned away by a held run lock — a previous tick is wedged; see `Run lock` above",
+      finding(
+        "every recorded tick was turned away by a held run lock — a previous tick is wedged; see `Run lock` above",
+        "cat .automata/automata.lock",
+      ),
     );
   }
 
@@ -311,9 +528,15 @@ function describeTickHistory(
   lines.push(`cadence: about one tick every ${describeDuration(cadence.medianIntervalMs)}`);
   if (cadence.silent) {
     problems.push(
-      `no tick for ${describeDuration(cadence.sinceNewestMs ?? 0)}, against a usual interval of ` +
-        `${describeDuration(cadence.medianIntervalMs)} — the scheduler appears to have stopped firing ` +
-        "(automata does not manage the scheduler; check it on this host)",
+      finding(
+        `no tick for ${describeDuration(cadence.sinceNewestMs ?? 0)}, against a usual interval of ` +
+          `${describeDuration(cadence.medianIntervalMs)} — the scheduler appears to have stopped firing ` +
+          "(automata does not manage the scheduler; check it on this host)",
+        // The log's own tail is the only thing automata can offer: the
+        // scheduler belongs to the host, and naming a `crontab -l` here would
+        // be a guess about how this installation is driven.
+        `tail -5 ${logPath}`,
+      ),
     );
   }
 }
@@ -328,18 +551,42 @@ function unfilteredLine(unit: string): string {
   return `not filtered by repository: the slug could not be resolved, so ${unit} from other checkouts may be shown`;
 }
 
-export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): CheckSection {
+/**
+ * The tick history, and the two facts that explain an empty one.
+ *
+ * `lockStatus` is here for a cross-section judgement rather than for display:
+ * "no tick has ever been recorded" is a fault when nothing is running and the
+ * expected state when a first tick is still in flight, and the report has both
+ * facts in hand. Deciding it inside this section is what stops the two halves
+ * of the report contradicting each other.
+ */
+export function tickSection(
+  read: LogReadResult<ExecutionTick>,
+  now: Date,
+  directory: LogDirectoryStatus,
+  lockStatus: LockStatus,
+): CheckSection {
   const lines: string[] = [];
-  const problems: string[] = [];
+  const problems: Finding[] = [];
   const ticks = read.entries;
   const cadence = tickCadence(ticks, now);
+  const tickInFlight = lockStatus.kind === "held" || lockStatus.kind === "suspect";
+
+  describeLogDirectory(directory, lines, problems);
 
   const missing = describeMissingTicks(read);
   if (missing !== null) {
     lines.push(missing.line);
-    problems.push(missing.problem);
+    if (tickInFlight && missing.explainedByLiveTick) {
+      lines.push(
+        "a tick is running and has not recorded itself yet — the log is written when a tick ends, " +
+          "so this is the expected state for a first tick still in flight",
+      );
+    } else {
+      problems.push(missing.problem);
+    }
   } else {
-    describeTickHistory(ticks, cadence, now, lines, problems);
+    describeTickHistory(ticks, cadence, now, read.path, lines, problems);
   }
 
   if (!read.filtered && read.present) lines.push(unfilteredLine("line(s)"));
@@ -360,6 +607,8 @@ export function tickSection(read: LogReadResult<ExecutionTick>, now: Date): Chec
     filtered: read.filtered,
     logPath: read.path,
     logPresent: read.present,
+    logDirectory: directory,
+    tickInFlight,
   });
 }
 
@@ -395,12 +644,14 @@ function describeWorkRecords(records: WorkRecord[], now: Date): string[] {
 
 export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSection {
   const lines: string[] = [];
-  const problems: string[] = [];
+  const problems: Finding[] = [];
   const records = read.entries;
 
   if (read.error !== null) {
     lines.push(`the work log could not be read: ${read.error}`);
-    problems.push(`the work log \`${read.path}\` could not be read: ${read.error}`);
+    problems.push(
+      finding(`the work log \`${read.path}\` could not be read: ${read.error}`, `ls -l ${read.path}`),
+    );
   } else if (!read.present || records.length === 0) {
     lines.push("no tick has invoked the executor in the retained window");
   } else {
@@ -427,10 +678,15 @@ export function workSection(read: LogReadResult<WorkRecord>, now: Date): CheckSe
 /* ------------------------------- git ------------------------------------- */
 
 /** Where HEAD is, and whether the tree under it is clean. */
-function describeCheckout(status: RepoStatus, lines: string[], problems: string[]): void {
+function describeCheckout(status: RepoStatus, lines: string[], problems: Finding[]): void {
   if (status.branch === null) {
     lines.push(`HEAD is detached at ${status.head ?? "an unknown commit"}`);
-    problems.push("HEAD is detached; the pre-flight expects a branch, so check one out");
+    problems.push(
+      finding(
+        "HEAD is detached; the pre-flight expects a branch, so check one out",
+        "git status --short --branch",
+      ),
+    );
   } else {
     const at = status.head === null ? "" : ` at ${status.head}`;
     lines.push(`on ${status.branch}${at}`);
@@ -439,8 +695,11 @@ function describeCheckout(status: RepoStatus, lines: string[], problems: string[
   if (status.statusError !== null) {
     lines.push(`the working tree could not be inspected: ${status.statusError}`);
     problems.push(
-      `\`git status\` failed (${status.statusError}), so whether the working tree is clean is unknown; ` +
-        "the pre-flight runs the same command and stops every item when it cannot answer",
+      finding(
+        `\`git status\` failed (${status.statusError}), so whether the working tree is clean is unknown; ` +
+          "the pre-flight runs the same command and stops every item when it cannot answer",
+        "git status --porcelain",
+      ),
     );
     return;
   }
@@ -452,25 +711,34 @@ function describeCheckout(status: RepoStatus, lines: string[], problems: string[
   lines.push(`working tree has ${String(status.dirtyPaths.length)} uncommitted change(s):`);
   for (const path of status.dirtyPaths) lines.push(`  ${path}`);
   problems.push(
-    `the working tree has ${String(status.dirtyPaths.length)} uncommitted change(s); the pre-flight will try to ` +
-      "rescue them onto a branch, and every item skips as `dirty-tree` if that fails",
+    finding(
+      `the working tree has ${String(status.dirtyPaths.length)} uncommitted change(s); the pre-flight will try to ` +
+        "rescue them onto a branch, and every item skips as `dirty-tree` if that fails",
+      "git status --porcelain",
+    ),
   );
 }
 
 /** The base branch against its upstream: present, tracked, and fast-forwardable? */
-function describeBaseBranch(status: RepoStatus, lines: string[], problems: string[]): void {
+function describeBaseBranch(status: RepoStatus, lines: string[], problems: Finding[]): void {
   if (!status.baseLocal) {
     lines.push(`base branch ${status.baseBranch} does not exist in this checkout`);
     problems.push(
-      `the base branch \`${status.baseBranch}\` does not exist locally; either check it out or correct ` +
-        "`doWork.baseBranch` with `automata config set do-work-base-branch <branch>`",
+      finding(
+        `the base branch \`${status.baseBranch}\` does not exist locally; either check it out or correct ` +
+          "`doWork.baseBranch` with `automata config set do-work-base-branch <branch>`",
+        "git branch --list --all",
+      ),
     );
     return;
   }
   if (status.upstream === null) {
     lines.push(`base branch ${status.baseBranch} has no upstream`);
     problems.push(
-      `the base branch \`${status.baseBranch}\` has no upstream, so the pre-flight cannot fast-forward it`,
+      finding(
+        `the base branch \`${status.baseBranch}\` has no upstream, so the pre-flight cannot fast-forward it`,
+        `git branch -vv --list ${status.baseBranch}`,
+      ),
     );
     return;
   }
@@ -483,9 +751,12 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
       `base branch ${status.baseBranch} has no tracking configuration; counted against ${status.upstream}`,
     );
     problems.push(
-      `the base branch \`${status.baseBranch}\` has no upstream configured, so the pre-flight's ` +
-        `\`git pull --ff-only\` fails even though ${status.upstream} exists; set it with ` +
-        `\`git branch --set-upstream-to=${status.upstream} ${status.baseBranch}\``,
+      finding(
+        `the base branch \`${status.baseBranch}\` has no upstream configured, so the pre-flight's ` +
+          `\`git pull --ff-only\` fails even though ${status.upstream} exists; set it with ` +
+          `\`git branch --set-upstream-to=${status.upstream} ${status.baseBranch}\``,
+        `git branch -vv --list ${status.baseBranch}`,
+      ),
     );
   }
 
@@ -501,9 +772,12 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
   // would let a checkout whose state was never established exit `0`.
   if (status.ahead === null || status.behind === null) {
     problems.push(
-      `the divergence of \`${status.baseBranch}\` from ${status.upstream} could not be read, so whether the ` +
-        "pre-flight's fast-forward pull will succeed is unknown; try `git rev-list --left-right --count " +
-        `${status.upstream}...${status.baseBranch}\` to see git's own error`,
+      finding(
+        `the divergence of \`${status.baseBranch}\` from ${status.upstream} could not be read, so whether the ` +
+          "pre-flight's fast-forward pull will succeed is unknown; try `git rev-list --left-right --count " +
+          `${status.upstream}...${status.baseBranch}\` to see git's own error`,
+        `git rev-list --left-right --count ${status.upstream}...${status.baseBranch}`,
+      ),
     );
     return;
   }
@@ -511,9 +785,12 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
   if (status.ahead === 0) return;
   if (status.behind > 0) {
     problems.push(
-      `the base branch \`${status.baseBranch}\` has diverged from ${status.upstream} ` +
-        `(${String(status.ahead)} ahead, ${String(status.behind)} behind); the pre-flight's fast-forward pull ` +
-        "will fail until that is resolved by hand",
+      finding(
+        `the base branch \`${status.baseBranch}\` has diverged from ${status.upstream} ` +
+          `(${String(status.ahead)} ahead, ${String(status.behind)} behind); the pre-flight's fast-forward pull ` +
+          "will fail until that is resolved by hand",
+        `git log --oneline --left-right ${status.upstream}...${status.baseBranch}`,
+      ),
     );
     return;
   }
@@ -533,13 +810,13 @@ function describeBaseBranch(status: RepoStatus, lines: string[], problems: strin
  */
 export function gitSection(status: RepoStatus): CheckSection {
   const lines: string[] = [];
-  const problems: string[] = [];
+  const problems: Finding[] = [];
 
   if (status.error !== null) {
     return build(
       "git",
       [`not a usable git repository: ${status.error}`],
-      [`not a usable git repository: ${status.error}`],
+      [finding(`not a usable git repository: ${status.error}`, "git rev-parse --is-inside-work-tree")],
       {
         ...status,
       },
@@ -552,8 +829,11 @@ export function gitSection(status: RepoStatus): CheckSection {
   if (status.fetchError !== null) {
     lines.push(`fetch failed: ${status.fetchError}`);
     problems.push(
-      `\`git fetch\` failed (${status.fetchError}); the ahead/behind figures above are from the last ` +
-        "successful fetch and may be out of date",
+      finding(
+        `\`git fetch\` failed (${status.fetchError}); the ahead/behind figures above are from the last ` +
+          "successful fetch and may be out of date",
+        "git fetch origin",
+      ),
     );
   }
 
@@ -567,6 +847,8 @@ export function assembleReport(input: {
   repo: string | null;
   offline: boolean;
   sections: CheckSection[];
+  trace?: TracedCommand[] | null;
+  blocked?: BlockedHeader | null;
 }): CheckReport {
   const byId = new Map(input.sections.map((section) => [section.id, section]));
   const ordered = SECTION_ORDER.flatMap((id) => {
@@ -581,12 +863,18 @@ export function assembleReport(input: {
     sections: ordered,
     problems,
     exitCode: problems.length === 0 ? 0 : 1,
+    trace: input.trace ?? null,
+    blocked: input.blocked ?? null,
   };
 }
 
 export function renderText(report: CheckReport): string {
   const head = `automata do-work --check — ${report.repo ?? "unknown repository"} — ${report.generatedAt.toISOString()}`;
-  const parts: string[] = [head, ""];
+  // The trigger goes above the header, not in place of it: an operator scrolling
+  // a cron log needs the first line to say why this appeared, and the header
+  // still has to name the repository and the moment.
+  const parts: string[] =
+    report.blocked === null ? [head, ""] : [`blocked: ${report.blocked.trigger}`, head, ""];
 
   for (const section of report.sections) {
     parts.push(section.title);
@@ -598,9 +886,22 @@ export function renderText(report: CheckReport): string {
     parts.push("");
   }
 
+  if (report.trace !== null) {
+    parts.push(`Commands (${String(report.trace.length)})`);
+    if (report.trace.length === 0) {
+      parts.push("  (no git or gh command was run)");
+    } else {
+      for (const traced of report.trace) parts.push(`  ${describeTracedCommand(traced)}`);
+    }
+    parts.push("");
+  }
+
   if (report.problems.length > 0) {
     parts.push(`Problems (${String(report.problems.length)})`);
-    for (const problem of report.problems) parts.push(`  · ${problem.section}: ${problem.summary}`);
+    for (const problem of report.problems) {
+      parts.push(`  · ${problem.section}: ${problem.summary}`);
+      if (problem.command !== null) parts.push(`      try: ${problem.command}`);
+    }
     parts.push("");
   }
 
@@ -629,5 +930,7 @@ export function toJson(report: CheckReport): Record<string, unknown> {
     exitCode: report.exitCode,
     problems: report.problems,
     sections,
+    trace: report.trace,
+    blocked: report.blocked,
   };
 }

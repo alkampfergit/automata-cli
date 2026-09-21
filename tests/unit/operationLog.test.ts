@@ -17,6 +17,7 @@ import {
   WORK_RECORD_MAX_AGE_DAYS,
   formatExecutionLine,
   formatWorkRecord,
+  inspectLogDirectory,
   operationLogDirectory,
   pruneOldRecords,
   recordTick,
@@ -598,5 +599,49 @@ describe("recordTick", () => {
     }).not.toThrow();
     expect(workLog()).toContain("not a record at all");
     expect(workLog()).toContain("#53 issue-discuss answered");
+  });
+});
+
+describe("inspectLogDirectory", () => {
+  const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+
+  it("reports a writable directory, and what it was derived from", () => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    expect(inspectLogDirectory(TEST_DIR, "/srv/checkouts/widgets")).toEqual({
+      dir: TEST_DIR,
+      cwd: "/srv/checkouts/widgets",
+      writable: true,
+      detail: null,
+    });
+  });
+
+  it("defaults to the parent of the working directory, which is where the logs go", () => {
+    const status = inspectLogDirectory();
+    expect(status.dir).toBe(operationLogDirectory());
+    expect(status.cwd).toBe(process.cwd());
+  });
+
+  it("reports a missing directory as not writable, with the reason", () => {
+    const status = inspectLogDirectory(join(TEST_DIR, "nope"), TEST_DIR);
+    expect(status.writable).toBe(false);
+    expect(status.detail).toContain("ENOENT");
+  });
+
+  // Root bypasses the mode bits, so the case cannot be provoked there.
+  it.skipIf(asRoot)("reports a read-only directory as not writable", () => {
+    const locked = join(TEST_DIR, "locked");
+    mkdirSync(locked, { recursive: true });
+    chmodSync(locked, 0o500);
+    try {
+      const status = inspectLogDirectory(locked, TEST_DIR);
+      expect(status.writable).toBe(false);
+      expect(status.detail).toContain("EACCES");
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  it("never throws", () => {
+    expect(() => inspectLogDirectory("\0not-a-path", TEST_DIR)).not.toThrow();
   });
 });
