@@ -18,17 +18,17 @@ import { join } from "node:path";
 const CHANGELOG_FILE = "CHANGELOG.md";
 
 /**
- * Keep a Changelog 1.1.0, matched per line. Deliberately the same shape as the
- * pattern in `tests/unit/changelog.test.ts`: this gate exists to keep that test
- * green, so anything it accepts that the test rejects would let a release
- * through into the red build it is meant to prevent. The two copies are not
- * shared on purpose — a test that imports the code it validates stops being an
- * independent check.
+ * Keep a Changelog 1.1.0, matched per line, capturing the version so it can be
+ * compared rather than interpolated — a pattern built from the argument would
+ * have to escape it, and there is nothing to gain from that here.
+ *
+ * Deliberately the same shape as the pattern in `tests/unit/changelog.test.ts`:
+ * this gate exists to keep that test green, so anything it accepts that the test
+ * rejects would let a release through into the red build it is meant to prevent.
+ * The two copies are not shared on purpose — a test that imports the code it
+ * validates stops being an independent check.
  */
-function sectionHeading(version: string): RegExp {
-  const escaped = version.replace(/\./g, "\\.");
-  return new RegExp(`^## \\[${escaped}\\] - \\d{4}-\\d{2}-\\d{2}$`);
-}
+const VERSION_HEADING = /^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/;
 
 export type ChangelogGateResult = { ok: true } | { ok: false; message: string };
 
@@ -42,8 +42,11 @@ export function checkChangelogSection(version: string, changelog: string | null)
     return { ok: true };
   }
 
-  const heading = sectionHeading(version);
-  if (changelog.split("\n").some((line) => heading.test(line.trimEnd()))) {
+  const documented = changelog
+    .split("\n")
+    .map((line) => VERSION_HEADING.exec(line.trimEnd()))
+    .some((match) => match !== null && match[1] === version);
+  if (documented) {
     return { ok: true };
   }
 
