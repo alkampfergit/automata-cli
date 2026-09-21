@@ -39,6 +39,16 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
   fixed. Confirmed: 2026-09-09.
 - **Never force a peer conflict**: when a latest release fails `ERESOLVE`, defer it and record the exact blocking peer range in the spec and PR rather than using `--legacy-peer-deps`. Why: forcing leaves a tool running against an unsupported version while still reporting success — `typescript@7` vs `typescript-eslint@8.70` is the live example. Confirmed: 2026-09-09.
 
+- **A gate shipped in a published CLI skips when its subject is absent, it does not fail closed**: `publish-release`'s
+  changelog precondition passes when `CHANGELOG.md` cannot be read, because `automata` runs against repositories that
+  keep no changelog and failing closed would make the command unusable for them. The absent-artifact case is the
+  escape hatch — it needs no flag and no config key, and adding one would only get used in the situation the gate
+  exists for. Confirmed: 2026-09-21.
+- **A process step that is only documented will eventually be skipped; put the check where it can still refuse**: the
+  changelog roll was written down in `docs/maintenance.md` and skipped for 0.8.0 anyway. The fix is a precondition in
+  the command that would otherwise proceed, *not* a CI step — CI runs after the tag is pushed, at which point the only
+  remedies are moving a published tag or burning a version. Confirmed: 2026-09-21.
+
 ## Implementation Patterns
 
 - **Pure logic in its own module**: keep `gh`/`git` I/O wrappers in the existing service files (they hold the private `spawnSync` runner) and put decision/formatting logic in a sibling domain module (e.g. `src/github/issueConversation.ts`). Why: the rules become unit-testable without mocking the `gh` CLI, and duplicating the runner would violate the constitution's no-duplication rule. Confirmed: 2026-09-09.
@@ -99,6 +109,20 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **Release version comes from the git tag, never `package.json`**: the field has read `0.1.0` since the first commit; the CI `publish` job reads `git tag --points-at HEAD` on `master` and rewrites it with `npm version --no-git-tag-version`. Two tags exist per release — the bare `0.6.0` from `publish-release` and the `v0.6.0` the GitHub release job creates. Anything that reasons about "which versions shipped" must read tags and strip the `v`. Confirmed: 2026-09-16.
 - **A repository-policy document gets pinned by a test under `tests/unit/`**, following `ciAuditGate.test.ts`: the file is not imported, built or published, so only a deliberate assertion notices when it rots — `CHANGELOG.md` went eight releases stale precisely because nothing failed. Keep environment-dependent parts (anything shelling out to `git`) degrading to a reported skip so the suite does not depend on how the repo was cloned, and keep the format assertions unconditional so the test is never wholly vacuous. Confirmed: 2026-09-16.
 - **Non-command-group policy belongs in `docs/maintenance.md`**, not a new `docs/<name>.md`: `AGENTS.md` reserves `docs/<group>.md` for command groups and the README table links only those, so a policy page would want a row for a non-command. State it once there and link it from the command page that triggers it and from `AGENTS.md`'s working defaults. Confirmed: 2026-09-16.
+
+- **A new precondition that reads a real file from `process.cwd()` breaks the existing command tests silently**: the
+  `publish-release` CLI tests release `1.3.0` against the repository's own working directory, so a gate reading the real
+  `CHANGELOG.md` fails eleven unrelated tests. Mock the reader with a *permissive* default (`() => null` here) in the
+  suite's module mocks, then let the two new tests supply the content they need. Use the
+  `vi.mock(…, async (importOriginal) => ({ ...actual, reader: () => mockReader() }))` form. Confirmed: 2026-09-21.
+- **Duplicating a pattern between `src/` and a test that validates the same thing is correct, not a DRY violation**:
+  `changelogGate.ts` and `changelog.test.ts` both carry `## [X.Y.Z] - YYYY-MM-DD`. Sharing one would make the test
+  import the code it checks and stop being an independent check. Have each site name the other in a comment so the
+  duplication reads as deliberate. Confirmed: 2026-09-21.
+- **Assert a refusal on the commands *not executed*, not just on the exit code**: `expect(verbs).not.toContain("tag")`
+  is what proves the precondition landed before the ref write, which is the entire point of it being a precondition.
+  Note that `git tag -l` is a read and `git tag <version>` is the write, so filter on the arguments, not the verb.
+  Confirmed: 2026-09-21.
 
 ## Process Friction
 
@@ -194,6 +218,18 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **Derive a threshold from the data before adding a config key for it**: "has cron stopped firing?" was answered from the median interval in `automata-execution.log` (×3, minimum three intervals) rather than from a new `maxTickAgeMinutes` key. A key needs a `config set` subcommand, a wizard screen, validation and docs — and the installation that most needs a diagnostic is the one that never set it. Confirmed: 2026-09-18.
 - **A markdown `###` heading can silently collide with an existing `##` anchor**: a new `### Exit codes` subsection made every `[…](#exit-codes)` link in `docs/do-work.md` point at it instead of the original. Grep the heading text before adding one, or qualify it. Confirmed: 2026-09-18.
 - **`prettier --check` baseline is per file, and `git stash` does not stash untracked files**: use `git stash -u` when establishing whether a warning is pre-existing, or the new files stay in the tree and the "baseline" reports them. Confirmed: 2026-09-18.
+
+- **A failing test that reads `git tag` fails every branch at once**: `tests/unit/changelog.test.ts` shells out to
+  `git tag`, and tags are repository-wide, so one missing `CHANGELOG.md` section turned the whole repository red. When
+  a build starts failing on branches that changed nothing relevant, look for a check whose input is repository state
+  rather than the branch's own files, before suspecting the branch. Confirmed: 2026-09-21.
+- **CI job chaining makes a documentation failure a release failure**: in `.github/workflows/ci.yml`, `publish` needs
+  `build` and `release` needs `publish`, so the changelog unit test stopped the npm publish and the GitHub release for
+  0.8.0 — `npm view automata-cli dist-tags` still read `latest: 0.7.0` three days later. When diagnosing a red build on
+  the trunk, check whether a release was silently lost with it. Confirmed: 2026-09-21.
+- **Recovering a release lost this way is not an agent's call**: the remedies are moving the published tag onto a
+  commit that contains the fix, or abandoning the version and cutting the next one. Both are irreversible for
+  consumers, so fix CI and prevention in the PR and state the choice for the maintainer. Confirmed: 2026-09-21.
 
 ## Helper Skills
 

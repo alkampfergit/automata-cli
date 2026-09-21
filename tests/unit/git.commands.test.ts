@@ -23,6 +23,21 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+// ── Mock the changelog read so publish-release does not see the real file ─────
+
+// Defaults to null -- the documented "this repository keeps no changelog" path.
+// Without it every precondition test below would have to put a `1.3.0` section
+// in the repository's own CHANGELOG.md to get past the gate.
+const mockReadChangelog = vi.fn((): string | null => null);
+
+vi.mock("../../src/git/changelogGate.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/git/changelogGate.js")>();
+  return {
+    ...actual,
+    readChangelog: () => mockReadChangelog(),
+  };
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function ok(stdout: string) {
@@ -1124,6 +1139,8 @@ describe("git publish-release command: preconditions", () => {
     mockReadRawConfig.mockReset();
     mockReadRawConfig.mockReturnValue({});
     mockReadConfig.mockReturnValue({});
+    mockReadChangelog.mockReset();
+    mockReadChangelog.mockReturnValue(null);
     out = captureStreams();
   });
 
@@ -1294,6 +1311,53 @@ describe("git publish-release command: preconditions", () => {
       expect(executed).not.toContain(mutation);
     }
     expect(out.exitCode).toBeUndefined();
+  });
+
+  // Tag 0.8.0 was pushed with its entry still under `## [Unreleased]`, which
+  // failed `changelog.test.ts` on every branch and, because CI's `build` gates
+  // `publish`, meant the release never shipped. The refusal has to land before
+  // the tag exists, so these assert on what was executed, not just the exit.
+  it("refuses to release a version CHANGELOG.md does not document, before touching any ref", async () => {
+    stubPublish();
+    mockReadChangelog.mockReturnValue("# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026-09-01\n");
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("## [1.3.0] - YYYY-MM-DD");
+    expect(out.exitCode).toBe(1);
+    const verbs = executedGitArgs().map((args) => args[0]);
+    expect(verbs).not.toContain("checkout");
+    expect(verbs).not.toContain("merge");
+    expect(verbs).not.toContain("push");
+    // `git tag -l` is a read; `git tag <version>` is the write.
+    expect(executedGitArgs().filter((args) => args[0] === "tag" && args[1] === "1.3.0")).toEqual([]);
+  });
+
+  it("proceeds when CHANGELOG.md documents the version", async () => {
+    stubPublish();
+    mockReadChangelog.mockReturnValue("# Changelog\n\n## [Unreleased]\n\n## [1.3.0] - 2026-09-21\n");
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0", "--dry-run"]);
+
+    expect(out.stdout).toContain("git push origin develop master 1.3.0");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("refuses under --dry-run too, so the rehearsal is faithful", async () => {
+    stubPublish();
+    mockReadChangelog.mockReturnValue("# Changelog\n\n## [Unreleased]\n");
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0", "--dry-run"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("CHANGELOG.md has no section for 1.3.0");
+    expect(out.exitCode).toBe(1);
   });
 });
 
