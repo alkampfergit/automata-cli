@@ -314,9 +314,33 @@ makes the version a dry run prints the same one a real run would use. A fetch th
 
 ### Before you run it
 
-The command does not touch `CHANGELOG.md`. Roll the `Unreleased` section into the new version heading and commit that
-on `develop` first — `publish-release` requires a clean working tree, so it has to happen before, not after. The exact
-three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-it).
+The command does not touch `CHANGELOG.md`, but it **checks it**. Roll the `Unreleased` section into the new version
+heading and commit that on `develop` first — `publish-release` requires a clean working tree, so it has to happen
+before, not after. The exact three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-it).
+
+### The changelog precondition
+
+`CHANGELOG.md` must already carry a heading for the version being released, in exactly the Keep a Changelog shape:
+
+```markdown
+## [1.3.0] - 2026-09-21
+```
+
+The match is line-exact. An undated `## [1.3.0]`, a differently formatted date, a heading at another level, a mention
+inside a bullet or a `[1.3.0]: https://…` link-reference footer all count as *missing* — the structural test in
+`tests/unit/changelog.test.ts` rejects those too, so accepting them here would let the release through into a red
+build.
+
+The check is read-only and runs in `--dry-run` as well, before any branch, merge or tag is created, so a refusal leaves
+the repository exactly as it was.
+
+**A repository with no `CHANGELOG.md` is not subject to it.** An absent or unreadable file passes, so `automata` stays
+usable against projects that keep no changelog.
+
+The precondition exists because a release was once tagged with its entry still sitting under `## [Unreleased]`. The
+structural test then failed on *every* branch — git tags are repository-wide — and because CI's `build` job gates
+`publish`, the release itself never reached npm. By the time anything noticed, the tag was already pushed. This check
+moves the detection to before the tag exists.
 
 ### Arguments
 
@@ -357,6 +381,7 @@ The command executes these git operations in order:
 | Version matches `X.Y.Z` (if provided) | `Version '...' is not valid semver. Use X.Y.Z format` |
 | Semver tag found on the trunk (if auto-detecting) | `No semver tag found on origin/<trunk>` |
 | Tag does not already exist | `Tag '...' already exists` |
+| `CHANGELOG.md` has a section for the version (skipped when the file is absent) | `CHANGELOG.md has no section for ...` |
 | A local trunk branch is not behind the remote | `Local branch '<trunk>' is N commit(s) behind origin/<trunk>` |
 
 Every precondition is read-only and runs in `--dry-run` as well. A local trunk that is behind is **refused, never
