@@ -12,6 +12,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
+import { heartbeatPath, parseHeartbeat, writeHeartbeat } from "../../src/run/heartbeat.js";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(process.cwd(), "tmp-test-runlock");
@@ -44,6 +45,10 @@ describe("acquireRunLock", () => {
     expect(owner.command).toBe("do-work");
     expect(owner.host).toBe(hostname());
     expect(typeof owner.startedAt).toBe("string");
+    // The operation logs live in `dirname(cwd)`, so where the holder ran from is
+    // the difference between "no tick has ever run" and "you are reading the
+    // wrong directory".
+    expect(owner.cwd).toBe(TEST_CWD);
   });
 
   it("refuses when a live process on this host holds the lock", () => {
@@ -359,6 +364,58 @@ describe("inspectRunLock", () => {
     expect(status.owner.command).toBe("do-work");
     expect(status.owner.host).toBe(hostname());
     expect(status.heldForMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("carries a lock written without a working directory rather than rejecting it", () => {
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.owner.cwd).toBeUndefined();
+  });
+
+  it("attaches the holder's own heartbeat", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    acquired.handle.heartbeat({ phase: "item", item: { index: 2, total: 5, subject: "#82" } });
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.heartbeat?.phase).toBe("item");
+    expect(status.heartbeat?.item).toEqual({ index: 2, total: 5, subject: "#82" });
+  });
+
+  it("ignores a heartbeat left behind by a previous holder", () => {
+    // Left by a tick that was killed: the directory survives, the lock does not.
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+    writeHeartbeat("tok-from-a-dead-tick", { phase: "discovery" }, TEST_CWD);
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    // The file is still readable; it simply is not this lock's.
+    expect(parseHeartbeat(readFileSync(heartbeatPath(TEST_CWD), "utf8"))).not.toBeNull();
+    expect(status.heartbeat).toBeNull();
+  });
+
+  it("clears the heartbeat when the lock is released, and stops publishing after", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    acquired.handle.heartbeat({ phase: "pre-flight" });
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(true);
+
+    acquired.handle.release();
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(false);
+
+    // A released handle must not resurrect the file: the lock may already belong
+    // to another tick.
+    acquired.handle.heartbeat({ phase: "summary" });
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(false);
   });
 
   it("reports a lock whose pid is dead as stale", () => {

@@ -34,7 +34,7 @@ finding, which is the contradiction the issue pasted.
 **Constraints**: no blocked dump, heartbeat write or trace may change stdout's existing contract, any exit
 code, or whether a tick succeeded; the run-lock protocol is untouched
 
-**Scale/Scope**: 3 new modules, 6 modified source files, 1 config key, 1 wizard screen, 1 docs page
+**Scale/Scope**: 2 new modules, 11 modified source files, 1 config key, 1 wizard screen, 3 docs pages
 
 ## Constitution Check
 
@@ -74,21 +74,23 @@ src/
 │   ├── heartbeat.ts        # NEW: the token-bound sidecar — format, parse, write, read
 │   ├── commandTrace.ts     # NEW: the --verbose sink
 │   ├── operationLog.ts     # MODIFIED: inspectLogDirectory()
-│   └── runLock.ts          # MODIFIED: LockOwner.cwd, LockHandle.heartbeat(), LockStatus.heartbeat
+│   └── runLock.ts          # MODIFIED: LockOwner.cwd, LockHandle.heartbeat(), LockStatus.heartbeat,
+│                           #           AUTOMATA_OWN_PATHS
 ├── git/
-│   ├── repoStatus.ts       # MODIFIED: trace its git calls
+│   ├── repoStatus.ts       # MODIFIED: trace its git calls; exclude the heartbeat from the porcelain filter
+│   ├── repoHygiene.ts      # MODIFIED: exclude the heartbeat from the dirtiness probe and the staging
+│   ├── workspaceService.ts # MODIFIED: exclude the heartbeat from both branch preparations
 │   └── gitService.ts       # MODIFIED: trace its git/gh calls
 ├── github/
 │   └── ghWorkService.ts    # MODIFIED: trace its gh calls
 ├── config/
 │   ├── githubService.ts    # MODIFIED: trace its gh calls
-│   └── configStore.ts      # MODIFIED: doWork.dumpOnBlock
-├── commands/
-│   ├── doWork.ts           # MODIFIED: buildCheckReport split, the five blocked dumps,
-│   │                       #           --verbose, heartbeat call sites
-│   └── config.ts           # MODIFIED: config set do-work-dump-on-block
-└── cli/
-    └── ConfigWizard.tsx    # MODIFIED: the dump-on-block screen
+│   ├── configStore.ts      # MODIFIED: doWork.dumpOnBlock
+│   └── ConfigWizard.tsx    # MODIFIED: the dump-on-block screen
+└── commands/
+    ├── doWork.ts           # MODIFIED: buildCheckReport split, the five blocked dumps,
+    │                       #           --verbose, heartbeat call sites
+    └── config.ts           # MODIFIED: config set do-work-dump-on-block
 
 tests/unit/                 # checkReport, heartbeat, commandTrace, operationLog,
                             # runLock, doWorkCheck.cmd, doWork.cmd, config.cmd, ConfigWizard

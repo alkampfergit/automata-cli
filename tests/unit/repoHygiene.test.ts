@@ -123,14 +123,17 @@ describe("rescue", () => {
     expect(report.degraded).toBe(false);
   });
 
-  // The lock is created before the pre-flight runs, so in a repository that has
-  // not gitignored it, counting it would fire a rescue on automata's own file.
-  it("excludes automata's own run lock from the dirtiness check and the staging", async () => {
+  // Both files are created before the pre-flight runs, so in a repository that
+  // has not gitignored them, counting them would fire a rescue on automata's own
+  // bookkeeping. Asserted against the exact list, so a file added to
+  // `AUTOMATA_OWN_PATHS` and missed here is a failure rather than a silent gap.
+  it("excludes automata's own bookkeeping files from the dirtiness check and the staging", async () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     const { runRepoHygiene } = await hygiene();
     runRepoHygiene(options(), NOW);
-    expect(mockHasUncommittedChanges).toHaveBeenCalledWith([".automata/automata.lock"]);
-    expect(mockStageAllExcept).toHaveBeenCalledWith([".automata/automata.lock"]);
+    const own = [".automata/automata.lock", ".automata/automata-heartbeat.json"];
+    expect(mockHasUncommittedChanges).toHaveBeenCalledWith(own);
+    expect(mockStageAllExcept).toHaveBeenCalledWith(own);
   });
 
   it("creates a timestamped rescue branch when HEAD is the base branch", async () => {

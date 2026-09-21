@@ -10,7 +10,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
   DEFAULT_CHECK_ISSUE_PROMPT: "default check-issue prompt",
-  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
+  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120, dumpOnBlock: true },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
@@ -37,6 +37,7 @@ const DO_WORK_PROTECTED_SCREEN_TEXT = "Branches a build turn must never push to"
 const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
+const DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT = "Do Work — Report on a Blocked Tick";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
 const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Claude";
@@ -469,9 +470,9 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor, both models, both efforts, run cap and lock staleness, then saves", async () => {
+  it("walks base branch, executor, both models, both efforts, run cap, lock staleness and the blocked-exit report, then saves", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
-    const { stdin } = render(<ConfigWizard />);
+    const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
 
     // Base branch: clear "develop" then type "main".
@@ -523,6 +524,14 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
+    // Blocked-exit report: the last screen of the chain, and the one that writes.
+    // Down once to pick "No", so the assertion cannot pass on the default.
+    expect(lastFrame()).toContain("Report on a Blocked Tick");
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
     expect(writeConfig).toHaveBeenCalledWith({
       doWork: {
         baseBranch: "main",
@@ -532,8 +541,20 @@ describe("ConfigWizard — Do Work section", () => {
         effort: { claude: "high", codex: "medium" },
         maxRunsPerTick: 2,
         lockStaleMinutes: 45,
+        dumpOnBlock: false,
       },
     });
+  });
+
+  it("goes back from the blocked-exit report screen to lock staleness", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
   });
 
   it("reaches an effort screen for each executor, after that executor's model screen", async () => {

@@ -52,6 +52,10 @@ A command-line interface tool built with TypeScript and commander.js.
 - TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync` (036-release-trunk-detection)
 
 ## Recent Changes
+- 038-blocked-diagnostics: a blocked `do-work` tick renders the `--check` report headed by what blocked it
+  (`doWork.dumpOnBlock`, default on); `do-work --verbose` traces every `git`/`gh` call; the run lock records the
+  holder's cwd and a heartbeat sidecar (`src/run/heartbeat.ts`, `src/run/commandTrace.ts`,
+  `AUTOMATA_OWN_PATHS` in `src/run/runLock.ts`)
 - 036-do-work-check: `do-work` gained `--check` (a read-only six-section health report, exit 0/1) and
   `--no-fetch`; `inspectRunLock`, `readExecutionTicks`/`readWorkRecords`, `src/git/repoStatus.ts` and
   `src/run/checkReport.ts` are the read-side modules behind it

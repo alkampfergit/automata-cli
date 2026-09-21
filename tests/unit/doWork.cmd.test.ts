@@ -25,6 +25,7 @@ const mockPreparePrBranch = vi.fn();
 const mockAcquireRunLock = vi.fn();
 const mockRecordTick = vi.fn();
 const mockRelease = vi.fn();
+const mockHeartbeat = vi.fn();
 const mockInvokeClaude = vi.fn();
 const mockInvokeCodex = vi.fn();
 
@@ -235,7 +236,10 @@ beforeEach(() => {
   captureIo();
 
   mockReadConfig.mockReturnValue({ ...CONFIG });
-  mockAcquireRunLock.mockReturnValue({ ok: true, handle: { release: mockRelease } });
+  mockAcquireRunLock.mockReturnValue({
+    ok: true,
+    handle: { release: mockRelease, heartbeat: mockHeartbeat },
+  });
   gh.getRepoSlug.mockReturnValue({ owner: "acme", repo: "widget" });
   gh.getAuthenticatedLogin.mockReturnValue("automata-bot");
   gh.getOpenPrLinkMap.mockReturnValue({ byIssue: new Map(), defaultBranch: "main", orphans: [] });
@@ -432,7 +436,7 @@ describe("do-work locking", () => {
     const order: string[] = [];
     mockAcquireRunLock.mockImplementation(() => {
       order.push("lock");
-      return { ok: true, handle: { release: mockRelease } };
+      return { ok: true, handle: { release: mockRelease, heartbeat: mockHeartbeat } };
     });
     gh.listCandidateIssues.mockImplementation(() => {
       order.push("list");
@@ -2139,13 +2143,23 @@ describe("do-work operation log", () => {
   });
 
   it("leaves the --json payload untouched", async () => {
-    // The log is a side channel: the documented JSON contract must not gain a key.
+    // The log is a side channel: it must not add a key of its own. `blocked` is
+    // not it — that one is the documented blocked-exit report, and it is null
+    // here because this tick answered its item.
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockReturnValue(needsWork(42));
     await runDoWork(["--json"]);
 
     const payload = JSON.parse(stdout) as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(["dryRun", "exitCode", "items", "plan", "preflight"]);
+    expect(Object.keys(payload).sort()).toEqual([
+      "blocked",
+      "dryRun",
+      "exitCode",
+      "items",
+      "plan",
+      "preflight",
+    ]);
+    expect(payload.blocked).toBeNull();
     expect(mockRecordTick).toHaveBeenCalledTimes(1);
   });
 });
@@ -2571,5 +2585,217 @@ describe("do-work --pr", () => {
       ["#42", "issue-discuss"],
       ["PR #61", "pr-orphan"],
     ]);
+  });
+});
+
+/* ── the blocked-exit dump ──────────────────────────────────────────────── */
+
+describe("do-work blocked-exit dump", () => {
+  /** The six section titles, in the order `--check` renders them. */
+  const SECTIONS = ["Run lock", "Recent ticks", "Last work", "Repository", "Selection", "Environment"];
+
+  function expectFullReport(text: string): void {
+    for (const title of SECTIONS) expect(text).toContain(title);
+  }
+
+  const HELD = {
+    ok: false as const,
+    heldBy: {
+      pid: 851554,
+      startedAt: "2026-01-10T00:00:00Z",
+      host: "cisharpai",
+      command: "do-work",
+      token: "t",
+      cwd: "/srv/checkouts/widgets",
+    },
+    suspect: false,
+  };
+
+  it("renders the six-section report on stderr when the run lock is held", async () => {
+    mockAcquireRunLock.mockReturnValue(HELD);
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: run lock held by pid 851554 on cisharpai");
+    expectFullReport(stderr);
+    // The one-line message keeps its place on stdout, ahead of the detail.
+    expect(stdout).toContain("Another automata instance is already running here");
+    // And the exit code is untouched: a tick behind a live lock is not a failure.
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("makes no GitHub query while dumping a lock-held tick", async () => {
+    // A wedged loop fires every few minutes; the dump must not page the API.
+    mockAcquireRunLock.mockReturnValue(HELD);
+
+    await runDoWork();
+
+    expect(gh.listCandidateIssues).not.toHaveBeenCalled();
+    expect(gh.getOpenPrLinkMap).not.toHaveBeenCalled();
+    expect(stderr).toContain("not run: the tick was blocked before discovery");
+  });
+
+  it("dumps nothing when doWork.dumpOnBlock is false, and keeps the exit code", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { dumpOnBlock: false } });
+    mockAcquireRunLock.mockReturnValue(HELD);
+
+    await runDoWork();
+
+    expect(stderr).not.toContain("blocked:");
+    expect(stderr).not.toContain("Run lock");
+    expect(stdout).toContain("Another automata instance is already running here");
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("dumps on an unusable configuration, and still exits 1", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, allowedUsers: [] });
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: configuration is not usable");
+    expectFullReport(stderr);
+    expect(exitCode).toBe(1);
+  });
+
+  it("dumps when no candidate was picked up, naming the counts", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: no candidate was picked up (0 of 1)");
+    expectFullReport(stderr);
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("dumps when the pre-flight did not prepare the checkout", async () => {
+    mockRunRepoHygiene.mockReturnValue({
+      ...CLEAN_HYGIENE,
+      rescue: { kind: "failed", stage: "stage", detail: "could not stage" },
+      degraded: true,
+    });
+    gh.listCandidateIssues.mockReturnValue([]);
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: the pre-flight did not prepare the checkout");
+    expectFullReport(stderr);
+  });
+
+  it("dumps when items were selected and none reached the executor", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    mockPrepareBaseBranch.mockReturnValue({ ok: false, reason: "dirty-tree", detail: "uncommitted" });
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: 1 item(s) selected, none reached the executor");
+    expectFullReport(stderr);
+  });
+
+  it("dumps nothing when the tick actually answered something", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+
+    await runDoWork();
+
+    expect(mockInvokeClaude).toHaveBeenCalled();
+    expect(stderr).not.toContain("blocked:");
+  });
+
+  it("carries the report inside the JSON object rather than beside it", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as {
+      blocked: { reason: string; trigger: string; report: { sections: Record<string, unknown> } };
+    };
+    expect(payload.blocked.reason).toBe("no-candidates");
+    expect(payload.blocked.trigger).toBe("no candidate was picked up (0 of 1)");
+    expect(Object.keys(payload.blocked.report.sections)).toEqual([
+      "lock",
+      "ticks",
+      "work",
+      "git",
+      "selection",
+      "environment",
+    ]);
+    // Nothing of the report leaked onto stderr in JSON mode.
+    expect(stderr).not.toContain("Run lock");
+  });
+
+  it("carries the lock-held report in the JSON payload too", async () => {
+    mockAcquireRunLock.mockReturnValue(HELD);
+
+    await runDoWork(["--json"]);
+
+    const payload = JSON.parse(stdout) as { blocked: { reason: string } | null };
+    expect(payload.blocked?.reason).toBe("lock-held");
+  });
+
+  it("emits a null blocked key when dumpOnBlock is off", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { dumpOnBlock: false } });
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+
+    await runDoWork(["--json"]);
+
+    expect((JSON.parse(stdout) as { blocked: unknown }).blocked).toBeNull();
+  });
+
+  it("rejects a non-boolean dumpOnBlock rather than guessing", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { dumpOnBlock: "yes" } });
+
+    await runDoWork();
+
+    expect(stderr).toContain("doWork.dumpOnBlock must be true or false");
+    expect(exitCode).toBe(1);
+  });
+});
+
+describe("do-work heartbeat", () => {
+  it("publishes each phase, and the item with its ordinal and subject", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+
+    await runDoWork();
+
+    const phases = mockHeartbeat.mock.calls.map(([update]) => (update as { phase: string }).phase);
+    expect(phases).toContain("pre-flight");
+    expect(phases).toContain("discovery");
+    expect(phases).toContain("item");
+    expect(phases).toContain("summary");
+    // The order matters: pre-flight precedes discovery precedes the items.
+    expect(phases.indexOf("pre-flight")).toBeLessThan(phases.indexOf("discovery"));
+    expect(phases.indexOf("discovery")).toBeLessThan(phases.indexOf("item"));
+
+    expect(mockHeartbeat).toHaveBeenCalledWith({
+      phase: "item",
+      item: { index: 1, total: 1, subject: "#42" },
+    });
+  });
+
+  it("names the executor and when its run started", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+
+    await runDoWork();
+
+    const executorBeat = mockHeartbeat.mock.calls
+      .map(([update]) => update as { executor?: { command: string; startedAt: string } })
+      .find((update) => update.executor !== undefined);
+    expect(executorBeat?.executor?.command).toBe("claude");
+    expect(Date.parse(executorBeat?.executor?.startedAt ?? "")).not.toBeNaN();
+  });
+
+  it("publishes nothing for a dry run, which takes no lock", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+
+    await runDoWork(["--dry-run"]);
+
+    expect(mockHeartbeat).not.toHaveBeenCalled();
   });
 });

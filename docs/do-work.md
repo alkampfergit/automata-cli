@@ -33,6 +33,7 @@ automata do-work --check            # read-only health report: is the loop worki
 | `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
 | `--check` | Print a read-only health report for the loop and exit — see [Checking the loop's health](#checking-the-loops-health). Exits `0` when it found no problem, `1` when it did. Cannot be combined with `--dry-run`. |
 | `--no-fetch` | With `--check`: make **no network call at all** — no `git fetch` and no `gh` query. Ahead/behind is reported from the last fetch, and the selection section does not run. |
+| `--verbose` | Show the work behind the report: every `git` and `gh` invocation with its duration and exit code, the discovery query as sent, and every candidate considered before the discovery filter narrowed it. Applies to `--check` and to a [blocked-exit dump](#when-a-tick-does-nothing). |
 | `--json` | Emit the plan and per-item outcomes as JSON on stdout; human-readable progress goes to stderr. With `--check`, emits the whole report as one JSON document. |
 | `--silent` | Suppress step-by-step Claude output. Affects printing only — the executor is always spawned the same way, so the command `--dry-run` shows is what runs. Ignored by Codex. |
 
@@ -166,7 +167,7 @@ Every tick starts by putting the checkout into a known state, once, inside the r
 
 ### 1. Rescue uncommitted changes
 
-If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only `.automata/automata.lock` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
+If the working tree has uncommitted changes — modified, staged, deleted or untracked, ignoring only automata's own `.automata/automata.lock` and `.automata/automata-heartbeat.json` — they are committed and pushed instead of being left to make every work item skip with `dirty-tree`.
 
 - The checkout is **on a branch automata owns** — any branch other than the base branch whose open pull request, if it has one, was opened by `agentUser` → the changes are committed onto that branch and pushed. A draft pull request is opened only if that branch does not already have an open one.
 - The checkout is **on the base branch, on a detached HEAD, or on a branch automata does not own** → the changes are staged, a `rescue/<source>-<YYYYMMDDTHHMMSSZ>` branch is then created at HEAD, and the staged changes are committed onto it, pushed and given a draft pull request. `do-work` never commits to or pushes the base branch.
@@ -323,7 +324,7 @@ Every `--json` entry — in `plan`, `items` and `runs` — carries both `issue` 
 ## Checking the loop's health
 
 ```bash
-automata do-work --check [--no-fetch] [--json] [--issue <n>] [--pr <n>]
+automata do-work --check [--no-fetch] [--verbose] [--json] [--issue <n>] [--pr <n>]
 ```
 
 `do-work` normally runs from a scheduler and discards its own stdout, so when the loop quietly stops
@@ -339,8 +340,8 @@ makes no GitHub write and starts no executor. See [what it never does](#what---c
 
 | Section | Answers | Read from |
 |---|---|---|
-| `Run lock` | Is a tick running right now? Is a dead one blocking every future tick? | `.automata/automata.lock` |
-| `Recent ticks` | Is the scheduler still firing, and how did the recent ticks end? | `automata-execution.log` |
+| `Run lock` | Is a tick running right now, from where, and what is it doing? Is a dead one blocking every future tick? | `.automata/automata.lock`, `.automata/automata-heartbeat.json` |
+| `Recent ticks` | Where are the logs, can they be written, is the scheduler still firing, and how did the recent ticks end? | `automata-execution.log` |
 | `Last work` | What did the loop last actually do, to which item, and how was each branch synchronised (`sync=`)? | `automata-work.log` |
 | `Repository` | Is the checkout in a state that lets a tick work at all? | `git`, read-only |
 | `Selection` | Per candidate: picked up, or skipped and why? | live `gh` |
@@ -362,7 +363,10 @@ workspace root and another repository's history is not an answer about this one.
 | A tick is running and holds the lock | **No.** A tick in flight is the normal state of a scheduled loop. |
 | The lock is stale (its holder is dead) | Yes — though the next tick reclaims it by itself. |
 | The lock is *suspect* — held past `doWork.lockStaleMinutes` by a process whose identity cannot be verified | Yes. See [the run lock](#the-run-lock). |
-| No execution log, or none for this repository | Yes: no tick has ever run here. |
+| No execution log, or none for this repository | Yes: no tick has ever run here — **unless a tick is holding the lock right now**, because the log is written when a tick *ends*, so a first tick still in flight legitimately has no line yet. The fact is still printed; it just is not called a fault. |
+| The execution log exists but could not be *read* | Yes, always. A live tick explains an empty log; it explains nothing about a permissions failure. |
+| The operation log directory is not writable | Yes: every tick records nothing, so this report can only ever be blank. |
+| The lock's holder runs from a different working directory than this check | Yes: the logs live in `dirname(cwd)`, so the two are reading and writing different files and will never agree about what has run. |
 | The newest tick exited non-zero | Yes. |
 | No tick for much longer than the usual interval | Yes — see [scheduler silence](#scheduler-silence) below. |
 | Every recorded tick was turned away by a held lock | Yes: a previous tick is wedged. |
@@ -404,6 +408,99 @@ reason you read here is the skip reason the next tick will act on.
 `--issue <n>` and `--pr <n>` narrow it, which is the direct way to ask "why is *this* one not being
 picked up".
 
+### Where it looked
+
+`Recent ticks` always opens with the directory the operation logs resolved to, how that path was
+derived, and whether a tick could write there:
+
+```
+log directory: /workspaces (the parent of the working directory /workspaces/automata-cli), writable
+```
+
+The path is `dirname(cwd)` and is [not configurable](#the-operation-log), so it moves with whoever
+launched the process. A tick your scheduler fires from a different directory than the one you are
+checking from writes its history somewhere you are not reading — and the only symptom is a live lock
+beside an empty log. `Run lock` names the holder's working directory for the same reason, and says
+so outright when it differs from yours:
+
+```
+a tick is running: pid 851554 on cisharpai, `do-work`, since 2026-09-21T20:47:02Z (4m so far)
+  working directory: /srv/checkouts/automata-cli
+  logs to /srv/checkouts (this check reads /workspaces)
+```
+
+A lock written by an automata older than this feature has no recorded directory; that reads as
+`not recorded`, and is not a problem.
+
+### What the live tick is doing
+
+A tick publishes a **heartbeat** while it holds the lock, and `Run lock` renders it under the owner:
+
+```
+a tick is running: pid 851554 on cisharpai, `do-work`, since 2026-09-21T20:47:02Z (27m so far)
+  working directory: /srv/checkouts/automata-cli
+  phase: item — item 3 of 8, #82 (updated 12s ago)
+  executor: claude, running for 24m
+```
+
+The phases are `pre-flight`, `discovery`, `item` and `summary`. The age of the last update is what
+tells a slow tick from a wedged one: a heartbeat that stopped advancing minutes ago is the signal a
+raw "held for 27 minutes" cannot give you.
+
+It lives in `.automata/automata-heartbeat.json`, next to the lock rather than inside it — the lock
+is the mutual-exclusion primitive, and a diagnostic must not be able to break the thing it is
+diagnosing. Each entry carries the lock token it belongs to, so a file left behind by a holder that
+was killed reads as absent rather than as the current tick's state. Every read and write is
+best-effort: a heartbeat that cannot be written changes nothing at all, and a lock with none reports
+`phase: not reported (no heartbeat from this holder)`.
+
+### `--verbose`: the work behind the answer
+
+`--verbose` adds two things. After the six sections, a `Commands` block lists every `git` and `gh`
+invocation the report made, in order, with its duration and exit code:
+
+```
+Commands (14)
+  git remote get-url origin — 4ms exit 0
+  gh issue list --state open --limit 10 --json number,title,body,url --label automated — 581ms exit 0
+  /usr/bin/git rev-list --left-right --count origin/develop...develop — 3ms exit 0
+```
+
+An exit code of `-1` means the command never started — typically not on `PATH`. Arguments longer
+than 300 characters are cut in the text form; the `--json` form keeps them whole.
+
+And `Selection` gains the query as sent plus the candidate lists *before* the discovery filter
+narrowed them, which is the difference between "nothing matched" and "here is what was considered
+and what each was dropped for":
+
+```
+discovery query: label = automated, limit 10
+discovery returned 2 issue(s):
+    #82 Check for do-work , improve
+    #40 do-work: pass the prompt to Claude/Codex via stdin
+2 open orphan pull request(s) considered:
+    PR #61 Bump deps — matches the filter
+    PR #62 Unrelated — dropped by the discovery filter
+```
+
+Without `--verbose` nothing is recorded at all: the trace costs one null check per command.
+
+### Every problem names a next command
+
+Each problem is followed by one command that investigates it further:
+
+```
+Problems (1)
+  · ticks: the operation log directory `/workspaces` is not writable (EACCES: …), so every tick
+    records nothing and this report can only ever be blank; make it writable by the account the
+    scheduler runs as
+      try: ls -ld /workspaces
+```
+
+A problem with no single investigating command — a scheduler that has stopped firing is a property
+of the host's cron, not of anything automata runs — prints no such line rather than an invented one.
+In `--json` its `command` field is `null`.
+
 ### Offline
 
 `--no-fetch` makes **no network call at all**: no `git fetch`, and no `gh`. The `Repository` section
@@ -431,7 +528,9 @@ These are `--check`'s own codes; they are not the [tick exit codes](#exit-codes)
   "repo": "owner/name",
   "offline": false,
   "exitCode": 0,
-  "problems": [{ "section": "git", "summary": "…" }],
+  "problems": [{ "section": "git", "summary": "…", "command": "git status --porcelain" }],
+  "trace": null,
+  "blocked": null,
   "sections": {
     "lock":        { "title": "Run lock",     "lines": ["…"], "problems": [], "data": { "status": "free", "staleMinutes": 120 } },
     "ticks":       { "…": "newest, history, lockHeldCount, medianIntervalMs, sinceNewestMs, silent, filtered, logPath" },
@@ -442,6 +541,11 @@ These are `--check`'s own codes; they are not the [tick exit codes](#exit-codes)
   }
 }
 ```
+
+`trace` is the `--verbose` command list (`{ command, args, durationMs, exitCode }`) and is `null`
+when `--verbose` was not given — which is not the same as an empty array, meaning "a trace was asked
+for and nothing ran". `blocked` is `null` for `--check`; it is filled in a
+[blocked-exit dump](#when-a-tick-does-nothing). Each problem carries a `command`, which may be `null`.
 
 `sections` is keyed by section id rather than being an array, so a consumer can reach one section
 without searching. `sections.selection.data.plan` uses exactly the shape `--dry-run --json` puts in
@@ -464,6 +568,91 @@ Asserted by tests, not merely intended:
 The only network effects are the read-only `gh` queries the `Selection` section makes and a single
 `git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>`, which updates one remote-tracking
 ref and nothing else.
+
+---
+
+## When a tick does nothing
+
+A `do-work` tick can end without having done anything in five different ways, and each of them used
+to print one line and stop. They now print that line *and* the whole six-section health report
+[`--check`](#checking-the-loops-health) builds, headed by what blocked them:
+
+```
+Another automata instance is already running here (pid 851554 on cisharpai, started …). Doing nothing.
+blocked: run lock held by pid 851554 on cisharpai
+automata do-work --check — alkampfergit/automata-cli — 2026-09-21T21:19:53.610Z
+
+Run lock
+  a tick is running: pid 851554 on cisharpai, `do-work`, since 2026-09-21T21:15:53Z (4m so far)
+    working directory: /srv/other-checkout
+    logs to /srv (this check reads /workspaces)
+    phase: item — item 3 of 8, #82 (updated 0s ago)
+    executor: claude, running for 2m
+
+Recent ticks
+  …
+```
+
+### The five triggers
+
+| `reason` | Trigger line | When |
+|---|---|---|
+| `lock-held` | `run lock held by pid <n> on <host>` | Another tick holds [the run lock](#the-run-lock). |
+| `config-invalid` | `configuration is not usable — <detail>` | The configuration does not parse or validate, or `gh` is authenticated as the wrong account. |
+| `preflight-failed` | `the pre-flight did not prepare the checkout (<causes>)` | A [pre-flight](#the-repository-hygiene-pre-flight) step failed and no item reached the executor. |
+| `no-candidates` | `no candidate was picked up (0 of <n>)` | Discovery ran and every candidate had nothing to do. |
+| `all-skipped` | `<n> item(s) selected, none reached the executor` | Items were selected and every one of them was skipped, deferred or failed before the model ran. |
+
+They are ordered by cause: a failed pre-flight outranks the two selection outcomes, because when it
+is present it is *why* they happened.
+
+A tick that invoked the executor for at least one item is not blocked and dumps nothing.
+
+### What it costs
+
+Nothing on the network. The dump is the same report `--check` renders, with two deliberate
+differences:
+
+- it never fetches, so `Repository` reports its ahead/behind `(not refreshed)`;
+- it never queries GitHub. `Selection` is filled from the decisions the tick *already* took, and for
+  `lock-held` and `config-invalid` — which fire before discovery — it says
+  `not run: the tick was blocked before discovery`.
+
+That matters because the primary consumer is a loop firing every few minutes: a dump that re-ran
+discovery would turn a wedged loop into continuous GitHub API load for output nobody is reading.
+
+### Streams and exit codes
+
+In text mode the dump goes to **stderr**, where `do-work` already sends its per-item progress, so
+stdout keeps exactly the contract it had. It **never changes an exit code** — `lock-held` still
+exits `0` (or `2` when the lock is suspect), `config-invalid` still exits `1`, and the rest are
+unchanged. A failure inside the dump itself prints one warning line and is swallowed.
+
+With `--json` nothing extra reaches stderr; the report rides inside the single object on stdout:
+
+```jsonc
+{
+  "…": "the usual dryRun / preflight / plan / items / exitCode keys",
+  "blocked": {
+    "reason": "no-candidates",
+    "trigger": "no candidate was picked up (0 of 8)",
+    "report": { "…": "exactly the payload --check --json emits" }
+  }
+}
+```
+
+`blocked` is `null` when the tick was not blocked, and when the dump is turned off.
+
+### Turning it off
+
+```bash
+automata config set do-work-dump-on-block false
+```
+
+Six sections per tick is the right trade for a log you read when something is wrong, and the wrong
+one for a cron log you read line by line. `doWork.dumpOnBlock` defaults to `true` and is also
+reachable from `automata config` — Do Work → *Report on a Blocked Tick*. With it off you get the
+one-line behaviour that existed before, and `blocked` is `null` in the JSON.
 
 ---
 
@@ -654,7 +843,9 @@ The two views differ on purpose. A plan line names only what the tick would *do*
 
 A tick is one or more full model sessions, and cron fires on a fixed interval, so overlap is normal. `do-work` holds `.automata/automata.lock` for the whole tick.
 
-To see who holds it right now, without taking it, run [`do-work --check`](#checking-the-loops-health) — it reads this file and classifies it by the same rules described below.
+To see who holds it right now, without taking it, run [`do-work --check`](#checking-the-loops-health) — it reads this file and classifies it by the same rules described below. The lock records the holder's **working directory** as well as its pid, host and start time, because the [operation logs](#the-operation-log) live in `dirname(cwd)` and a holder running from elsewhere writes them where you are not looking.
+
+Alongside it, `.automata/automata-heartbeat.json` carries what the holder is currently doing — see [what the live tick is doing](#what-the-live-tick-is-doing). It is a separate file on purpose: the lock is the mutual-exclusion primitive, and a diagnostic must not be able to break the thing it is diagnosing. It is removed when the lock is released, and a leftover is harmless because it carries a token the next holder will not match.
 
 - Another **live** instance holds it → print a message and exit 0. Nothing is assigned, posted or invoked.
 - The lock is **stale** → it is reclaimed. Stale means: the holder is on this host and its process is gone; or the holder is on another host and the lock is older than `doWork.lockStaleMinutes` (default 120); or the file is unparseable. On this host **liveness wins over age**: a long-running tick keeps its lock however old it is, because stealing it would put two model sessions in one checkout.
@@ -664,7 +855,7 @@ To see who holds it right now, without taking it, run [`do-work --check`](#check
 
 The file is named for automata rather than for `do-work` so other long-running commands can adopt it later.
 
-**Add `.automata/automata.lock` to your repository's ignore rules.** automata excludes the path from its own working-tree cleanliness check, so a tick will not skip its own items over it — but nothing makes `git status` ignore it for you, and an operator (or another tool) will otherwise see a stray untracked file. This repository ignores it in its own `.gitignore`; that does nothing for a repository where automata is installed.
+**Add `.automata/automata.lock` and `.automata/automata-heartbeat.json` to your repository's ignore rules.** automata excludes the path from its own working-tree cleanliness check, so a tick will not skip its own items over it — but nothing makes `git status` ignore it for you, and an operator (or another tool) will otherwise see a stray untracked file. This repository ignores it in its own `.gitignore`; that does nothing for a repository where automata is installed.
 
 ---
 

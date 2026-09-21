@@ -85,6 +85,7 @@ Then add the run lock to your ignore rules:
 
 ```bash
 echo ".automata/automata.lock" >> .gitignore
+echo ".automata/automata-heartbeat.json" >> .gitignore
 ```
 
 It is transient per-tick state. automata already excludes that path from its own cleanliness check, so a tick will not skip its own work over it, but nothing ignores it on your behalf — without this, `git status` shows a stray untracked file whenever a tick is running.

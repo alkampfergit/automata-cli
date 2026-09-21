@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
+import { AUTOMATA_OWN_PATHS } from "../run/runLock.js";
 import { resolveCommand } from "../cli/spawnUtils.js";
+import { recordCommand } from "../run/commandTrace.js";
 
 /**
  * A read-only view of the checkout, for `do-work --check`.
@@ -23,11 +24,15 @@ import { resolveCommand } from "../cli/spawnUtils.js";
 const GIT_BIN = resolveCommand("git");
 
 function git(args: string[]): GitResult {
+  const startedAt = Date.now();
   const result = spawnSync(GIT_BIN, args, { encoding: "utf8" });
+  const status = result.status ?? 1;
+  // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
+  recordCommand(GIT_BIN, args, startedAt, status);
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
-    status: result.status ?? 1,
+    status,
   };
 }
 
@@ -99,12 +104,14 @@ function notARepo(baseBranch: string, detail: string): RepoStatus {
 }
 
 /**
- * The lock file is automata's own, created before the tick's cleanliness check
- * for exactly this reason. A repository that has not added it to `.gitignore`
- * would otherwise be reported as dirty by the very command that inspects it.
+ * automata's own bookkeeping files — the run lock and the lock heartbeat — both
+ * created before the tick's cleanliness check for exactly this reason. A
+ * repository that has not added them to `.gitignore` would otherwise be
+ * reported as dirty by the very command that inspects it.
  */
 function isOwnLockFile(porcelainEntry: string): boolean {
-  return porcelainEntry.slice(3).trim().endsWith(RUN_LOCK_RELATIVE_PATH);
+  const path = porcelainEntry.slice(3).trim();
+  return AUTOMATA_OWN_PATHS.some((own) => path.endsWith(own));
 }
 
 /**

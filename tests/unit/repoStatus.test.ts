@@ -147,10 +147,12 @@ describe("inspectRepoStatus", () => {
     expect(status.ahead).toBe(0);
   });
 
-  it("lists uncommitted changes and excludes automata's own lock file", () => {
+  it("lists uncommitted changes and excludes automata's own bookkeeping files", () => {
     clean();
     respond(["status", "--porcelain"], {
-      stdout: " M src/index.ts\n?? notes.txt\n?? .automata/automata.lock\n",
+      stdout:
+        " M src/index.ts\n?? notes.txt\n?? .automata/automata.lock\n" +
+        "?? .automata/automata-heartbeat.json\n",
       status: 0,
     });
     const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });

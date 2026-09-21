@@ -49,6 +49,32 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
   the command that would otherwise proceed, *not* a CI step — CI runs after the tag is pushed, at which point the only
   remedies are moving a published tag or burning a version. Confirmed: 2026-09-21.
 
+- **A file automata creates inside the checkout must join `AUTOMATA_OWN_PATHS` in `src/run/runLock.ts`, not get a
+  constant of its own**: the exclusion is needed in four places — `repoHygiene`'s `hasUncommittedChanges` probe and
+  its `stageAllExcept` pathspec, both `workspaceService` branch preparations, and `repoStatus`'s porcelain filter —
+  and missing one makes every item of every tick skip as `dirty-tree` in a repository that has not gitignored it.
+  Assert the exact list in the `repoHygiene` and `workspaceService` tests so a third file added and missed fails
+  rather than passing quietly. Confirmed: 2026-09-21.
+- **A diagnostic side channel for the run lock goes *beside* it, keyed by the lock token — never into the lock file**:
+  `runLock.ts`'s mutual exclusion rests on `link`/`rename` atomicity over one path, and a read-modify-write mid-tick
+  could recreate a path a contender had just renamed away as stale (the three-way race `acquireClaim` closes). The
+  token match is what makes a file left by a killed holder read as absent instead of as the live tick's state.
+  Confirmed: 2026-09-21.
+- **A report that a *tick* renders must not re-do the tick's network work**: `do-work`'s blocked dump reuses
+  `buildCheckReport` but passes `fetch: false`, `checkIdentity: false` and a `CheckSection` built from decisions the
+  tick already took. The consumer is a cron loop firing every few minutes, so a dump that re-queried GitHub would
+  turn a wedged loop into continuous API load for output nobody reads. Split the collector from the printer and the
+  exit code first; calling `runCheck` directly cannot express any of that. Confirmed: 2026-09-21.
+- **Cross-section judgement beats a threshold**: "no tick has ever been recorded" is a fault when nothing is running
+  and the expected state when a first tick is still in flight, and the report already holds both facts — so
+  `tickSection` takes the `LockStatus`. No new config key, no grace period. Keep the *unreadable* case a problem
+  regardless: a live tick explains an empty file and nothing about a permissions failure. Confirmed: 2026-09-21.
+- **Process-wide opt-in sink for "trace every external command"**: a module-level array that is `null` unless armed,
+  plus three lines in each `spawnSync` wrapper. Threading a recorder through every service signature would touch
+  dozens of functions for a diagnostic, and monkey-patching `node:child_process` would also capture the executor's
+  own children. Make `take…()` return `null` vs `[]` so "no trace was asked for" and "a trace was asked for and
+  nothing ran" stay distinguishable. Confirmed: 2026-09-21.
+
 ## Implementation Patterns
 
 - **Pure logic in its own module**: keep `gh`/`git` I/O wrappers in the existing service files (they hold the private `spawnSync` runner) and put decision/formatting logic in a sibling domain module (e.g. `src/github/issueConversation.ts`). Why: the rules become unit-testable without mocking the `gh` CLI, and duplicating the runner would violate the constitution's no-duplication rule. Confirmed: 2026-09-09.
@@ -123,6 +149,16 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
   is what proves the precondition landed before the ref write, which is the entire point of it being a precondition.
   Note that `git tag -l` is a read and `git tag <version>` is the write, so filter on the arguments, not the verb.
   Confirmed: 2026-09-21.
+
+- **Additive output beside an existing one-line message goes to stderr, and after it**: `do-work` already splits
+  progress (stderr) from the summary (stdout), so stderr is the only stream that changes no existing contract, and
+  the one-liner stays first because that is what a reader of a cron log scans for. Under `--json` the same payload
+  rides *inside* the single stdout object rather than beside it. Confirmed: 2026-09-21.
+- **Give a new `Problem`-style field a meaningful null rather than a fallback**: `Problem.command` is `null` for a
+  finding no single command investigates (a stopped scheduler belongs to the host's cron). A generic fallback would
+  send an operator down a path that cannot answer the question. Confirmed: 2026-09-21.
+- **An empty list still gets its count line, but not its colon**: `0 open orphan pull request(s) considered` reads as
+  an empty list; the same line with a trailing `:` reads as a list that failed to render. Confirmed: 2026-09-21.
 
 ## Process Friction
 
@@ -219,6 +255,26 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **A markdown `###` heading can silently collide with an existing `##` anchor**: a new `### Exit codes` subsection made every `[…](#exit-codes)` link in `docs/do-work.md` point at it instead of the original. Grep the heading text before adding one, or qualify it. Confirmed: 2026-09-18.
 - **`prettier --check` baseline is per file, and `git stash` does not stash untracked files**: use `git stash -u` when establishing whether a warning is pre-existing, or the new files stay in the tree and the "baseline" reports them. Confirmed: 2026-09-18.
 
+- **A new required field on an interface a test *fakes* breaks the suite at its call sites, not at typecheck**:
+  adding `heartbeat()` to `LockHandle` turned 150 `doWork.cmd.test.ts` tests red with
+  `lockHandle?.heartbeat is not a function`, because the fake handle was the object literal
+  `{ release: mockRelease }`. Grep the fakes (`grep -n "release:" tests/`) before running the suite; the fix is in
+  the fake, not a defensive optional call in `src/`. Confirmed: 2026-09-21.
+- **A `vi.mock` factory that spreads `importOriginal` runs the *real* new function you just added**: adding
+  `inspectLogDirectory` to `operationLog.ts` made `doWorkCheck.cmd.test.ts` probe the real `dirname(process.cwd())`
+  — `/workspaces`, read-only in this container — so two unrelated checks started reporting a problem. The spread is
+  still right; a new export that touches the filesystem needs its own stub added to the mock and a default in
+  `beforeEach`. Confirmed: 2026-09-21.
+- **A wizard list screen whose `findIndex` can miss needs `Math.max(…, 0)`**: a stored value the option list does not
+  contain yields -1, and `handleMenu`'s `i < length - 1 ? i + 1 : 0` turns one DOWN press into index 0 — so the
+  selection silently lands back on the default and a test asserting the non-default value fails with no clue why.
+  `EXECUTOR_OPTIONS` already does this; copy it. The same run also needed the mocked `DEFAULT_DO_WORK` in
+  `ConfigWizard.test.tsx` extended with the new key, which is what produced the -1 in the first place. Confirmed:
+  2026-09-21.
+- **Ending a wizard chain with a new screen moves the write**: the previous last screen must stop calling
+  `writeConfig`/`exit` and advance instead, and the test that walked the chain needs the extra keystrokes plus a
+  *non-default* choice on the new screen — otherwise the assertion passes on the default and proves nothing.
+  Confirmed: 2026-09-21.
 - **A failing test that reads `git tag` fails every branch at once**: `tests/unit/changelog.test.ts` shells out to
   `git tag`, and tags are repository-wide, so one missing `CHANGELOG.md` section turned the whole repository red. When
   a build starts failing on branches that changed nothing relevant, look for a check whose input is repository state

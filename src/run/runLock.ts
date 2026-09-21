@@ -2,6 +2,14 @@ import { writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync, linkSyn
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import {
+  clearHeartbeat,
+  readHeartbeat,
+  writeHeartbeat,
+  HEARTBEAT_RELATIVE_PATH,
+  type Heartbeat,
+  type HeartbeatUpdate,
+} from "./heartbeat.js";
 
 /**
  * An exclusive, repository-scoped run lock.
@@ -30,6 +38,22 @@ const LOCK_FILE = "automata.lock";
  */
 export const RUN_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${LOCK_FILE}`;
 
+/**
+ * Every path automata writes inside the checkout for its own bookkeeping.
+ *
+ * One list rather than one constant per file, because each of these has to be
+ * excluded from the working-tree cleanliness check in *four* places — the
+ * pre-flight's rescue, the staging pathspec, both branch preparations and the
+ * read-only repository inspection — and a file added here but missed at one of
+ * them makes every item of every tick skip as `dirty-tree` in any repository
+ * that has not ignored it. That was issue #69 for the lock alone; the heartbeat
+ * would have repeated it.
+ */
+export const AUTOMATA_OWN_PATHS: readonly string[] = [
+  RUN_LOCK_RELATIVE_PATH,
+  HEARTBEAT_RELATIVE_PATH,
+];
+
 export interface LockOwner {
   pid: number;
   startedAt: string;
@@ -43,10 +67,30 @@ export interface LockOwner {
    * inherited its pid".
    */
   pidStartedAt?: string;
+  /**
+   * The holder's working directory.
+   *
+   * Recorded because the operation logs live in `dirname(process.cwd())`, so a
+   * tick the scheduler fires from a different directory than the one an
+   * operator checks from writes its history somewhere else entirely — and the
+   * only visible symptom is a live lock beside an empty log. Absent in a lock
+   * written by an earlier automata, which reads as "not recorded" rather than
+   * as a fault.
+   */
+  cwd?: string;
 }
 
 export interface LockHandle {
   release(): void;
+  /**
+   * Publish what this tick is doing, for a reader of the lock.
+   *
+   * Best-effort and bound to this handle's token: a failure changes nothing, and
+   * the next holder cannot mistake a leftover for its own state. Written to a
+   * sidecar rather than into the lock — see `heartbeat.ts` for why the lock file
+   * itself must not be rewritten mid-tick.
+   */
+  heartbeat(update: HeartbeatUpdate): void;
 }
 
 export type AcquireResult =
@@ -118,6 +162,7 @@ function readOwner(path: string): LockOwner | null {
       command: parsed.command ?? "unknown",
       token: parsed.token ?? "",
       pidStartedAt: parsed.pidStartedAt,
+      cwd: parsed.cwd,
     };
   } catch {
     return null;
@@ -190,9 +235,17 @@ function heldTooLong(owner: LockOwner, staleMinutes: number): boolean {
 function makeHandle(path: string, token: string): LockHandle {
   let released = false;
   return {
+    heartbeat(update: HeartbeatUpdate): void {
+      // A released handle must stop publishing: the lock may already belong to
+      // another tick, and a heartbeat under our old token would linger for a
+      // reader to trip over.
+      if (released) return;
+      writeHeartbeat(token, update);
+    },
     release(): void {
       if (released) return;
       released = true;
+      clearHeartbeat();
 
       const current = readOwner(path);
       if (current !== null && current.token !== token) {
@@ -255,6 +308,7 @@ function publishLock(path: string, command: string, token: string): boolean {
     command,
     token,
     pidStartedAt: processStartedAt(process.pid) ?? undefined,
+    cwd: process.cwd(),
   };
 
   const staging = `${path}.staging.${token}`;
@@ -501,9 +555,9 @@ function reclaim(path: string, command: string, token: string, expected: LockOwn
 export type LockStatus =
   | { kind: "free" }
   /** Live, on this host or within the staleness window: the normal state mid-tick. */
-  | { kind: "held"; owner: LockOwner; heldForMs: number | null }
+  | { kind: "held"; owner: LockOwner; heldForMs: number | null; heartbeat?: Heartbeat | null }
   /** Live but past the window with an unverifiable identity — the orphan case. */
-  | { kind: "suspect"; owner: LockOwner; heldForMs: number | null }
+  | { kind: "suspect"; owner: LockOwner; heldForMs: number | null; heartbeat?: Heartbeat | null }
   /** The next tick will reclaim it. */
   | { kind: "stale"; owner: LockOwner | null; heldForMs: number | null }
   | { kind: "unreadable"; detail: string };
@@ -550,5 +604,13 @@ export function inspectRunLock(staleMinutes: number, now: number = Date.now()): 
   // Not stale, so `readOwner` returned an owner: `isStale(null)` is always true.
   const held = owner as LockOwner;
   const kind = heldTooLong(held, staleMinutes) ? "suspect" : "held";
-  return { kind, owner: held, heldForMs: heldForMs(held, now) };
+  // Only the holder's own heartbeat. A sidecar left by an earlier tick carries a
+  // different token and reads as absent, which is the point: presenting a dead
+  // holder's last phase as the live tick's state would be worse than silence.
+  return {
+    kind,
+    owner: held,
+    heldForMs: heldForMs(held, now),
+    heartbeat: readHeartbeat(held.token),
+  };
 }
