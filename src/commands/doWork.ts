@@ -1928,8 +1928,10 @@ function describeSelectionEvidence(
   evidence: SelectionEvidence,
   lines: string[],
 ): void {
-  lines.push(...describeIssueEvidence(settings, evidence));
-  lines.push(...describeOrphanEvidence(settings, evidence));
+  lines.push(
+    ...describeIssueEvidence(settings, evidence),
+    ...describeOrphanEvidence(settings, evidence),
+  );
 }
 
 /**
