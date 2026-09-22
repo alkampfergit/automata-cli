@@ -2693,6 +2693,46 @@ describe("do-work blocked-exit dump", () => {
     expectFullReport(stderr);
   });
 
+  it("carries the discovery evidence into a --verbose dump without querying again", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+
+    await runDoWork(["--verbose"]);
+
+    expect(stderr).toContain("blocked: no candidate was picked up (0 of 1)");
+    // The lists `--check --verbose` shows, from the pass the tick already made.
+    expect(stderr).toContain("discovery query: label = automated, limit 10");
+    expect(stderr).toContain("discovery returned 1 issue(s):");
+    expect(stderr).toContain("#42");
+    // One discovery call: the dump reused it rather than paging GitHub again,
+    // which on a five-minute cron is what keeps a wedged loop from hammering it.
+    expect(gh.listCandidateIssues).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no candidate lists in a dump without --verbose", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+
+    await runDoWork();
+
+    expect(stderr).toContain("blocked: no candidate was picked up (0 of 1)");
+    expect(stderr).not.toContain("discovery query:");
+    expect(stderr).not.toContain("discovery returned");
+  });
+
+  it("leaves no trace armed for the next invocation", async () => {
+    // The sink is process-wide, so a tick that answered an item and never
+    // consumed it would make the *next*, non-verbose invocation print a
+    // `Commands` block it never asked for.
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
+    await runDoWork(["--verbose"]);
+    expect(mockInvokeClaude).toHaveBeenCalled();
+
+    const { isTracing } = await import("../../src/run/commandTrace.js");
+    expect(isTracing()).toBe(false);
+  });
+
   it("dumps nothing when the tick actually answered something", async () => {
     gh.listCandidateIssues.mockReturnValue([issue(42)]);
     gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));

@@ -234,18 +234,27 @@ function heldTooLong(owner: LockOwner, staleMinutes: number): boolean {
 
 function makeHandle(path: string, token: string): LockHandle {
   let released = false;
+  // Captured here rather than read per call, so the sidecar stays beside the
+  // directory `publishLock` recorded on the lock a moment ago even if the tick
+  // chdirs later. `inspectRunLock` reads it back from that recorded directory,
+  // and the two have to name the same file for the heartbeat to be visible at
+  // all.
+  const cwd = process.cwd();
   return {
     heartbeat(update: HeartbeatUpdate): void {
       // A released handle must stop publishing: the lock may already belong to
       // another tick, and a heartbeat under our old token would linger for a
       // reader to trip over.
       if (released) return;
-      writeHeartbeat(token, update);
+      writeHeartbeat(token, update, cwd);
     },
     release(): void {
       if (released) return;
       released = true;
-      clearHeartbeat();
+      // Only ours: a holder whose lock was already reclaimed as stale would
+      // otherwise delete the replacement holder's heartbeat on its way out,
+      // blinding a check to a tick whose lock is perfectly intact.
+      clearHeartbeat(token, cwd);
 
       const current = readOwner(path);
       if (current !== null && current.token !== token) {
@@ -604,6 +613,13 @@ export function inspectRunLock(staleMinutes: number, now: number = Date.now()): 
   // Not stale, so `readOwner` returned an owner: `isStale(null)` is always true.
   const held = owner as LockOwner;
   const kind = heldTooLong(held, staleMinutes) ? "suspect" : "held";
+  // Read from the *holder's* directory, not ours. A tick the scheduler fires
+  // from another checkout is the case this whole feature exists to diagnose, and
+  // reading our own cwd there would report `no heartbeat from this holder` for
+  // every such tick — precisely when the phase is the thing being asked for. A
+  // lock written by an earlier automata records no cwd, and falling back to ours
+  // is what that version did anyway.
+  //
   // Only the holder's own heartbeat. A sidecar left by an earlier tick carries a
   // different token and reads as absent, which is the point: presenting a dead
   // holder's last phase as the live tick's state would be worse than silence.
@@ -611,6 +627,6 @@ export function inspectRunLock(staleMinutes: number, now: number = Date.now()): 
     kind,
     owner: held,
     heldForMs: heldForMs(held, now),
-    heartbeat: readHeartbeat(held.token),
+    heartbeat: readHeartbeat(held.token, held.cwd ?? process.cwd()),
   };
 }

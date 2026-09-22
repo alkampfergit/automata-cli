@@ -239,3 +239,38 @@ describe("forceDeleteLocalBranch", () => {
     expect(forceDeleteLocalBranch("old/thing")).toEqual({ ok: true, stderr: "" });
   });
 });
+
+describe("gitService command trace", () => {
+  it("records a git that never started as -1, not as one that exited 1", async () => {
+    // `spawnSync` sets `error` and leaves `status` null when the binary cannot
+    // be started. The wrapper flattens that to 1 for its own callers, which is
+    // right — but the trace is where an operator distinguishes "no git on PATH"
+    // from "git ran and refused", and those want opposite fixes.
+    const { startCommandTrace, takeCommandTrace } = await import("../../src/run/commandTrace.js");
+    mockSpawnSync.mockReturnValue({
+      stdout: "",
+      stderr: "",
+      status: null,
+      error: Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }),
+    });
+    const { listLocalBranches } = await service();
+
+    startCommandTrace();
+    expect(listLocalBranches()).toEqual([]);
+    const trace = takeCommandTrace();
+
+    expect(trace?.length).toBe(1);
+    expect(trace?.[0]?.exitCode).toBe(-1);
+  });
+
+  it("records a git that ran and failed with its own status", async () => {
+    const { startCommandTrace, takeCommandTrace } = await import("../../src/run/commandTrace.js");
+    mockSpawnSync.mockReturnValue(bad("fatal: not a git repository", 128));
+    const { listLocalBranches } = await service();
+
+    startCommandTrace();
+    listLocalBranches();
+
+    expect(takeCommandTrace()?.[0]?.exitCode).toBe(128);
+  });
+});

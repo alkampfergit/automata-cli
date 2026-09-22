@@ -22,7 +22,7 @@ const { inspectRepoStatus } = await import("../../src/git/repoStatus.js");
  * notices it.
  */
 
-type Result = { stdout?: string; stderr?: string; status?: number };
+type Result = { stdout?: string; stderr?: string; status?: number; error?: Error };
 
 let responses: { match: (args: string[]) => boolean; result: Result }[] = [];
 let calls: string[][] = [];
@@ -46,7 +46,13 @@ beforeEach(() => {
     // Last registered wins, so a test can override a default set up by `clean()`.
     const hit = [...responses].reverse().find((candidate) => candidate.match(args));
     const result = hit?.result ?? { status: 1 };
-    return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 0 };
+    return {
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      // `spawnSync` leaves `status` null exactly when it sets `error`.
+      status: result.error ? null : (result.status ?? 0),
+      error: result.error,
+    };
   });
 });
 
@@ -259,6 +265,29 @@ describe("inspectRepoStatus", () => {
 
     expect(status.ahead).toBeNull();
     expect(status.behind).toBeNull();
+  });
+
+  it("traces a git that never started as -1, not as a command that exited 1", async () => {
+    // `spawnSync` sets `error` and leaves `status` null when the binary cannot be
+    // started. Collapsing that into 1 makes a missing `git` read as a `git` that
+    // ran and failed, which is the opposite diagnosis.
+    const { startCommandTrace, takeCommandTrace } = await import("../../src/run/commandTrace.js");
+    clean();
+    const enoent = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+    // Not one call: a `git` missing from PATH fails every spawn this run makes.
+    respond(["rev-parse", "--short", "HEAD"], { error: enoent });
+    respond(["rev-parse", "--is-inside-work-tree"], { error: enoent });
+
+    startCommandTrace();
+    const status = inspectRepoStatus({ baseBranch: "develop", fetch: true });
+    const trace = takeCommandTrace();
+
+    // The caller still sees the 1 every branch in the module is written
+    // against; only the trace keeps the distinction.
+    expect(status.error).not.toBeNull();
+
+    expect(trace?.length).toBeGreaterThan(0);
+    expect(trace?.every((entry) => entry.exitCode === -1)).toBe(true);
   });
 
   it("spawns a git resolved against PATH rather than letting the child search it", () => {

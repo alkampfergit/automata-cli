@@ -28,7 +28,12 @@ function git(args: string[]): GitResult {
   const result = spawnSync(GIT_BIN, args, { encoding: "utf8" });
   const status = result.status ?? 1;
   // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
-  recordCommand(GIT_BIN, args, startedAt, status);
+  // `-1` for a command that never started, which is a different fact from one
+  // that ran and failed: a `git` missing from PATH and a `git` that exited 1 lead
+  // an operator to opposite conclusions, and the trace is the only place the
+  // distinction survives — callers still see the `1` this module's own logic is
+  // written against.
+  recordCommand(GIT_BIN, args, startedAt, result.error ? -1 : status);
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

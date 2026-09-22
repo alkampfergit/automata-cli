@@ -449,10 +449,14 @@ raw "held for 27 minutes" cannot give you.
 
 It lives in `.automata/automata-heartbeat.json`, next to the lock rather than inside it — the lock
 is the mutual-exclusion primitive, and a diagnostic must not be able to break the thing it is
-diagnosing. Each entry carries the lock token it belongs to, so a file left behind by a holder that
-was killed reads as absent rather than as the current tick's state. Every read and write is
-best-effort: a heartbeat that cannot be written changes nothing at all, and a lock with none reports
-`phase: not reported (no heartbeat from this holder)`.
+diagnosing. It is read from the `working directory` the lock records, not from yours, so a tick the
+scheduler fires from another checkout still reports its phase.
+
+Each entry carries the lock token it belongs to, so a file left behind by a holder that was killed
+reads as absent rather than as the current tick's state — and for the same reason a tick removes only
+the heartbeat matching its *own* token on the way out, leaving a replacement holder's alone. Every
+read and write is best-effort: a heartbeat that cannot be written changes nothing at all, and a lock
+with none reports `phase: not reported (no heartbeat from this holder)`.
 
 ### `--verbose`: the work behind the answer
 
@@ -482,6 +486,18 @@ discovery returned 2 issue(s):
     PR #61 Bump deps — matches the filter
     PR #62 Unrelated — dropped by the discovery filter
 ```
+
+`--issue <n>` turns the orphan pass off and `--pr <n>` turns the issue pass off, and a pass that did
+not run says so rather than reporting an empty result — "0 issue(s)" for a query that was never sent
+would send you to debug a filter that was never applied:
+
+```
+discovery query: label = automated, limit 10, restricted to #82
+orphan pull-request pass: not run — --issue 82 restricts this tick to that issue
+```
+
+Both additions apply to a [blocked-exit dump](#when-a-tick-does-nothing) too, filled from the pass
+the blocked tick already made — the dump still asks GitHub nothing.
 
 Without `--verbose` nothing is recorded at all: the trace costs one null check per command.
 

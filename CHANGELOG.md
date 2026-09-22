@@ -22,9 +22,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   `automata config set do-work-dump-on-block <true|false>` or the wizard's new *Do Work → Report on a Blocked Tick*
   screen.
 - `do-work --verbose` shows the work behind a report: a `Commands` block listing every `git` and `gh` invocation with
-  its duration and exit code, plus the discovery query as sent and every candidate considered before the discovery
-  filter narrowed it. It applies to `--check` and to a blocked-exit dump, and adds a top-level `trace` array to the
-  JSON payload.
+  its duration and exit code (`-1` for one that never started), plus the discovery query as sent and every candidate
+  considered before the discovery filter narrowed it — with a pass that `--issue` or `--pr` turned off reported as not
+  run rather than as an empty result. It applies to `--check` and to a blocked-exit dump, which fills it from the pass
+  the blocked tick already made rather than querying GitHub again, and adds a top-level `trace` array to the JSON
+  payload.
 - A tick now publishes a heartbeat while it holds the run lock — phase, item *n* of *m* with its subject, and the
   executor with the time its run started. `--check` renders it under `Run lock`, so a slow tick and a wedged one are
   finally distinguishable. It lives in `.automata/automata-heartbeat.json`, beside the lock rather than inside it, and

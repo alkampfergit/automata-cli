@@ -7,7 +7,8 @@
    stays 1, `preflight-failed` and `all-skipped` stay 2, `no-candidates` stays 0.
 2. **The dump makes no GitHub call and no fetch.** While rendering it, the process must not call
    `listCandidateIssues`, `getOpenPrLinkMap`, `getIssueSurface`, `getPrSurface`, `getAuthenticatedIdentity`
-   or `git fetch`. `Selection` is filled from decisions the tick already computed, or reported as not run.
+   or `git fetch`. `Selection` is filled from the discovery the tick already made — its decisions, and under
+   `--verbose` the query as sent and the candidate lists too — or reported as not run.
 3. **The dump cannot fail the tick.** Every call into it is wrapped; a throw produces one warning line on
    stderr and nothing else.
 4. **The dump renders the same six sections, in the same order, with the same titles** as `--check`:

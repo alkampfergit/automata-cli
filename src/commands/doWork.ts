@@ -76,7 +76,7 @@ import {
   recordTick,
   type TickLogItem,
 } from "../run/operationLog.js";
-import { startCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
+import { startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
 import type { HeartbeatItem, HeartbeatUpdate } from "../run/heartbeat.js";
 import { inspectRepoStatus } from "../git/repoStatus.js";
 import {
@@ -1648,8 +1648,26 @@ export const doWorkCommand = new Command("do-work")
     if (exitCode !== 0) process.exit(exitCode);
   });
 
-/** One `do-work` invocation, in whichever mode the options select. */
+/**
+ * One `do-work` invocation, in whichever mode the options select.
+ *
+ * The trace sink is process-wide (see `commandTrace.ts`), so its lifetime has to
+ * be the invocation's and not the report's: only a blocked dump and `--check`
+ * consume it, and a tick that answers an item, or has `dumpOnBlock` off, or
+ * throws, would otherwise leave it armed for the *next* invocation to inherit —
+ * which in a long-lived process, and in the tests that call `parseAsync` more
+ * than once, prints a `Commands` block for a command that never asked for one.
+ */
 async function runDoWork(options: DoWorkOptions): Promise<number> {
+  try {
+    return await runDoWorkTraced(options);
+  } finally {
+    // Already null on the paths that consumed the trace; this is for the rest.
+    stopCommandTrace();
+  }
+}
+
+async function runDoWorkTraced(options: DoWorkOptions): Promise<number> {
   const startedAt = Date.now();
 
   if (options.check === true) {
@@ -1680,7 +1698,7 @@ async function runDoWork(options: DoWorkOptions): Promise<number> {
     const payload = dumpBlocked(options, {
       reason: "config-invalid",
       trigger: `configuration is not usable — ${resolved.error}`,
-      decisions: null,
+      selection: null,
       resolved,
     });
     if (payload !== null) out(JSON.stringify({ blocked: payload, exitCode: 1 }, null, 2) + "\n");
@@ -1822,6 +1840,46 @@ interface SelectionEvidence {
   issues: GitHubIssue[] | null;
   /** Every open orphan pull request considered, with whether the filter kept it. */
   orphans: { number: number; title: string; matched: boolean }[] | null;
+  /**
+   * Whether each pass ran at all. `--issue N` turns the orphan pass off and
+   * `--pr N` turns the issue pass off, and both then return an empty list
+   * without querying anything — so without these two flags a disabled pass and a
+   * pass that genuinely found nothing render identically, and the report claims
+   * work it never did.
+   */
+  issuePass: boolean;
+  orphanPass: boolean;
+}
+
+/**
+ * The evidence, from the discovery both `--check` and a live tick already have
+ * in hand. Shared so the two can never describe the same selection differently.
+ */
+function buildSelectionEvidence(
+  settings: Settings,
+  issues: GitHubIssue[],
+  linkMap: OpenPrLinkMap,
+  decisions: Decision[],
+  verbose: boolean,
+): SelectionEvidence {
+  const issuePass = issuePassEnabled(settings);
+  const orphanPass = orphanPassEnabled(settings);
+  return {
+    decisions,
+    issuePass,
+    orphanPass,
+    issues: verbose && issuePass ? issues : null,
+    // Read off the link map rather than off `discoverOrphanPrs`, which returns
+    // only the survivors — the whole point here is to show what was dropped.
+    orphans:
+      verbose && orphanPass
+        ? linkMap.orphans.map((candidate) => ({
+            number: candidate.pr.number,
+            title: candidate.pr.title,
+            matched: prMatchesFilter(candidate, settings),
+          }))
+        : null,
+  };
 }
 
 function collectSelection(settings: Settings, verbose: boolean): SelectionEvidence {
@@ -1838,19 +1896,7 @@ function collectSelection(settings: Settings, verbose: boolean): SelectionEviden
       decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
     ),
   ]);
-  return {
-    decisions,
-    issues: verbose ? issues : null,
-    // Read off the link map rather than off `discoverOrphanPrs`, which returns
-    // only the survivors — the whole point here is to show what was dropped.
-    orphans: verbose
-      ? linkMap.orphans.map((candidate) => ({
-          number: candidate.pr.number,
-          title: candidate.pr.title,
-          matched: prMatchesFilter(candidate, settings),
-        }))
-      : null,
-  };
+  return buildSelectionEvidence(settings, issues, linkMap, decisions, verbose);
 }
 
 function makeSelectionSection(
@@ -1873,22 +1919,41 @@ function describeSelectionEvidence(
   evidence: SelectionEvidence,
   lines: string[],
 ): void {
-  lines.push(
-    `discovery query: ${settings.technique} = ${settings.discoveryValue}, limit ${String(settings.limit)}`,
-  );
-  // The colon only when something follows it: a heading over nothing reads as a
-  // list that failed to render rather than as an empty one.
-  if (evidence.issues !== null) {
-    const count = evidence.issues.length;
-    lines.push(`discovery returned ${String(count)} issue(s)${count === 0 ? "" : ":"}`);
-    for (const issue of evidence.issues) {
-      lines.push(`    #${String(issue.number)} ${issue.title}`);
+  // A pass that never ran says so. Printing "discovery returned 0 issue(s)"
+  // under `--pr 61` would be a false statement about a query that was never
+  // sent, and the operator's next move — checking why the filter matches
+  // nothing — would be chasing a query that does not exist.
+  if (!evidence.issuePass) {
+    lines.push(
+      `issue discovery: not run — --pr ${String(settings.onlyPr)} restricts this tick to that pull request`,
+    );
+  } else {
+    const restriction =
+      settings.onlyIssue === undefined ? "" : `, restricted to #${String(settings.onlyIssue)}`;
+    lines.push(
+      `discovery query: ${settings.technique} = ${settings.discoveryValue}, limit ${String(settings.limit)}${restriction}`,
+    );
+    // The colon only when something follows it: a heading over nothing reads as
+    // a list that failed to render rather than as an empty one.
+    if (evidence.issues !== null) {
+      const count = evidence.issues.length;
+      lines.push(`discovery returned ${String(count)} issue(s)${count === 0 ? "" : ":"}`);
+      for (const issue of evidence.issues) {
+        lines.push(`    #${String(issue.number)} ${issue.title}`);
+      }
     }
   }
-  if (evidence.orphans !== null) {
-    const count = evidence.orphans.length;
+
+  if (!evidence.orphanPass) {
     lines.push(
-      `${String(count)} open orphan pull request(s) considered${count === 0 ? "" : ":"}`,
+      `orphan pull-request pass: not run — --issue ${String(settings.onlyIssue)} restricts this tick to that issue`,
+    );
+  } else if (evidence.orphans !== null) {
+    const count = evidence.orphans.length;
+    const restriction =
+      settings.onlyPr === undefined ? "" : ` (only PR #${String(settings.onlyPr)} would be taken up)`;
+    lines.push(
+      `${String(count)} open orphan pull request(s) considered${restriction}${count === 0 ? "" : ":"}`,
     );
     for (const orphan of evidence.orphans) {
       const verdict = orphan.matched ? "matches the filter" : "dropped by the discovery filter";
@@ -1954,36 +2019,49 @@ function selectionSection(
   const lines: string[] = [];
   if (verbose) describeSelectionEvidence(settings, evidence, lines);
   lines.push(...describeSelectionDecisions(evidence.decisions));
-  return makeSelectionSection(lines, [], {
+  return makeSelectionSection(lines, [], selectionData(evidence));
+}
+
+/** The JSON body of the section, identical for the live check and a dump. */
+function selectionData(evidence: SelectionEvidence): Record<string, unknown> {
+  return {
     ran: true,
     detail: null,
     plan: evidence.decisions.map(toPlanJson),
     issues: evidence.issues,
     orphans: evidence.orphans,
-  });
+    issuePass: evidence.issuePass,
+    orphanPass: evidence.orphanPass,
+  };
 }
 
 /**
  * The selection a blocked tick already computed, or a statement that it never
  * got that far.
  *
- * Null decisions is the honest answer for a tick refused at the run lock or at
+ * Null evidence is the honest answer for a tick refused at the run lock or at
  * the configuration: discovery had not run, and inventing a live query here is
- * the one thing the blocked dump must not do.
+ * the one thing the blocked dump must not do. When the tick *did* reach
+ * discovery it hands over everything it saw, so a `--verbose` dump shows the
+ * query and the candidate lists exactly as `--check --verbose` would — without
+ * re-running a single call to do it.
  */
-function selectionSectionFromDecisions(decisions: Decision[] | null): CheckSection {
-  if (decisions === null) {
+function selectionSectionFromEvidence(
+  settings: Settings | null,
+  evidence: SelectionEvidence | null,
+  verbose: boolean,
+): CheckSection {
+  if (evidence === null) {
     return makeSelectionSection(
       ["not run: the tick was blocked before discovery"],
       [],
       { ran: false, detail: "blocked before discovery", plan: [] },
     );
   }
-  return makeSelectionSection(describeSelectionDecisions(decisions), [], {
-    ran: true,
-    detail: null,
-    plan: decisions.map(toPlanJson),
-  });
+  const lines: string[] = [];
+  if (verbose && settings !== null) describeSelectionEvidence(settings, evidence, lines);
+  lines.push(...describeSelectionDecisions(evidence.decisions));
+  return makeSelectionSection(lines, [], selectionData(evidence));
 }
 
 /**
@@ -2306,8 +2384,13 @@ interface BlockedContext {
   reason: BlockedReason;
   /** One sentence in the operator's words, with the identifying facts in it. */
   trigger: string;
-  /** What the tick selected, or null when it was blocked before discovery. */
-  decisions: Decision[] | null;
+  /**
+   * What the tick selected and what it saw on the way, or null when it was
+   * blocked before discovery. Carried whole rather than as bare decisions so a
+   * `--verbose` dump can show the discovery query and the candidate lists from
+   * the tick's own pass — the dump is forbidden from asking GitHub again.
+   */
+  selection: SelectionEvidence | null;
   resolved: SettingsResult;
 }
 
@@ -2329,12 +2412,16 @@ function dumpOnBlockEnabled(resolved: SettingsResult): boolean {
   }
 }
 
-function buildBlockedReport(context: BlockedContext): CheckReport {
+function buildBlockedReport(context: BlockedContext, verbose: boolean): CheckReport {
   return buildCheckReport({
     now: new Date(),
     repo: resolveRepoSlug(),
     resolved: context.resolved,
-    selection: selectionSectionFromDecisions(context.decisions),
+    selection: selectionSectionFromEvidence(
+      context.resolved.ok ? context.resolved.settings : null,
+      context.selection,
+      verbose,
+    ),
     fetch: false,
     checkIdentity: false,
     identitySkipReason: "the tick is exiting and the dump makes no network call",
@@ -2360,7 +2447,7 @@ function dumpBlocked(
 ): Record<string, unknown> | null {
   if (!dumpOnBlockEnabled(context.resolved)) return null;
   try {
-    const report = buildBlockedReport(context);
+    const report = buildBlockedReport(context, options.verbose === true);
     if (options.json === true) {
       return { reason: context.reason, trigger: context.trigger, report: toJson(report) };
     }
@@ -2474,7 +2561,7 @@ function reportLockHeld(
   const context: BlockedContext = {
     reason: "lock-held",
     trigger: `run lock held by pid ${String(held.pid)} on ${held.host}`,
-    decisions: null,
+    selection: null,
     resolved,
   };
 
@@ -2598,8 +2685,23 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // that answered nothing exits 0 when there was nothing to answer, which reads
   // as success and is exactly the case an operator cannot tell from a fault.
   const blockedBy = classifyBlocked(hygiene, decisions, items, reports);
+  // From the pass this tick already made — the dump must not ask GitHub again,
+  // and a wedged loop on a five-minute cron would otherwise page the API
+  // forever for output nobody reads.
   const context: BlockedContext | null =
-    blockedBy === null ? null : { ...blockedBy, decisions, resolved: { ok: true, settings } };
+    blockedBy === null
+      ? null
+      : {
+          ...blockedBy,
+          selection: buildSelectionEvidence(
+            settings,
+            issues,
+            linkMap,
+            decisions,
+            options.verbose === true,
+          ),
+          resolved: { ok: true, settings },
+        };
 
   reportTickOutcome({ options, hygiene, decisions, reports, context, exitCode });
 
