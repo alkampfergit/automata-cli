@@ -198,6 +198,6 @@ export function readHeartbeat(token: string, cwd: string = process.cwd()): Heart
     return null;
   }
   const heartbeat = parseHeartbeat(content);
-  if (heartbeat === null || heartbeat.token !== token) return null;
+  if (heartbeat?.token !== token) return null;
   return heartbeat;
 }
