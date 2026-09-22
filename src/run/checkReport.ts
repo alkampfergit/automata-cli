@@ -868,6 +868,35 @@ export function assembleReport(input: {
   };
 }
 
+/**
+ * One titled block: the heading, the body indented under it, and the blank line
+ * that separates it from the next. `empty` is what stands in for a body with no
+ * entries — a section that reports nothing still has to say so, or the reader
+ * cannot tell it apart from one that was never rendered.
+ */
+function renderBlock(title: string, body: readonly string[], empty: string): string[] {
+  return [title, ...(body.length === 0 ? [empty] : body).map((line) => `  ${line}`), ""];
+}
+
+function renderTrace(trace: readonly TracedCommand[]): string[] {
+  return renderBlock(
+    `Commands (${String(trace.length)})`,
+    trace.map(describeTracedCommand),
+    "(no git or gh command was run)",
+  );
+}
+
+/** Only called with at least one problem, so it needs no empty-body stand-in. */
+function renderProblems(problems: readonly Problem[]): string[] {
+  const body = problems.flatMap((problem) => [
+    `· ${problem.section}: ${problem.summary}`,
+    // Indented under its problem rather than beside it: the command is a
+    // follow-up to that one finding, not another finding.
+    ...(problem.command === null ? [] : [`    try: ${problem.command}`]),
+  ]);
+  return [`Problems (${String(problems.length)})`, ...body.map((line) => `  ${line}`), ""];
+}
+
 export function renderText(report: CheckReport): string {
   const head = `automata do-work --check — ${report.repo ?? "unknown repository"} — ${report.generatedAt.toISOString()}`;
   // The trigger goes above the header, not in place of it: an operator scrolling
@@ -877,33 +906,11 @@ export function renderText(report: CheckReport): string {
     report.blocked === null ? [head, ""] : [`blocked: ${report.blocked.trigger}`, head, ""];
 
   for (const section of report.sections) {
-    parts.push(section.title);
-    if (section.lines.length === 0) {
-      parts.push("  (nothing to report)");
-    } else {
-      for (const line of section.lines) parts.push(`  ${line}`);
-    }
-    parts.push("");
+    parts.push(...renderBlock(section.title, section.lines, "(nothing to report)"));
   }
 
-  if (report.trace !== null) {
-    parts.push(`Commands (${String(report.trace.length)})`);
-    if (report.trace.length === 0) {
-      parts.push("  (no git or gh command was run)");
-    } else {
-      for (const traced of report.trace) parts.push(`  ${describeTracedCommand(traced)}`);
-    }
-    parts.push("");
-  }
-
-  if (report.problems.length > 0) {
-    parts.push(`Problems (${String(report.problems.length)})`);
-    for (const problem of report.problems) {
-      parts.push(`  · ${problem.section}: ${problem.summary}`);
-      if (problem.command !== null) parts.push(`      try: ${problem.command}`);
-    }
-    parts.push("");
-  }
+  if (report.trace !== null) parts.push(...renderTrace(report.trace));
+  if (report.problems.length > 0) parts.push(...renderProblems(report.problems));
 
   parts.push(
     report.problems.length === 0

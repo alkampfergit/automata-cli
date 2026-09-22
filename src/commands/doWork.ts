@@ -1641,125 +1641,146 @@ export const doWorkCommand = new Command("do-work")
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
-    const startedAt = Date.now();
-
-    if (options.check === true) {
-      // Before `loggableInvocation` is armed and before the lock: the check
-      // writes nothing, including to the very logs it reports on.
-      if (options.dryRun === true) {
-        process.stderr.write(
-          "Error: --check and --dry-run are two different read-only reports; run one or the other.\n",
-        );
-        process.exit(1);
-      }
-      const exitCode = runCheck(options);
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    // Armed before the first collector so a blocked dump's trace covers the
-    // tick's own commands, not only the report's.
-    if (options.verbose === true) startCommandTrace();
-
-    // Before the settings are resolved, which exits through `fail()` on any bad
-    // configuration: arming this first is what lets that path be logged.
-    if (options.dryRun !== true) loggableInvocation = { startedAt };
-
-    // Resolved without exiting, so an unusable configuration can dump the report
-    // before `fail()` takes the process down. A dry run posts nothing, so the
-    // identity that would post is irrelevant to it.
-    const resolved = resolveSettingsResult(options, options.dryRun !== true);
-    if (!resolved.ok) {
-      const payload = dumpBlocked(options, {
-        reason: "config-invalid",
-        trigger: `configuration is not usable — ${resolved.error}`,
-        decisions: null,
-        resolved,
-      });
-      if (payload !== null) out(JSON.stringify({ blocked: payload, exitCode: 1 }, null, 2) + "\n");
-      fail(resolved.error);
-    }
-    const settings = resolved.settings;
-
-    // A dry run changes nothing, so it neither needs the lock nor should be
-    // blocked by one — being unable to inspect the plan while a tick is running
-    // would defeat the primary diagnostic. It also avoids creating the lock file
-    // in a repository that has not ignored it.
-    if (options.dryRun === true) {
-      const { exitCode } = await runTick(settings, options);
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    // From here the ordinary paths below do the logging; `fail()` must not.
-    loggableInvocation = null;
-
-    const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
-    if (!lock.ok) {
-      const exitCode = reportLockHeld(lock, settings, options, resolved);
-      // A loop wedged behind a stale lock does nothing on every tick, and
-      // without a line that is indistinguishable from cron having stopped
-      // firing — which is the failure the execution log exists to expose.
-      logTick([], exitCode, startedAt, "lock-held");
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    const handle: LockHandle = lock.handle;
-    // From here any depth of the tick may publish a heartbeat.
-    lockHandle = handle;
-    // Stop the executor before releasing the lock. Exiting the parent while a
-    // streaming child keeps running would leave a model editing and pushing
-    // while the next cron tick picks up the freed lock.
-    let shuttingDown = false;
-    const onSignal = (): void => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
-      explainInterruptedMarker();
-      void terminateTrackedChildren().then((allExited) => {
-        if (allExited) {
-          handle.release();
-        } else {
-          // Releasing now would hand the lock to the next tick while a model may
-          // still be running. Leaving it held is the safer failure: it is
-          // reclaimable through the staleness window once this process is gone.
-          progress(
-            "Warning: could not confirm the executor exited; leaving the run lock in place. " +
-              "Check for a stray executor process before the next tick.\n",
-          );
-        }
-        process.exit(130);
-      });
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-
-    let exitCode: number;
-    let reports: ItemReport[] = [];
-    try {
-      const result = await runTick(settings, options);
-      exitCode = result.exitCode;
-      reports = result.reports;
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      exitCode = 1;
-    } finally {
-      // Before the release, which clears the sidecar: a heartbeat published
-      // after that point would outlive the lock it names.
-      lockHandle = null;
-      heartbeatItem = null;
-      handle.release();
-      process.removeListener("SIGINT", onSignal);
-      process.removeListener("SIGTERM", onSignal);
-    }
-
-    // After the lock is released: a log write must never extend the window in
-    // which the next cron tick is turned away.
-    logTick(reports, exitCode, startedAt);
-
+    // The whole tick returns its exit code rather than exiting from inside, so
+    // there is exactly one place the process can leave from and every path
+    // below stays a plain early return.
+    const exitCode = await runDoWork(options);
     if (exitCode !== 0) process.exit(exitCode);
   });
+
+/** One `do-work` invocation, in whichever mode the options select. */
+async function runDoWork(options: DoWorkOptions): Promise<number> {
+  const startedAt = Date.now();
+
+  if (options.check === true) {
+    // Before `loggableInvocation` is armed and before the lock: the check
+    // writes nothing, including to the very logs it reports on.
+    if (options.dryRun === true) {
+      process.stderr.write(
+        "Error: --check and --dry-run are two different read-only reports; run one or the other.\n",
+      );
+      return 1;
+    }
+    return runCheck(options);
+  }
+
+  // Armed before the first collector so a blocked dump's trace covers the
+  // tick's own commands, not only the report's.
+  if (options.verbose === true) startCommandTrace();
+
+  // Before the settings are resolved, which exits through `fail()` on any bad
+  // configuration: arming this first is what lets that path be logged.
+  if (options.dryRun !== true) loggableInvocation = { startedAt };
+
+  // Resolved without exiting, so an unusable configuration can dump the report
+  // before `fail()` takes the process down. A dry run posts nothing, so the
+  // identity that would post is irrelevant to it.
+  const resolved = resolveSettingsResult(options, options.dryRun !== true);
+  if (!resolved.ok) {
+    const payload = dumpBlocked(options, {
+      reason: "config-invalid",
+      trigger: `configuration is not usable — ${resolved.error}`,
+      decisions: null,
+      resolved,
+    });
+    if (payload !== null) out(JSON.stringify({ blocked: payload, exitCode: 1 }, null, 2) + "\n");
+    fail(resolved.error);
+  }
+  const settings = resolved.settings;
+
+  // A dry run changes nothing, so it neither needs the lock nor should be
+  // blocked by one — being unable to inspect the plan while a tick is running
+  // would defeat the primary diagnostic. It also avoids creating the lock file
+  // in a repository that has not ignored it.
+  if (options.dryRun === true) {
+    const { exitCode } = await runTick(settings, options);
+    return exitCode;
+  }
+
+  // From here the ordinary paths below do the logging; `fail()` must not.
+  loggableInvocation = null;
+
+  const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
+  if (!lock.ok) {
+    const exitCode = reportLockHeld(lock, settings, options, resolved);
+    // A loop wedged behind a stale lock does nothing on every tick, and
+    // without a line that is indistinguishable from cron having stopped
+    // firing — which is the failure the execution log exists to expose.
+    logTick([], exitCode, startedAt, "lock-held");
+    return exitCode;
+  }
+
+  const { exitCode, reports } = await runTickUnderLock(lock.handle, settings, options);
+
+  // After the lock is released: a log write must never extend the window in
+  // which the next cron tick is turned away.
+  logTick(reports, exitCode, startedAt);
+
+  return exitCode;
+}
+
+/**
+ * The tick itself, with the run lock held and the signal handlers installed.
+ *
+ * Both are torn down here whatever the tick does, so no caller can return a
+ * result while the lock it ran under is still held.
+ */
+async function runTickUnderLock(
+  handle: LockHandle,
+  settings: Settings,
+  options: DoWorkOptions,
+): Promise<TickResult> {
+  // From here any depth of the tick may publish a heartbeat.
+  lockHandle = handle;
+  const onSignal = interruptHandler(handle);
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  try {
+    return await runTick(settings, options);
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return { exitCode: 1, reports: [] };
+  } finally {
+    // Before the release, which clears the sidecar: a heartbeat published
+    // after that point would outlive the lock it names.
+    lockHandle = null;
+    heartbeatItem = null;
+    handle.release();
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
+/**
+ * Stop the executor before releasing the lock.
+ *
+ * Exiting the parent while a streaming child keeps running would leave a model
+ * editing and pushing while the next cron tick picks up the freed lock.
+ */
+function interruptHandler(handle: LockHandle): () => void {
+  let shuttingDown = false;
+  return (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
+    explainInterruptedMarker();
+    void terminateTrackedChildren().then((allExited) => {
+      if (allExited) {
+        handle.release();
+      } else {
+        // Releasing now would hand the lock to the next tick while a model may
+        // still be running. Leaving it held is the safer failure: it is
+        // reclaimable through the staleness window once this process is gone.
+        progress(
+          "Warning: could not confirm the executor exited; leaving the run lock in place. " +
+            "Check for a stray executor process before the next tick.\n",
+        );
+      }
+      process.exit(130);
+    });
+  };
+}
 
 /* ========================================================================= *
  * `--check`: the read-only health report.
@@ -2556,64 +2577,12 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     return { exitCode: 0, reports: [] };
   }
 
-  // The cap counts *model runs*, not planned items: an item that turns out not
-  // to be actionable, or that is skipped for a dirty tree or a failed marker,
-  // must not consume a slot — otherwise a tick configured for one run can
-  // perform none while actionable work waits.
-  const reports: ItemReport[] = [];
-  const deferred: WorkItem[] = [];
-  const preflightCauses = describePreflightFailures(hygiene);
-  let runsUsed = 0;
-
-  for (const [index, item] of items.entries()) {
-    if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
-      deferred.push(item);
-      continue;
-    }
-    // Kept on module state as well as published, so the executor's own heartbeat
-    // can keep naming the item without `processItem` taking a parameter it would
-    // have to thread past six early returns.
-    heartbeatItem = { index: index + 1, total: items.length, subject: itemLabel(item).trim() };
-    beat({ phase: "item", item: heartbeatItem });
-    // An error from one item — a failed refresh read, say — is that item's
-    // outcome, not the tick's. Letting it escape would exit 1, which is
-    // documented as "nothing was attempted", while discarding the summary for
-    // items that had already run.
-    let report: ItemReport;
-    try {
-      report = await processItem(item, settings, options.silent === true, preflightCauses);
-    } catch (err) {
-      progress(`  failed: ${(err as Error).message}\n`);
-      report = {
-        issue: item.issue?.number ?? null,
-        pr: item.pr?.number ?? null,
-        title: itemTitle(item),
-        turn: item.turn,
-        outcome: "failed",
-        detail: (err as Error).message,
-        sync: inFlightSync ?? undefined,
-      };
-    }
-    // The cap counts model runs. An item that failed before reaching the
-    // executor — a refresh read error, say — did not spend one.
-    if (report.ranExecutor === true) runsUsed++;
-    reports.push(report);
-  }
+  const { reports, deferred } = await processItems(items, settings, options, hygiene);
 
   heartbeatItem = null;
   beat({ phase: "summary" });
 
-  for (const item of deferred) {
-    progress(`\n${itemLabel(item)} deferred: --max-runs / maxRunsPerTick reached.\n`);
-    reports.push({
-      issue: item.issue?.number ?? null,
-      pr: item.pr?.number ?? null,
-      title: itemTitle(item),
-      turn: item.turn,
-      outcome: "deferred",
-      detail: `run cap of ${String(settings.maxRuns)} reached`,
-    });
-  }
+  reports.push(...reportDeferred(deferred, settings));
 
   // "answered-no-reply" counts as degraded: the run produced nothing, a human has
   // to reply before anything more happens, and an unattended loop must surface
@@ -2632,6 +2601,119 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   const context: BlockedContext | null =
     blockedBy === null ? null : { ...blockedBy, decisions, resolved: { ok: true, settings } };
 
+  reportTickOutcome({ options, hygiene, decisions, reports, context, exitCode });
+
+  return { exitCode, reports };
+}
+
+/** What `processItems` ran, and what it could not get to under the run cap. */
+interface ProcessedItems {
+  reports: ItemReport[];
+  deferred: WorkItem[];
+}
+
+/**
+ * Run the planned items in order, up to the run cap.
+ *
+ * The cap counts *model runs*, not planned items: an item that turns out not to
+ * be actionable, or that is skipped for a dirty tree or a failed marker, must
+ * not consume a slot — otherwise a tick configured for one run can perform none
+ * while actionable work waits.
+ */
+async function processItems(
+  items: WorkItem[],
+  settings: Settings,
+  options: DoWorkOptions,
+  hygiene: HygieneReport,
+): Promise<ProcessedItems> {
+  const reports: ItemReport[] = [];
+  const deferred: WorkItem[] = [];
+  const preflightCauses = describePreflightFailures(hygiene);
+  let runsUsed = 0;
+
+  for (const [index, item] of items.entries()) {
+    if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
+      deferred.push(item);
+      continue;
+    }
+    // Kept on module state as well as published, so the executor's own heartbeat
+    // can keep naming the item without `processItem` taking a parameter it would
+    // have to thread past six early returns.
+    heartbeatItem = { index: index + 1, total: items.length, subject: itemLabel(item).trim() };
+    beat({ phase: "item", item: heartbeatItem });
+    const report = await reportForItem(item, settings, options, preflightCauses);
+    // The cap counts model runs. An item that failed before reaching the
+    // executor — a refresh read error, say — did not spend one.
+    if (report.ranExecutor === true) runsUsed++;
+    reports.push(report);
+  }
+
+  return { reports, deferred };
+}
+
+/**
+ * One item's outcome, including the failure of the attempt itself.
+ *
+ * An error from one item — a failed refresh read, say — is that item's outcome,
+ * not the tick's. Letting it escape would exit 1, which is documented as
+ * "nothing was attempted", while discarding the summary for items that had
+ * already run.
+ */
+async function reportForItem(
+  item: WorkItem,
+  settings: Settings,
+  options: DoWorkOptions,
+  preflightCauses: string[],
+): Promise<ItemReport> {
+  try {
+    return await processItem(item, settings, options.silent === true, preflightCauses);
+  } catch (err) {
+    progress(`  failed: ${(err as Error).message}\n`);
+    return {
+      issue: item.issue?.number ?? null,
+      pr: item.pr?.number ?? null,
+      title: itemTitle(item),
+      turn: item.turn,
+      outcome: "failed",
+      detail: (err as Error).message,
+      sync: inFlightSync ?? undefined,
+    };
+  }
+}
+
+/** The items the run cap pushed past, announced and recorded as deferred. */
+function reportDeferred(deferred: WorkItem[], settings: Settings): ItemReport[] {
+  return deferred.map((item) => {
+    progress(`\n${itemLabel(item)} deferred: --max-runs / maxRunsPerTick reached.\n`);
+    return {
+      issue: item.issue?.number ?? null,
+      pr: item.pr?.number ?? null,
+      title: itemTitle(item),
+      turn: item.turn,
+      outcome: "deferred",
+      detail: `run cap of ${String(settings.maxRuns)} reached`,
+    };
+  });
+}
+
+interface TickOutcome {
+  options: DoWorkOptions;
+  hygiene: HygieneReport;
+  decisions: Decision[];
+  reports: ItemReport[];
+  context: BlockedContext | null;
+  exitCode: number;
+}
+
+/** The tick's own report: one JSON object on stdout, or the text summary. */
+function reportTickOutcome({
+  options,
+  hygiene,
+  decisions,
+  reports,
+  context,
+  exitCode,
+}: TickOutcome): void {
   if (options.json) {
     out(
       JSON.stringify(
@@ -2647,13 +2729,11 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
         2,
       ) + "\n",
     );
-  } else {
-    summarizeHygiene(hygiene);
-    summarize(reports);
-    if (context !== null) dumpBlocked(options, context);
+    return;
   }
-
-  return { exitCode, reports };
+  summarizeHygiene(hygiene);
+  summarize(reports);
+  if (context !== null) dumpBlocked(options, context);
 }
 
 /**
