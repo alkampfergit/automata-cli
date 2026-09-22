@@ -105,6 +105,45 @@ export function operationLogDirectory(): string {
   return dirname(process.cwd());
 }
 
+/**
+ * Where the logs resolved to, what that path was derived from, and whether a
+ * tick could actually write there.
+ *
+ * Exists because the path is derived from `process.cwd()` and nothing in the
+ * report said so. A tick fired by the scheduler from a different directory than
+ * the operator is checking from writes its logs somewhere else entirely, and
+ * issue #82 is exactly that: a live tick alongside "no execution log", with no
+ * way to tell which of the two facts was wrong. Reporting the derivation turns
+ * a contradiction into an answer.
+ *
+ * The writability probe is `accessSync(W_OK)` — advisory, like the one in
+ * `recordTick`, and for the same reason: it is the cheap path for a
+ * deliberately locked-down parent and it is what an operator is usually asking
+ * about. Foreign ownership of one file, a full disk or a remount still slip
+ * past it, which is what `recordTick`'s own catches are for.
+ */
+export interface LogDirectoryStatus {
+  /** The resolved directory, i.e. `operationLogDirectory()`. */
+  dir: string;
+  /** The working directory it was derived from. */
+  cwd: string;
+  writable: boolean;
+  /** Why not, when `writable` is false; null otherwise. */
+  detail: string | null;
+}
+
+export function inspectLogDirectory(
+  dir: string = operationLogDirectory(),
+  cwd: string = process.cwd(),
+): LogDirectoryStatus {
+  try {
+    accessSync(dir, constants.W_OK);
+    return { dir, cwd, writable: true, detail: null };
+  } catch (err) {
+    return { dir, cwd, writable: false, detail: (err as Error).message };
+  }
+}
+
 /** `-` rather than an empty field, so a line always has the same shape. */
 function repoField(repo: string | null): string {
   if (repo === null) return "-";

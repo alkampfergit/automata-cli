@@ -12,6 +12,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
+import { heartbeatPath, parseHeartbeat, writeHeartbeat } from "../../src/run/heartbeat.js";
 
 const ORIG_CWD = process.cwd;
 const TEST_CWD = join(process.cwd(), "tmp-test-runlock");
@@ -44,6 +45,10 @@ describe("acquireRunLock", () => {
     expect(owner.command).toBe("do-work");
     expect(owner.host).toBe(hostname());
     expect(typeof owner.startedAt).toBe("string");
+    // The operation logs live in `dirname(cwd)`, so where the holder ran from is
+    // the difference between "no tick has ever run" and "you are reading the
+    // wrong directory".
+    expect(owner.cwd).toBe(TEST_CWD);
   });
 
   it("refuses when a live process on this host holds the lock", () => {
@@ -359,6 +364,128 @@ describe("inspectRunLock", () => {
     expect(status.owner.command).toBe("do-work");
     expect(status.owner.host).toBe(hostname());
     expect(status.heldForMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("carries a lock written without a working directory rather than rejecting it", () => {
+    writeLock({ pid: process.pid, startedAt: new Date().toISOString(), host: hostname(), command: "do-work" });
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.owner.cwd).toBeUndefined();
+  });
+
+  it("attaches the holder's own heartbeat", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    acquired.handle.heartbeat({ phase: "item", item: { index: 2, total: 5, subject: "#82" } });
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.heartbeat?.phase).toBe("item");
+    expect(status.heartbeat?.item).toEqual({ index: 2, total: 5, subject: "#82" });
+  });
+
+  it("ignores a heartbeat left behind by a previous holder", () => {
+    // Left by a tick that was killed: the directory survives, the lock does not.
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+    writeHeartbeat("tok-from-a-dead-tick", { phase: "discovery" }, TEST_CWD);
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    // The file is still readable; it simply is not this lock's.
+    expect(parseHeartbeat(readFileSync(heartbeatPath(TEST_CWD), "utf8"))).not.toBeNull();
+    expect(status.heartbeat).toBeNull();
+  });
+
+  it("reads the heartbeat from the holder's working directory, not the checker's", () => {
+    // The case the whole feature exists for: the scheduler fires the tick from
+    // another checkout. Reading our own cwd here would report "no heartbeat"
+    // for every such tick — exactly when the phase is what is being asked for.
+    const holderCwd = join(TEST_CWD, "elsewhere");
+    mkdirSync(join(holderCwd, ".automata"), { recursive: true });
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      host: hostname(),
+      command: "do-work",
+      token: "tok-holder",
+      cwd: holderCwd,
+    });
+    writeHeartbeat("tok-holder", { phase: "item", item: { index: 3, total: 8, subject: "#82" } }, holderCwd);
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.heartbeat?.item).toEqual({ index: 3, total: 8, subject: "#82" });
+    // Nothing was written beside the checker; the read came from the lock's cwd.
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(false);
+  });
+
+  it("falls back to the current directory for a lock that records no cwd", () => {
+    // Written by an automata from before the field existed.
+    mkdirSync(join(TEST_CWD, ".automata"), { recursive: true });
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      host: hostname(),
+      command: "do-work",
+      token: "tok-legacy",
+    });
+    writeHeartbeat("tok-legacy", { phase: "discovery" }, TEST_CWD);
+
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.heartbeat?.phase).toBe("discovery");
+  });
+
+  it("does not delete a replacement holder's heartbeat when a stale handle releases", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    acquired.handle.heartbeat({ phase: "pre-flight" });
+
+    // Our lock is reclaimed as stale and a new tick takes over, sidecar and all.
+    rmSync(lockFile(), { force: true });
+    writeLock({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      host: hostname(),
+      command: "do-work",
+      token: "tok-replacement",
+      cwd: TEST_CWD,
+    });
+    writeHeartbeat("tok-replacement", { phase: "item", item: { index: 1, total: 2, subject: "#7" } }, TEST_CWD);
+
+    acquired.handle.release();
+
+    // The lock is intact and so is its phase: a blind unlink here would have
+    // left a live tick observable only as "running", which is the blind spot.
+    const status = inspectRunLock(120);
+    expect(status.kind).toBe("held");
+    if (status.kind !== "held") return;
+    expect(status.heartbeat?.phase).toBe("item");
+  });
+
+  it("clears the heartbeat when the lock is released, and stops publishing after", () => {
+    const acquired = acquireRunLock("do-work", 120);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    acquired.handle.heartbeat({ phase: "pre-flight" });
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(true);
+
+    acquired.handle.release();
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(false);
+
+    // A released handle must not resurrect the file: the lock may already belong
+    // to another tick.
+    acquired.handle.heartbeat({ phase: "summary" });
+    expect(existsSync(heartbeatPath(TEST_CWD))).toBe(false);
   });
 
   it("reports a lock whose pid is dead as stale", () => {

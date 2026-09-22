@@ -325,6 +325,25 @@ describe("automata config set do-work-*", () => {
     );
   });
 
+  it("turns the blocked-exit report off", () => {
+    const output = run(["config", "set", "do-work-dump-on-block", "false"]);
+    expect(output.trim()).toBe("do-work dump on block set to: false");
+    expect(readConfigFile().doWork).toEqual({ dumpOnBlock: false });
+  });
+
+  it("turns the blocked-exit report back on, accepting either case", () => {
+    run(["config", "set", "do-work-dump-on-block", "TRUE"]);
+    expect(readConfigFile().doWork).toEqual({ dumpOnBlock: true });
+  });
+
+  it("rejects anything that is not true or false", () => {
+    // Only the two literals: the file stores a JSON boolean, and accepting
+    // "yes"/"1" as well would make the flag and the file two vocabularies.
+    expect(runExpectingFailure(["config", "set", "do-work-dump-on-block", "yes"])).toMatch(
+      /must be true or false/,
+    );
+  });
+
   it("sets the issue-discuss prompt", () => {
     const output = run(["config", "set", "do-work-prompt", "issue-discuss", "discuss.md"]);
     expect(output.trim()).toBe("do-work issue-discuss prompt set.");

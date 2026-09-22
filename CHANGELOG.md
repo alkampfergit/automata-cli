@@ -10,6 +10,43 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- `automata do-work` renders the full six-section health report — the one `--check` builds — whenever a tick exits
+  having done nothing, headed by what blocked it. The five triggers are a held run lock, an unusable configuration,
+  a pre-flight that did not prepare the checkout, no candidate picked up, and items selected but none reaching the
+  executor. The text form goes to stderr; `--json` carries it under a `blocked` key on the object already written to
+  stdout. It makes no GitHub call and no fetch, and never changes an exit code. See
+  [docs/do-work.md](docs/do-work.md#when-a-tick-does-nothing).
+- `doWork.dumpOnBlock` (default `true`) turns that report off, via
+  `automata config set do-work-dump-on-block <true|false>` or the wizard's new *Do Work → Report on a Blocked Tick*
+  screen.
+- `do-work --verbose` shows the work behind a report: a `Commands` block listing every `git` and `gh` invocation with
+  its duration and exit code (`-1` for one that never started), plus the discovery query as sent and every candidate
+  considered before the discovery filter narrowed it — with a pass that `--issue` or `--pr` turned off reported as not
+  run rather than as an empty result. It applies to `--check` and to a blocked-exit dump, which fills it from the pass
+  the blocked tick already made rather than querying GitHub again, and adds a top-level `trace` array to the JSON
+  payload.
+- A tick now publishes a heartbeat while it holds the run lock — phase, item *n* of *m* with its subject, and the
+  executor with the time its run started. `--check` renders it under `Run lock`, so a slow tick and a wedged one are
+  finally distinguishable. It lives in `.automata/automata-heartbeat.json`, beside the lock rather than inside it, and
+  is bound to the lock's token so a file left by a dead holder reads as absent. Add the path to your repository's
+  ignore rules, as for `.automata/automata.lock`.
+- The run lock records the holder's working directory, and `Run lock` prints it. When it differs from the checking
+  process's, the report states both derived operation-log directories and raises it as a problem — the logs live in
+  `dirname(cwd)`, so a tick launched from elsewhere writes its history where nobody is looking.
+- `Recent ticks` now always states the operation-log directory, that it is the parent of the current working
+  directory, and whether it is writable; a directory a tick cannot write to is a problem.
+- Every problem in the report can name one command that investigates it further, printed as `try: <command>` under it
+  and emitted as a `command` field in `--json`. A problem with no single investigating command carries `null`.
+
+### Fixed
+
+- `do-work --check` no longer reports a problem when the run lock is held and no tick has ever been recorded. The
+  execution log is written when a tick *ends*, so a first tick still in flight legitimately has no line yet — the
+  report stated the two facts side by side and called the second a fault. An execution log that could not be *read*
+  stays a problem, because a live tick explains an empty file and nothing about a permissions failure.
+
 ## [0.8.1] - 2026-09-21
 
 ### Added

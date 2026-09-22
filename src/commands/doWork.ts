@@ -70,11 +70,14 @@ import {
 import { getCurrentBranch } from "../git/gitService.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
+  inspectLogDirectory,
   readExecutionTicks,
   readWorkRecords,
   recordTick,
   type TickLogItem,
 } from "../run/operationLog.js";
+import { startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
+import type { HeartbeatItem, HeartbeatUpdate } from "../run/heartbeat.js";
 import { inspectRepoStatus } from "../git/repoStatus.js";
 import {
   assembleReport,
@@ -87,8 +90,12 @@ import {
   workSection,
   TICK_HISTORY,
   WORK_HISTORY,
+  type BlockedHeader,
+  type CheckReport,
   type CheckSection,
+  type LockContext,
 } from "../run/checkReport.js";
+import { dirname } from "node:path";
 import { version } from "../version.js";
 import { runClaude, buildClaudeArgs } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
@@ -114,6 +121,28 @@ let inFlightMarker: { marker: MarkerRef; item: WorkItem } | null = null;
  */
 let inFlightSync: string | null = null;
 
+/**
+ * The run lock this tick holds, so any depth of the call stack can publish a
+ * heartbeat without the handle being threaded through six signatures.
+ *
+ * Module state rather than a parameter for the same reason `inFlightMarker` and
+ * `inFlightSync` are: the writers sit inside `processItem`, which already has
+ * six early returns, and a handle passed down would have to be optional at every
+ * one of them. Null outside a held lock — a dry run publishes nothing.
+ */
+let lockHandle: LockHandle | null = null;
+
+/**
+ * The item the tick is on, so the executor's own heartbeat keeps naming it.
+ * Cleared between items, because a stale ordinal is worse than none.
+ */
+let heartbeatItem: HeartbeatItem | null = null;
+
+/** Publish a heartbeat if a lock is held. Best-effort at every level below this. */
+function beat(update: HeartbeatUpdate): void {
+  lockHandle?.heartbeat(update);
+}
+
 interface DoWorkOptions {
   with?: string;
   model?: string;
@@ -128,6 +157,8 @@ interface DoWorkOptions {
   check?: boolean;
   /** Commander's `--no-fetch` counterpart: true unless the flag was given. */
   fetch?: boolean;
+  /** Record every `git`/`gh` call and show the work behind the report. */
+  verbose?: boolean;
 }
 
 interface Settings {
@@ -146,6 +177,8 @@ interface Settings {
   configEfforts: DoWorkEffort | undefined;
   maxRuns: number;
   lockStaleMinutes: number;
+  /** Render the health report when the tick exits having done nothing. */
+  dumpOnBlock: boolean;
   limit: number;
   participants: Participants;
   prompts: Record<TurnKind, string>;
@@ -288,14 +321,6 @@ function resolveSettingsResult(options: DoWorkOptions, verifyIdentity: boolean):
   }
 }
 
-function resolveSettings(options: DoWorkOptions): Settings {
-  // A dry run posts nothing, so the identity that would post is irrelevant; the
-  // guard must not block the primary diagnostic.
-  const result = resolveSettingsResult(options, options.dryRun !== true);
-  if (!result.ok) fail(result.error);
-  return result.settings;
-}
-
 /**
  * The configuration every turn needs before any GitHub call is worth making.
  *
@@ -397,6 +422,7 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
         ? parsePositiveInt(options.maxRuns, "--max-runs")
         : (doWork.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
     lockStaleMinutes: doWork.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes,
+    dumpOnBlock: doWork.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock,
     limit: parsePositiveInt(options.limit, "--limit"),
     participants: { allowedUsers, agentUser },
     prompts: {
@@ -682,11 +708,25 @@ function validateDoWorkConfig(section: unknown): void {
   validateOptionalString(section, "baseBranch", "doWork.baseBranch");
   validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
   validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
+  validateOptionalBoolean(section, "dumpOnBlock", "doWork.dumpOnBlock");
 
   validateProtectedBranches(section["protectedBranches"]);
   validateSettingContainer(section["models"], "models", ["claude", "codex"]);
   validateSettingContainer(section["effort"], "effort", ["claude", "codex"]);
   validateSettingContainer(section["prompts"], "prompts", ["issueDiscuss", "prWork", "prOrphan"]);
+}
+
+/** A field that must be a boolean if present at all. */
+function validateOptionalBoolean(
+  container: Record<string, unknown>,
+  key: string,
+  path: string,
+): void {
+  const value = container[key];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "boolean") {
+    failSettings(`${path} must be true or false, got ${JSON.stringify(value)}.`);
+  }
 }
 
 function validateProtectedBranches(value: unknown): void {
@@ -1214,6 +1254,14 @@ async function invokeExecutor(
   execution: ResolvedExecution,
   silent: boolean,
 ): Promise<void> {
+  // A model run is the longest thing a tick does and the one an operator most
+  // often wants a clock on: "held for 40 minutes" says nothing on its own, while
+  // "claude, running for 38m" says the tick is working and not wedged.
+  beat({
+    phase: "item",
+    item: heartbeatItem,
+    executor: { command: execution.executor, startedAt: new Date().toISOString() },
+  });
   // Both runners spawn asynchronously, register the child for cancellation, and
   // throw instead of exiting, so a failed run reconciles its marker and the tick
   // continues with the next item.
@@ -1585,104 +1633,172 @@ export const doWorkCommand = new Command("do-work")
     "With --check: make no network call at all — no `git fetch` and no `gh` query. Ahead/behind is reported " +
       "from the last fetch and the selection section does not run",
   )
+  .option(
+    "--verbose",
+    "Show the work behind the report: every `git` and `gh` invocation with its duration and exit code, the " +
+      "discovery query as sent, and every candidate considered. Applies to --check and to a blocked-exit dump",
+  )
   .option("--json", "Emit the work plan and outcomes as JSON on stdout")
   .option("--silent", "Suppress step-by-step Claude output; show only the final summary")
   .action(async (options: DoWorkOptions) => {
-    const startedAt = Date.now();
-
-    if (options.check === true) {
-      // Before `loggableInvocation` is armed and before the lock: the check
-      // writes nothing, including to the very logs it reports on.
-      if (options.dryRun === true) {
-        process.stderr.write(
-          "Error: --check and --dry-run are two different read-only reports; run one or the other.\n",
-        );
-        process.exit(1);
-      }
-      const exitCode = runCheck(options);
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    // Before `resolveSettings`, which exits through `fail()` on any bad
-    // configuration: arming this first is what lets that path be logged.
-    if (options.dryRun !== true) loggableInvocation = { startedAt };
-
-    const settings = resolveSettings(options);
-
-    // A dry run changes nothing, so it neither needs the lock nor should be
-    // blocked by one — being unable to inspect the plan while a tick is running
-    // would defeat the primary diagnostic. It also avoids creating the lock file
-    // in a repository that has not ignored it.
-    if (options.dryRun === true) {
-      const { exitCode } = await runTick(settings, options);
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    // From here the ordinary paths below do the logging; `fail()` must not.
-    loggableInvocation = null;
-
-    const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
-    if (!lock.ok) {
-      const exitCode = reportLockHeld(lock, settings, options);
-      // A loop wedged behind a stale lock does nothing on every tick, and
-      // without a line that is indistinguishable from cron having stopped
-      // firing — which is the failure the execution log exists to expose.
-      logTick([], exitCode, startedAt, "lock-held");
-      if (exitCode !== 0) process.exit(exitCode);
-      return;
-    }
-
-    const handle: LockHandle = lock.handle;
-    // Stop the executor before releasing the lock. Exiting the parent while a
-    // streaming child keeps running would leave a model editing and pushing
-    // while the next cron tick picks up the freed lock.
-    let shuttingDown = false;
-    const onSignal = (): void => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
-      explainInterruptedMarker();
-      void terminateTrackedChildren().then((allExited) => {
-        if (allExited) {
-          handle.release();
-        } else {
-          // Releasing now would hand the lock to the next tick while a model may
-          // still be running. Leaving it held is the safer failure: it is
-          // reclaimable through the staleness window once this process is gone.
-          progress(
-            "Warning: could not confirm the executor exited; leaving the run lock in place. " +
-              "Check for a stray executor process before the next tick.\n",
-          );
-        }
-        process.exit(130);
-      });
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
-
-    let exitCode: number;
-    let reports: ItemReport[] = [];
-    try {
-      const result = await runTick(settings, options);
-      exitCode = result.exitCode;
-      reports = result.reports;
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      exitCode = 1;
-    } finally {
-      handle.release();
-      process.removeListener("SIGINT", onSignal);
-      process.removeListener("SIGTERM", onSignal);
-    }
-
-    // After the lock is released: a log write must never extend the window in
-    // which the next cron tick is turned away.
-    logTick(reports, exitCode, startedAt);
-
+    // The whole tick returns its exit code rather than exiting from inside, so
+    // there is exactly one place the process can leave from and every path
+    // below stays a plain early return.
+    const exitCode = await runDoWork(options);
     if (exitCode !== 0) process.exit(exitCode);
   });
+
+/**
+ * One `do-work` invocation, in whichever mode the options select.
+ *
+ * The trace sink is process-wide (see `commandTrace.ts`), so its lifetime has to
+ * be the invocation's and not the report's: only a blocked dump and `--check`
+ * consume it, and a tick that answers an item, or has `dumpOnBlock` off, or
+ * throws, would otherwise leave it armed for the *next* invocation to inherit —
+ * which in a long-lived process, and in the tests that call `parseAsync` more
+ * than once, prints a `Commands` block for a command that never asked for one.
+ */
+async function runDoWork(options: DoWorkOptions): Promise<number> {
+  try {
+    return await runDoWorkTraced(options);
+  } finally {
+    // Already null on the paths that consumed the trace; this is for the rest.
+    stopCommandTrace();
+  }
+}
+
+async function runDoWorkTraced(options: DoWorkOptions): Promise<number> {
+  const startedAt = Date.now();
+
+  if (options.check === true) {
+    // Before `loggableInvocation` is armed and before the lock: the check
+    // writes nothing, including to the very logs it reports on.
+    if (options.dryRun === true) {
+      process.stderr.write(
+        "Error: --check and --dry-run are two different read-only reports; run one or the other.\n",
+      );
+      return 1;
+    }
+    return runCheck(options);
+  }
+
+  // Armed before the first collector so a blocked dump's trace covers the
+  // tick's own commands, not only the report's.
+  if (options.verbose === true) startCommandTrace();
+
+  // Before the settings are resolved, which exits through `fail()` on any bad
+  // configuration: arming this first is what lets that path be logged.
+  if (options.dryRun !== true) loggableInvocation = { startedAt };
+
+  // Resolved without exiting, so an unusable configuration can dump the report
+  // before `fail()` takes the process down. A dry run posts nothing, so the
+  // identity that would post is irrelevant to it.
+  const resolved = resolveSettingsResult(options, options.dryRun !== true);
+  if (!resolved.ok) {
+    const payload = dumpBlocked(options, {
+      reason: "config-invalid",
+      trigger: `configuration is not usable — ${resolved.error}`,
+      selection: null,
+      resolved,
+    });
+    if (payload !== null) out(JSON.stringify({ blocked: payload, exitCode: 1 }, null, 2) + "\n");
+    fail(resolved.error);
+  }
+  const settings = resolved.settings;
+
+  // A dry run changes nothing, so it neither needs the lock nor should be
+  // blocked by one — being unable to inspect the plan while a tick is running
+  // would defeat the primary diagnostic. It also avoids creating the lock file
+  // in a repository that has not ignored it.
+  if (options.dryRun === true) {
+    const { exitCode } = await runTick(settings, options);
+    return exitCode;
+  }
+
+  // From here the ordinary paths below do the logging; `fail()` must not.
+  loggableInvocation = null;
+
+  const lock = acquireRunLock("do-work", settings.lockStaleMinutes);
+  if (!lock.ok) {
+    const exitCode = reportLockHeld(lock, settings, options, resolved);
+    // A loop wedged behind a stale lock does nothing on every tick, and
+    // without a line that is indistinguishable from cron having stopped
+    // firing — which is the failure the execution log exists to expose.
+    logTick([], exitCode, startedAt, "lock-held");
+    return exitCode;
+  }
+
+  const { exitCode, reports } = await runTickUnderLock(lock.handle, settings, options);
+
+  // After the lock is released: a log write must never extend the window in
+  // which the next cron tick is turned away.
+  logTick(reports, exitCode, startedAt);
+
+  return exitCode;
+}
+
+/**
+ * The tick itself, with the run lock held and the signal handlers installed.
+ *
+ * Both are torn down here whatever the tick does, so no caller can return a
+ * result while the lock it ran under is still held.
+ */
+async function runTickUnderLock(
+  handle: LockHandle,
+  settings: Settings,
+  options: DoWorkOptions,
+): Promise<TickResult> {
+  // From here any depth of the tick may publish a heartbeat.
+  lockHandle = handle;
+  const onSignal = interruptHandler(handle);
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  try {
+    return await runTick(settings, options);
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return { exitCode: 1, reports: [] };
+  } finally {
+    // Before the release, which clears the sidecar: a heartbeat published
+    // after that point would outlive the lock it names.
+    lockHandle = null;
+    heartbeatItem = null;
+    handle.release();
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
+/**
+ * Stop the executor before releasing the lock.
+ *
+ * Exiting the parent while a streaming child keeps running would leave a model
+ * editing and pushing while the next cron tick picks up the freed lock.
+ */
+function interruptHandler(handle: LockHandle): () => void {
+  let shuttingDown = false;
+  return (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    progress("\nInterrupted: stopping the executor before releasing the run lock…\n");
+    explainInterruptedMarker();
+    void terminateTrackedChildren().then((allExited) => {
+      if (allExited) {
+        handle.release();
+      } else {
+        // Releasing now would hand the lock to the next tick while a model may
+        // still be running. Leaving it held is the safer failure: it is
+        // reclaimable through the staleness window once this process is gone.
+        progress(
+          "Warning: could not confirm the executor exited; leaving the run lock in place. " +
+            "Check for a stray executor process before the next tick.\n",
+        );
+      }
+      process.exit(130);
+    });
+  };
+}
 
 /* ========================================================================= *
  * `--check`: the read-only health report.
@@ -1713,8 +1829,60 @@ function resolveRepoSlug(): string | null {
  * is where the first write happens. Reusing them rather than simulating them is
  * the whole value of the section: the skip reason the operator reads here is the
  * skip reason the next tick will act on.
+ *
+ * `verbose` also keeps the two candidate lists the filters narrowed, which is
+ * the difference between "nothing matched" and "here is what was considered and
+ * what each was dropped for".
  */
-function collectSelection(settings: Settings): Decision[] {
+interface SelectionEvidence {
+  decisions: Decision[];
+  /** The issues discovery returned, before any decision was taken. Null unless verbose. */
+  issues: GitHubIssue[] | null;
+  /** Every open orphan pull request considered, with whether the filter kept it. */
+  orphans: { number: number; title: string; matched: boolean }[] | null;
+  /**
+   * Whether each pass ran at all. `--issue N` turns the orphan pass off and
+   * `--pr N` turns the issue pass off, and both then return an empty list
+   * without querying anything — so without these two flags a disabled pass and a
+   * pass that genuinely found nothing render identically, and the report claims
+   * work it never did.
+   */
+  issuePass: boolean;
+  orphanPass: boolean;
+}
+
+/**
+ * The evidence, from the discovery both `--check` and a live tick already have
+ * in hand. Shared so the two can never describe the same selection differently.
+ */
+function buildSelectionEvidence(
+  settings: Settings,
+  issues: GitHubIssue[],
+  linkMap: OpenPrLinkMap,
+  decisions: Decision[],
+  verbose: boolean,
+): SelectionEvidence {
+  const issuePass = issuePassEnabled(settings);
+  const orphanPass = orphanPassEnabled(settings);
+  return {
+    decisions,
+    issuePass,
+    orphanPass,
+    issues: verbose && issuePass ? issues : null,
+    // Read off the link map rather than off `discoverOrphanPrs`, which returns
+    // only the survivors — the whole point here is to show what was dropped.
+    orphans:
+      verbose && orphanPass
+        ? linkMap.orphans.map((candidate) => ({
+            number: candidate.pr.number,
+            title: candidate.pr.title,
+            matched: prMatchesFilter(candidate, settings),
+          }))
+        : null,
+  };
+}
+
+function collectSelection(settings: Settings, verbose: boolean): SelectionEvidence {
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
   const policy = {
@@ -1722,56 +1890,204 @@ function collectSelection(settings: Settings): Decision[] {
     defaultBranch: linkMap.defaultBranch,
     protectedBranches: settings.protectedBranches,
   };
-  return skipDuplicateHeadBranches([
+  const decisions = skipDuplicateHeadBranches([
     ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
     ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
       decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
     ),
   ]);
+  return buildSelectionEvidence(settings, issues, linkMap, decisions, verbose);
 }
 
-function selectionSection(settings: Settings | null, offline: boolean): CheckSection {
-  const section = (lines: string[], problems: string[], data: Record<string, unknown>): CheckSection => ({
+function makeSelectionSection(
+  lines: string[],
+  problems: { summary: string; command: string | null }[],
+  data: Record<string, unknown>,
+): CheckSection {
+  return {
     id: "selection",
     title: sectionTitle("selection"),
     lines,
-    problems: problems.map((summary) => ({ section: "selection" as const, summary })),
+    problems: problems.map((problem) => ({ section: "selection" as const, ...problem })),
     data,
-  });
+  };
+}
 
+/**
+ * The candidate lists `--verbose` adds above the per-candidate plan.
+ *
+ * One half per pass, because each half has the same shape: either the pass was
+ * turned off by the other pass's flag and says so, or it names what it asked for
+ * and lists what came back. Printing "discovery returned 0 issue(s)" under
+ * `--pr 61` would be a false statement about a query that was never sent, and
+ * the operator's next move — working out why the filter matches nothing — would
+ * be chasing a query that does not exist.
+ */
+function describeSelectionEvidence(
+  settings: Settings,
+  evidence: SelectionEvidence,
+  lines: string[],
+): void {
+  lines.push(
+    ...describeIssueEvidence(settings, evidence),
+    ...describeOrphanEvidence(settings, evidence),
+  );
+}
+
+/**
+ * `count` items follow, or none do.
+ *
+ * The colon only when something follows it: a heading over nothing reads as a
+ * list that failed to render rather than as an empty one.
+ */
+function heading(text: string, count: number): string {
+  return `${text}${count === 0 ? "" : ":"}`;
+}
+
+function describeIssueEvidence(settings: Settings, evidence: SelectionEvidence): string[] {
+  if (!evidence.issuePass) {
+    return [
+      `issue discovery: not run — --pr ${String(settings.onlyPr)} restricts this tick to that pull request`,
+    ];
+  }
+
+  const restriction =
+    settings.onlyIssue === undefined ? "" : `, restricted to #${String(settings.onlyIssue)}`;
+  const lines = [
+    `discovery query: ${settings.technique} = ${settings.discoveryValue}, limit ${String(settings.limit)}${restriction}`,
+  ];
+  if (evidence.issues === null) return lines;
+
+  lines.push(heading(`discovery returned ${String(evidence.issues.length)} issue(s)`, evidence.issues.length));
+  for (const issue of evidence.issues) {
+    lines.push(`    #${String(issue.number)} ${issue.title}`);
+  }
+  return lines;
+}
+
+function describeOrphanEvidence(settings: Settings, evidence: SelectionEvidence): string[] {
+  if (!evidence.orphanPass) {
+    return [
+      `orphan pull-request pass: not run — --issue ${String(settings.onlyIssue)} restricts this tick to that issue`,
+    ];
+  }
+  if (evidence.orphans === null) return [];
+
+  const restriction =
+    settings.onlyPr === undefined ? "" : ` (only PR #${String(settings.onlyPr)} would be taken up)`;
+  const lines = [
+    heading(
+      `${String(evidence.orphans.length)} open orphan pull request(s) considered${restriction}`,
+      evidence.orphans.length,
+    ),
+  ];
+  for (const orphan of evidence.orphans) {
+    const verdict = orphan.matched ? "matches the filter" : "dropped by the discovery filter";
+    lines.push(`    PR #${String(orphan.number)} ${orphan.title} — ${verdict}`);
+  }
+  return lines;
+}
+
+/** The plan lines, shared by the live check and by a blocked dump. */
+function describeSelectionDecisions(decisions: Decision[]): string[] {
+  const work = decisions.filter((decision) => decision.kind === "work").length;
+  return [
+    `${String(work)} of ${String(decisions.length)} candidate(s) would be picked up`,
+    ...describePlan(decisions).trimEnd().split("\n"),
+  ];
+}
+
+/**
+ * The selection, computed live.
+ *
+ * Only ever reached from `--check`. A blocked dump uses
+ * `selectionSectionFromDecisions` instead, because re-running discovery on every
+ * tick of a wedged loop would page the GitHub API continuously for output nobody
+ * is reading.
+ */
+function selectionSection(
+  settings: Settings | null,
+  offline: boolean,
+  verbose: boolean,
+): CheckSection {
   if (offline) {
-    return section(
+    return makeSelectionSection(
       ["not run: --no-fetch makes no network call, and the selection needs live GitHub data"],
       [],
       { ran: false, detail: "offline", plan: [] },
     );
   }
   if (settings === null) {
-    return section(
+    return makeSelectionSection(
       ["not run: the configuration could not be resolved — see Environment below"],
       [],
       { ran: false, detail: "configuration invalid", plan: [] },
     );
   }
 
-  let decisions: Decision[];
+  let evidence: SelectionEvidence;
   try {
-    decisions = collectSelection(settings);
+    evidence = collectSelection(settings, verbose);
   } catch (err) {
     const detail = (err as Error).message;
-    return section(
+    return makeSelectionSection(
       [`could not be computed: ${detail}`],
-      [`the GitHub selection could not be computed: ${detail}`],
+      [
+        {
+          summary: `the GitHub selection could not be computed: ${detail}`,
+          command: `gh issue list --limit ${String(settings.limit)}`,
+        },
+      ],
       { ran: false, detail, plan: [] },
     );
   }
 
-  const work = decisions.filter((decision) => decision.kind === "work").length;
-  const lines = [
-    `${String(work)} of ${String(decisions.length)} candidate(s) would be picked up`,
-    ...describePlan(decisions).trimEnd().split("\n"),
-  ];
-  return section(lines, [], { ran: true, detail: null, plan: decisions.map(toPlanJson) });
+  const lines: string[] = [];
+  if (verbose) describeSelectionEvidence(settings, evidence, lines);
+  lines.push(...describeSelectionDecisions(evidence.decisions));
+  return makeSelectionSection(lines, [], selectionData(evidence));
+}
+
+/** The JSON body of the section, identical for the live check and a dump. */
+function selectionData(evidence: SelectionEvidence): Record<string, unknown> {
+  return {
+    ran: true,
+    detail: null,
+    plan: evidence.decisions.map(toPlanJson),
+    issues: evidence.issues,
+    orphans: evidence.orphans,
+    issuePass: evidence.issuePass,
+    orphanPass: evidence.orphanPass,
+  };
+}
+
+/**
+ * The selection a blocked tick already computed, or a statement that it never
+ * got that far.
+ *
+ * Null evidence is the honest answer for a tick refused at the run lock or at
+ * the configuration: discovery had not run, and inventing a live query here is
+ * the one thing the blocked dump must not do. When the tick *did* reach
+ * discovery it hands over everything it saw, so a `--verbose` dump shows the
+ * query and the candidate lists exactly as `--check --verbose` would — without
+ * re-running a single call to do it.
+ */
+function selectionSectionFromEvidence(
+  settings: Settings | null,
+  evidence: SelectionEvidence | null,
+  verbose: boolean,
+): CheckSection {
+  if (evidence === null) {
+    return makeSelectionSection(
+      ["not run: the tick was blocked before discovery"],
+      [],
+      { ran: false, detail: "blocked before discovery", plan: [] },
+    );
+  }
+  const lines: string[] = [];
+  if (verbose && settings !== null) describeSelectionEvidence(settings, evidence, lines);
+  lines.push(...describeSelectionDecisions(evidence.decisions));
+  return makeSelectionSection(lines, [], selectionData(evidence));
 }
 
 /**
@@ -1789,7 +2105,7 @@ function selectionSection(settings: Settings | null, offline: boolean): CheckSec
 function describeExecutor(
   settings: Settings,
   lines: string[],
-  problems: string[],
+  problems: EnvProblem[],
 ): { executor: Executor; command: string; onPath: boolean } {
   const executor: Executor = settings.withOption ?? settings.configExecutor ?? "claude";
   const command = executor === "codex" ? "codex" : "claude";
@@ -1797,10 +2113,12 @@ function describeExecutor(
   const onPath = resolvedPath !== command;
   lines.push(`default executor: ${executor} (${onPath ? resolvedPath : "not found on PATH"})`);
   if (!onPath) {
-    problems.push(
-      `the \`${command}\` command is not on PATH, so every run this tick would fail. Under cron the ` +
+    problems.push({
+      summary:
+        `the \`${command}\` command is not on PATH, so every run this tick would fail. Under cron the ` +
         "PATH is not your login shell's — set it in the crontab or use an absolute path",
-    );
+      command: `command -v ${command}`,
+    });
   }
   return { executor, command, onPath };
 }
@@ -1810,13 +2128,14 @@ function describeExecutor(
  * entirely under `--no-fetch`, which promises no network call at all.
  */
 function describeGitHubIdentity(
-  options: DoWorkOptions,
+  checkIdentity: boolean,
   settings: Settings,
   lines: string[],
-  problems: string[],
+  problems: EnvProblem[],
+  reason: string,
 ): { ghAvailable: boolean | null; ghLogin: string | null; identityProblem: string | null } {
-  if (options.fetch === false) {
-    lines.push("`gh` authentication not checked: --no-fetch");
+  if (!checkIdentity) {
+    lines.push(`\`gh\` authentication not checked: ${reason}`);
     return { ghAvailable: null, ghLogin: null, identityProblem: null };
   }
   let identity: GhIdentity;
@@ -1828,16 +2147,21 @@ function describeGitHubIdentity(
   } catch (err) {
     const detail = (err as Error).message;
     lines.push(`\`gh\` could not be queried: ${detail}`);
-    problems.push(`\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``);
+    problems.push({
+      summary: `\`gh\` could not be queried (${detail}); install it and run \`gh auth login\``,
+      command: "gh auth status",
+    });
     return { ghAvailable: false, ghLogin: null, identityProblem: null };
   }
 
   if (identity.kind === "unavailable") {
     lines.push(`\`gh\` could not name an account: ${identity.detail}`);
-    problems.push(
-      `\`gh api user\` failed (${identity.detail}), so \`gh\` is not authenticated here and every GitHub ` +
+    problems.push({
+      summary:
+        `\`gh api user\` failed (${identity.detail}), so \`gh\` is not authenticated here and every GitHub ` +
         "call a tick makes would fail; run `gh auth login`, or set `GH_TOKEN` in the scheduler's environment",
-    );
+      command: "gh auth status",
+    });
     return { ghAvailable: false, ghLogin: null, identityProblem: null };
   }
 
@@ -1852,7 +2176,9 @@ function describeGitHubIdentity(
     settings.participants.agentUser,
     settings.participants.allowedUsers,
   );
-  if (identityProblem !== null) problems.push(identityProblem);
+  if (identityProblem !== null) {
+    problems.push({ summary: identityProblem, command: "automata config get" });
+  }
   return { ghAvailable: true, ghLogin, identityProblem };
 }
 
@@ -1869,9 +2195,20 @@ function readRemoteType(): string | null {
   }
 }
 
-function environmentSection(options: DoWorkOptions, resolved: SettingsResult, repo: string | null): CheckSection {
+/** A problem before it knows its section, mirroring `checkReport.ts`'s `Finding`. */
+interface EnvProblem {
+  summary: string;
+  command: string | null;
+}
+
+function environmentSection(
+  checkIdentity: boolean,
+  identitySkipReason: string,
+  resolved: SettingsResult,
+  repo: string | null,
+): CheckSection {
   const lines: string[] = [`automata ${version}`];
-  const problems: string[] = [];
+  const problems: EnvProblem[] = [];
   const remoteType = readRemoteType();
   const data: Record<string, unknown> = {
     version,
@@ -1883,22 +2220,27 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
 
   if (repo === null) {
     lines.push("repository slug could not be resolved from `origin`");
-    problems.push(
-      "the repository slug could not be resolved; `gh` needs an `origin` remote pointing at GitHub to read " +
+    problems.push({
+      summary:
+        "the repository slug could not be resolved; `gh` needs an `origin` remote pointing at GitHub to read " +
         "issues, and the operation logs cannot attribute their lines without it",
-    );
+      command: "git remote -v",
+    });
   } else {
     lines.push(`repository ${repo}`);
   }
 
   if (!resolved.ok) {
     lines.push(`configuration is not usable: ${resolved.error}`);
-    problems.push(`the configuration is not usable: ${resolved.error}`);
+    problems.push({
+      summary: `the configuration is not usable: ${resolved.error}`,
+      command: "automata config get",
+    });
     return {
       id: "environment",
       title: sectionTitle("environment"),
       lines,
-      problems: problems.map((summary) => ({ section: "environment" as const, summary })),
+      problems: problems.map((problem) => ({ section: "environment" as const, ...problem })),
       // `ghAvailable` is null rather than false: nothing was asked of `gh`,
       // which is not the same as having asked and been refused.
       data: { ...data, ghAvailable: null, ghLogin: null, identityProblem: null },
@@ -1916,17 +2258,18 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
 
   const { executor, command, onPath } = describeExecutor(settings, lines, problems);
   const { ghAvailable, ghLogin, identityProblem } = describeGitHubIdentity(
-    options,
+    checkIdentity,
     settings,
     lines,
     problems,
+    identitySkipReason,
   );
 
   return {
     id: "environment",
     title: sectionTitle("environment"),
     lines,
-    problems: problems.map((summary) => ({ section: "environment" as const, summary })),
+    problems: problems.map((problem) => ({ section: "environment" as const, ...problem })),
     data: {
       ...data,
       discovery: { technique: settings.technique, value: settings.discoveryValue },
@@ -1944,10 +2287,79 @@ function environmentSection(options: DoWorkOptions, resolved: SettingsResult, re
 }
 
 /**
- * Assemble and print the report. Returns the exit code; never exits itself, so
- * a section that throws cannot take the other five with it.
+ * Assemble the six sections into a report.
+ *
+ * Split out of `runCheck` because a blocked tick renders the same thing and must
+ * supply two of the inputs differently: it hands over the selection it already
+ * computed rather than querying for one, and it never fetches. Having one
+ * assembler is what makes "a blocked dump and `--check` show the same report" a
+ * property of the code rather than a convention two call sites are expected to
+ * keep.
+ *
+ * Never exits, so a section that throws cannot take the other five with it.
  */
+interface CheckReportInput {
+  now: Date;
+  repo: string | null;
+  resolved: SettingsResult;
+  /** Ready-made: the live query for `--check`, the tick's own decisions for a dump. */
+  selection: CheckSection;
+  /** Whether `inspectRepoStatus` may refresh the remote-tracking ref. */
+  fetch: boolean;
+  /** Whether `gh` may be asked who it is. False for every blocked dump. */
+  checkIdentity: boolean;
+  /** Why identity was not checked, for the line that says so. */
+  identitySkipReason: string;
+  /** True when no network call was made at all. */
+  offline: boolean;
+  blocked: BlockedHeader | null;
+}
+
+function buildCheckReport(input: CheckReportInput): CheckReport {
+  const settings = input.resolved.ok ? input.resolved.settings : null;
+  const staleMinutes = settings?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
+  const baseBranch = settings?.baseBranch ?? DEFAULT_DO_WORK.baseBranch;
+
+  // Read once and shared: `Recent ticks` decides whether "no tick recorded" is a
+  // fault from whether a tick is in flight, and two inspections could disagree.
+  const lockStatus = inspectRunLock(staleMinutes);
+  const logDirectory = inspectLogDirectory();
+  const lockContext: LockContext = {
+    cwd: logDirectory.cwd,
+    logDirectory: logDirectory.dir,
+    parentOf: dirname,
+  };
+
+  return assembleReport({
+    generatedAt: input.now,
+    repo: input.repo,
+    offline: input.offline,
+    blocked: input.blocked,
+    sections: [
+      lockSection(lockStatus, staleMinutes, lockContext, input.now),
+      tickSection(
+        readExecutionTicks({ repo: input.repo, limit: TICK_HISTORY }),
+        input.now,
+        logDirectory,
+        lockStatus,
+      ),
+      workSection(readWorkRecords({ repo: input.repo, limit: WORK_HISTORY }), input.now),
+      gitSection(inspectRepoStatus({ baseBranch, fetch: input.fetch })),
+      input.selection,
+      environmentSection(input.checkIdentity, input.identitySkipReason, input.resolved, input.repo),
+    ],
+    // Taken last, so the trace covers every command the collectors above made.
+    trace: takeCommandTrace(),
+  });
+}
+
+/** Print the report. Returns the exit code; the caller decides what to do with it. */
 function runCheck(options: DoWorkOptions): number {
+  const verbose = options.verbose === true;
+  // Armed before the first collector, so `resolveRepoSlug` and the selection are
+  // in the trace too — they are `git` and `gh` calls like any other.
+  if (verbose) startCommandTrace();
+
   const now = new Date();
   const offline = options.fetch === false;
   const repo = resolveRepoSlug();
@@ -1956,25 +2368,155 @@ function runCheck(options: DoWorkOptions): number {
   // environment section instead of exiting on it.
   const resolved = resolveSettingsResult(options, false);
   const settings = resolved.ok ? resolved.settings : null;
-  const staleMinutes = settings?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
-  const baseBranch = settings?.baseBranch ?? DEFAULT_DO_WORK.baseBranch;
 
-  const report = assembleReport({
-    generatedAt: now,
+  const report = buildCheckReport({
+    now,
     repo,
+    resolved,
+    selection: selectionSection(settings, offline, verbose),
+    fetch: !offline,
+    checkIdentity: !offline,
+    identitySkipReason: "--no-fetch",
     offline,
-    sections: [
-      lockSection(inspectRunLock(staleMinutes), staleMinutes),
-      tickSection(readExecutionTicks({ repo, limit: TICK_HISTORY }), now),
-      workSection(readWorkRecords({ repo, limit: WORK_HISTORY }), now),
-      gitSection(inspectRepoStatus({ baseBranch, fetch: !offline })),
-      selectionSection(settings, offline),
-      environmentSection(options, resolved, repo),
-    ],
+    blocked: null,
   });
 
   out(options.json === true ? JSON.stringify(toJson(report), null, 2) + "\n" : renderText(report));
   return report.exitCode;
+}
+
+/* ========================================================================= *
+ * The blocked dump.
+ *
+ * Five exits leave a tick having done nothing, and each of them used to print
+ * one line. They now render the report above, headed by what blocked them —
+ * which is the same output an operator would have got by running `--check`
+ * afterwards, except that it describes the moment the tick actually stopped.
+ *
+ * Constrained harder than `--check` is: no fetch, no `gh` call, and the
+ * selection comes from decisions the tick already took. The primary consumer is
+ * a cron loop firing every few minutes, and a dump that re-queried GitHub would
+ * turn a wedged loop into continuous API load for output nobody reads.
+ * ========================================================================= */
+
+type BlockedReason =
+  | "lock-held"
+  | "config-invalid"
+  | "preflight-failed"
+  | "no-candidates"
+  | "all-skipped";
+
+interface BlockedContext {
+  reason: BlockedReason;
+  /** One sentence in the operator's words, with the identifying facts in it. */
+  trigger: string;
+  /**
+   * What the tick selected and what it saw on the way, or null when it was
+   * blocked before discovery. Carried whole rather than as bare decisions so a
+   * `--verbose` dump can show the discovery query and the candidate lists from
+   * the tick's own pass — the dump is forbidden from asking GitHub again.
+   */
+  selection: SelectionEvidence | null;
+  resolved: SettingsResult;
+}
+
+/**
+ * Is the dump on?
+ *
+ * Read from the settings when they resolved, and straight off the file when they
+ * did not — `config-invalid` is a blocked reason, so the one case where the
+ * setting is hardest to read is also one of the cases it governs. Any failure
+ * falls back to the default, because a diagnostic must not be silenced by the
+ * fault it is describing.
+ */
+function dumpOnBlockEnabled(resolved: SettingsResult): boolean {
+  if (resolved.ok) return resolved.settings.dumpOnBlock;
+  try {
+    return readConfig().doWork?.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock;
+  } catch {
+    return DEFAULT_DO_WORK.dumpOnBlock;
+  }
+}
+
+function buildBlockedReport(context: BlockedContext, verbose: boolean): CheckReport {
+  return buildCheckReport({
+    now: new Date(),
+    repo: resolveRepoSlug(),
+    resolved: context.resolved,
+    selection: selectionSectionFromEvidence(
+      context.resolved.ok ? context.resolved.settings : null,
+      context.selection,
+      verbose,
+    ),
+    fetch: false,
+    checkIdentity: false,
+    identitySkipReason: "the tick is exiting and the dump makes no network call",
+    offline: true,
+    blocked: { reason: context.reason, trigger: context.trigger },
+  });
+}
+
+/**
+ * Render the dump, or nothing.
+ *
+ * Returns the JSON payload for `--json` and writes the text form to stderr
+ * otherwise — `do-work` already sends progress to stderr and the summary to
+ * stdout, so this is the only stream that changes no existing contract.
+ *
+ * Swallows everything. The dump describes a tick that is already finishing; a
+ * throw from inside it must not become the tick's outcome, and must not change
+ * the exit code the caller already decided on.
+ */
+function dumpBlocked(
+  options: DoWorkOptions,
+  context: BlockedContext,
+): Record<string, unknown> | null {
+  if (!dumpOnBlockEnabled(context.resolved)) return null;
+  try {
+    const report = buildBlockedReport(context, options.verbose === true);
+    if (options.json === true) {
+      return { reason: context.reason, trigger: context.trigger, report: toJson(report) };
+    }
+    progress(renderText(report));
+    return null;
+  } catch (err) {
+    progress(`Warning: could not render the blocked-exit report: ${(err as Error).message}\n`);
+    return null;
+  }
+}
+
+/**
+ * What blocked this tick, or null when nothing did.
+ *
+ * Ordered by cause: a failed pre-flight outranks the two selection outcomes
+ * because when it is present it is why they happened, and reporting the symptom
+ * above the cause is what made issue #73's `pull-failed` loop invisible.
+ */
+function classifyBlocked(
+  hygiene: HygieneReport,
+  decisions: Decision[],
+  items: WorkItem[],
+  reports: ItemReport[],
+): { reason: BlockedReason; trigger: string } | null {
+  const ran = reports.some((report) => report.ranExecutor === true);
+  if (ran) return null;
+
+  if (hygiene.degraded) {
+    return {
+      reason: "preflight-failed",
+      trigger: `the pre-flight did not prepare the checkout (${describePreflightFailures(hygiene).join("; ")})`,
+    };
+  }
+  if (items.length === 0) {
+    return {
+      reason: "no-candidates",
+      trigger: `no candidate was picked up (0 of ${String(decisions.length)})`,
+    };
+  }
+  return {
+    reason: "all-skipped",
+    trigger: `${String(items.length)} item(s) selected, none reached the executor`,
+  };
 }
 
 /** An item report as the operation log wants it, mirroring `toItemJson`. */
@@ -2023,6 +2565,7 @@ function reportLockHeld(
   lock: Extract<ReturnType<typeof acquireRunLock>, { ok: false }>,
   settings: Settings,
   options: DoWorkOptions,
+  resolved: SettingsResult,
 ): number {
   const held = lock.heldBy;
   const sentence =
@@ -2038,17 +2581,42 @@ function reportLockHeld(
     : "";
   const exitCode = lock.suspect ? 2 : 0;
 
+  // This tick never reached discovery, so it has no decisions to show; the
+  // *holder* may be mid-selection, and its state is in the heartbeat the lock
+  // section renders.
+  const context: BlockedContext = {
+    reason: "lock-held",
+    trigger: `run lock held by pid ${String(held.pid)} on ${held.host}`,
+    selection: null,
+    resolved,
+  };
+
   if (options.json === true) {
     // stdout must stay parseable for a caller that asked for JSON.
     progress(sentence + suspectSentence);
     out(
-      JSON.stringify({ lockHeld: true, suspect: lock.suspect, heldBy: held, plan: [], items: [], exitCode }, null, 2) +
-        "\n",
+      JSON.stringify(
+        {
+          lockHeld: true,
+          suspect: lock.suspect,
+          heldBy: held,
+          blocked: dumpBlocked(options, context),
+          plan: [],
+          items: [],
+          exitCode,
+        },
+        null,
+        2,
+      ) + "\n",
     );
-  } else {
-    out(sentence);
-    if (suspectSentence) progress(suspectSentence);
+    return exitCode;
   }
+
+  // The one-line message first: it is what a reader of a cron log scans for, and
+  // the report below is the detail behind it.
+  out(sentence);
+  if (suspectSentence) progress(suspectSentence);
+  dumpBlocked(options, context);
 
   return exitCode;
 }
@@ -2081,6 +2649,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // skip on `dirty-tree`, the base branch is fast-forwarded whether or not there
   // turns out to be work, and dead local branches go. It runs inside the run
   // lock (the caller took it) because every step writes to this one checkout.
+  beat({ phase: "pre-flight" });
   const hygiene = runRepoHygiene({
     baseBranch: settings.baseBranch,
     protectedBranches: settings.protectedBranches,
@@ -2089,6 +2658,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     log: progress,
   });
 
+  beat({ phase: "discovery" });
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
   const policy = {
@@ -2120,56 +2690,12 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
     return { exitCode: 0, reports: [] };
   }
 
-  // The cap counts *model runs*, not planned items: an item that turns out not
-  // to be actionable, or that is skipped for a dirty tree or a failed marker,
-  // must not consume a slot — otherwise a tick configured for one run can
-  // perform none while actionable work waits.
-  const reports: ItemReport[] = [];
-  const deferred: WorkItem[] = [];
-  const preflightCauses = describePreflightFailures(hygiene);
-  let runsUsed = 0;
+  const { reports, deferred } = await processItems(items, settings, options, hygiene);
 
-  for (const item of items) {
-    if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
-      deferred.push(item);
-      continue;
-    }
-    // An error from one item — a failed refresh read, say — is that item's
-    // outcome, not the tick's. Letting it escape would exit 1, which is
-    // documented as "nothing was attempted", while discarding the summary for
-    // items that had already run.
-    let report: ItemReport;
-    try {
-      report = await processItem(item, settings, options.silent === true, preflightCauses);
-    } catch (err) {
-      progress(`  failed: ${(err as Error).message}\n`);
-      report = {
-        issue: item.issue?.number ?? null,
-        pr: item.pr?.number ?? null,
-        title: itemTitle(item),
-        turn: item.turn,
-        outcome: "failed",
-        detail: (err as Error).message,
-        sync: inFlightSync ?? undefined,
-      };
-    }
-    // The cap counts model runs. An item that failed before reaching the
-    // executor — a refresh read error, say — did not spend one.
-    if (report.ranExecutor === true) runsUsed++;
-    reports.push(report);
-  }
+  heartbeatItem = null;
+  beat({ phase: "summary" });
 
-  for (const item of deferred) {
-    progress(`\n${itemLabel(item)} deferred: --max-runs / maxRunsPerTick reached.\n`);
-    reports.push({
-      issue: item.issue?.number ?? null,
-      pr: item.pr?.number ?? null,
-      title: itemTitle(item),
-      turn: item.turn,
-      outcome: "deferred",
-      detail: `run cap of ${String(settings.maxRuns)} reached`,
-    });
-  }
+  reports.push(...reportDeferred(deferred, settings));
 
   // "answered-no-reply" counts as degraded: the run produced nothing, a human has
   // to reply before anything more happens, and an unattended loop must surface
@@ -2181,6 +2707,141 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   const degraded = hygiene.degraded || reports.some((report) => report.outcome !== "answered");
   const exitCode = degraded ? 2 : 0;
 
+  // Classified from what the tick actually did, not from the exit code: a tick
+  // that answered nothing exits 0 when there was nothing to answer, which reads
+  // as success and is exactly the case an operator cannot tell from a fault.
+  const blockedBy = classifyBlocked(hygiene, decisions, items, reports);
+  // From the pass this tick already made — the dump must not ask GitHub again,
+  // and a wedged loop on a five-minute cron would otherwise page the API
+  // forever for output nobody reads.
+  const context: BlockedContext | null =
+    blockedBy === null
+      ? null
+      : {
+          ...blockedBy,
+          selection: buildSelectionEvidence(
+            settings,
+            issues,
+            linkMap,
+            decisions,
+            options.verbose === true,
+          ),
+          resolved: { ok: true, settings },
+        };
+
+  reportTickOutcome({ options, hygiene, decisions, reports, context, exitCode });
+
+  return { exitCode, reports };
+}
+
+/** What `processItems` ran, and what it could not get to under the run cap. */
+interface ProcessedItems {
+  reports: ItemReport[];
+  deferred: WorkItem[];
+}
+
+/**
+ * Run the planned items in order, up to the run cap.
+ *
+ * The cap counts *model runs*, not planned items: an item that turns out not to
+ * be actionable, or that is skipped for a dirty tree or a failed marker, must
+ * not consume a slot — otherwise a tick configured for one run can perform none
+ * while actionable work waits.
+ */
+async function processItems(
+  items: WorkItem[],
+  settings: Settings,
+  options: DoWorkOptions,
+  hygiene: HygieneReport,
+): Promise<ProcessedItems> {
+  const reports: ItemReport[] = [];
+  const deferred: WorkItem[] = [];
+  const preflightCauses = describePreflightFailures(hygiene);
+  let runsUsed = 0;
+
+  for (const [index, item] of items.entries()) {
+    if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
+      deferred.push(item);
+      continue;
+    }
+    // Kept on module state as well as published, so the executor's own heartbeat
+    // can keep naming the item without `processItem` taking a parameter it would
+    // have to thread past six early returns.
+    heartbeatItem = { index: index + 1, total: items.length, subject: itemLabel(item).trim() };
+    beat({ phase: "item", item: heartbeatItem });
+    const report = await reportForItem(item, settings, options, preflightCauses);
+    // The cap counts model runs. An item that failed before reaching the
+    // executor — a refresh read error, say — did not spend one.
+    if (report.ranExecutor === true) runsUsed++;
+    reports.push(report);
+  }
+
+  return { reports, deferred };
+}
+
+/**
+ * One item's outcome, including the failure of the attempt itself.
+ *
+ * An error from one item — a failed refresh read, say — is that item's outcome,
+ * not the tick's. Letting it escape would exit 1, which is documented as
+ * "nothing was attempted", while discarding the summary for items that had
+ * already run.
+ */
+async function reportForItem(
+  item: WorkItem,
+  settings: Settings,
+  options: DoWorkOptions,
+  preflightCauses: string[],
+): Promise<ItemReport> {
+  try {
+    return await processItem(item, settings, options.silent === true, preflightCauses);
+  } catch (err) {
+    progress(`  failed: ${(err as Error).message}\n`);
+    return {
+      issue: item.issue?.number ?? null,
+      pr: item.pr?.number ?? null,
+      title: itemTitle(item),
+      turn: item.turn,
+      outcome: "failed",
+      detail: (err as Error).message,
+      sync: inFlightSync ?? undefined,
+    };
+  }
+}
+
+/** The items the run cap pushed past, announced and recorded as deferred. */
+function reportDeferred(deferred: WorkItem[], settings: Settings): ItemReport[] {
+  return deferred.map((item) => {
+    progress(`\n${itemLabel(item)} deferred: --max-runs / maxRunsPerTick reached.\n`);
+    return {
+      issue: item.issue?.number ?? null,
+      pr: item.pr?.number ?? null,
+      title: itemTitle(item),
+      turn: item.turn,
+      outcome: "deferred",
+      detail: `run cap of ${String(settings.maxRuns)} reached`,
+    };
+  });
+}
+
+interface TickOutcome {
+  options: DoWorkOptions;
+  hygiene: HygieneReport;
+  decisions: Decision[];
+  reports: ItemReport[];
+  context: BlockedContext | null;
+  exitCode: number;
+}
+
+/** The tick's own report: one JSON object on stdout, or the text summary. */
+function reportTickOutcome({
+  options,
+  hygiene,
+  decisions,
+  reports,
+  context,
+  exitCode,
+}: TickOutcome): void {
   if (options.json) {
     out(
       JSON.stringify(
@@ -2189,18 +2850,18 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
           preflight: toHygieneJson(hygiene),
           plan: decisions.map(toPlanJson),
           items: reports.map(toItemJson),
+          blocked: context === null ? null : dumpBlocked(options, context),
           exitCode,
         },
         null,
         2,
       ) + "\n",
     );
-  } else {
-    summarizeHygiene(hygiene);
-    summarize(reports);
+    return;
   }
-
-  return { exitCode, reports };
+  summarizeHygiene(hygiene);
+  summarize(reports);
+  if (context !== null) dumpBlocked(options, context);
 }
 
 /**

@@ -12,7 +12,7 @@ import {
   abortRebase,
   isRebaseInProgress,
 } from "./gitService.js";
-import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
+import { AUTOMATA_OWN_PATHS } from "../run/runLock.js";
 
 /**
  * Put the working tree where a turn needs it.
@@ -68,7 +68,7 @@ function dirtyTree(): PrepareResult {
 
 /** Put the tree on the base branch, up to date with the remote. */
 export function prepareBaseBranch(baseBranch: string): PrepareResult {
-  if (hasUncommittedChanges([RUN_LOCK_RELATIVE_PATH])) return dirtyTree();
+  if (hasUncommittedChanges([...AUTOMATA_OWN_PATHS])) return dirtyTree();
 
   const checkout = checkoutBranch(baseBranch);
   if (!checkout.ok) {
@@ -273,7 +273,7 @@ function divergenceRefusal(headRefName: string, pullError: string): PrepareResul
  * creating the local tracking branch if this checkout has never seen it.
  */
 export function preparePrBranch(headRefName: string): PrepareResult {
-  if (hasUncommittedChanges([RUN_LOCK_RELATIVE_PATH])) return dirtyTree();
+  if (hasUncommittedChanges([...AUTOMATA_OWN_PATHS])) return dirtyTree();
 
   // Read before the fetch, which is the only chance to learn where the remote
   // was: the fetch is forced, so it overwrites this ref with the new tip.

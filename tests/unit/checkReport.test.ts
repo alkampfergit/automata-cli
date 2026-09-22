@@ -14,12 +14,40 @@ import {
   SILENCE_MULTIPLIER,
   type CheckSection,
 } from "../../src/run/checkReport.js";
-import type { ExecutionTick, LogReadResult, WorkRecord } from "../../src/run/operationLog.js";
+import type {
+  ExecutionTick,
+  LogDirectoryStatus,
+  LogReadResult,
+  WorkRecord,
+} from "../../src/run/operationLog.js";
 import type { LockStatus } from "../../src/run/runLock.js";
+import type { Heartbeat } from "../../src/run/heartbeat.js";
 import type { RepoStatus } from "../../src/git/repoStatus.js";
 
 const NOW = new Date("2026-01-10T12:00:00.000Z");
 const MINUTE = 60 * 1000;
+
+/** The checking process, as `buildCheckReport` supplies it. */
+const CTX = {
+  cwd: "/srv/checkouts/widgets",
+  logDirectory: "/srv/checkouts",
+  parentOf: (dir: string) => dir.slice(0, dir.lastIndexOf("/")) || "/",
+};
+
+const DIR: LogDirectoryStatus = {
+  dir: "/srv/checkouts",
+  cwd: "/srv/checkouts/widgets",
+  writable: true,
+  detail: null,
+};
+
+/** The lock state a tick section is given unless a test cares about it. */
+const FREE: LockStatus = { kind: "free" };
+
+/** The first line matching `needle`, so a new line above one cannot break an assertion. */
+function lineWith(section: CheckSection, needle: string): string | undefined {
+  return section.lines.find((line) => line.includes(needle));
+}
 
 function owner(
   overrides: Partial<{ pid: number; startedAt: string; host: string; command: string }> = {},
@@ -143,20 +171,22 @@ describe("tickCadence", () => {
 describe("lockSection", () => {
   it("does not treat a live tick as a problem", () => {
     const status: LockStatus = { kind: "held", owner: owner(), heldForMs: 5 * MINUTE };
-    const section = lockSection(status, 120);
+    const section = lockSection(status, 120, CTX, NOW);
     expect(section.problems).toEqual([]);
     expect(section.lines[0]).toContain("a tick is running");
     expect(section.lines[0]).toContain("pid 1234 on build-01");
   });
 
   it("reports a free lock with no problem", () => {
-    expect(lockSection({ kind: "free" }, 120).problems).toEqual([]);
+    expect(lockSection({ kind: "free" }, 120, CTX, NOW).problems).toEqual([]);
   });
 
   it("flags a suspect lock and names the staleness window", () => {
     const section = lockSection(
       { kind: "suspect", owner: owner(), heldForMs: 3 * 60 * MINUTE },
       120,
+      CTX,
+      NOW,
     );
     expect(section.problems).toHaveLength(1);
     expect(section.problems[0].section).toBe("lock");
@@ -164,15 +194,92 @@ describe("lockSection", () => {
   });
 
   it("flags a stale lock but says it heals itself", () => {
-    const section = lockSection({ kind: "stale", owner: owner(), heldForMs: null }, 120);
+    const section = lockSection({ kind: "stale", owner: owner(), heldForMs: null }, 120, CTX, NOW);
     expect(section.problems).toHaveLength(1);
     expect(section.problems[0].summary).toContain("the next tick reclaims it");
   });
 
   it("flags an unreadable lock, distinctly from a stale one", () => {
-    const section = lockSection({ kind: "unreadable", detail: "EACCES" }, 120);
+    const section = lockSection({ kind: "unreadable", detail: "EACCES" }, 120, CTX, NOW);
     expect(section.problems[0].summary).toContain("EACCES");
     expect(section.data.status).toBe("unreadable");
+  });
+
+  it("prints the holder's working directory", () => {
+    const section = lockSection(
+      { kind: "held", owner: owner({ cwd: CTX.cwd }), heldForMs: MINUTE },
+      120,
+      CTX,
+      NOW,
+    );
+    expect(lineWith(section, "working directory:")).toContain(CTX.cwd);
+    expect(section.problems).toEqual([]);
+  });
+
+  it("flags a holder that logs somewhere other than where this check reads", () => {
+    const section = lockSection(
+      { kind: "held", owner: owner({ cwd: "/home/ci/widgets" }), heldForMs: MINUTE },
+      120,
+      CTX,
+      NOW,
+    );
+    expect(lineWith(section, "logs to")).toBe("  logs to /home/ci (this check reads /srv/checkouts)");
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("/home/ci");
+    expect(section.problems[0].summary).toContain("/srv/checkouts");
+    expect(section.problems[0].command).toContain("/home/ci/automata-execution.log");
+  });
+
+  it("says a lock without a recorded directory is old, not broken", () => {
+    const section = lockSection({ kind: "held", owner: owner(), heldForMs: MINUTE }, 120, CTX, NOW);
+    expect(lineWith(section, "working directory:")).toContain("older automata");
+    expect(section.problems).toEqual([]);
+  });
+
+  it("renders the holder's heartbeat: phase, item and executor", () => {
+    const heartbeat: Heartbeat = {
+      token: "tok-1",
+      updatedAt: new Date(NOW.getTime() - 12 * 1000).toISOString(),
+      phase: "item",
+      item: { index: 3, total: 8, subject: "#82" },
+      executor: { command: "claude", startedAt: new Date(NOW.getTime() - 2 * MINUTE).toISOString() },
+    };
+    const section = lockSection(
+      { kind: "held", owner: owner(), heldForMs: 4 * MINUTE, heartbeat },
+      120,
+      CTX,
+      NOW,
+    );
+    expect(lineWith(section, "phase:")).toBe("  phase: item — item 3 of 8, #82 (updated 12s ago)");
+    expect(lineWith(section, "executor:")).toBe("  executor: claude, running for 2m");
+  });
+
+  it("says so when a held lock has no heartbeat", () => {
+    const section = lockSection({ kind: "held", owner: owner(), heldForMs: MINUTE }, 120, CTX, NOW);
+    expect(lineWith(section, "phase:")).toContain("no heartbeat from this holder");
+  });
+
+  it("renders a heartbeat for a suspect lock too, and still flags it", () => {
+    const section = lockSection(
+      {
+        kind: "suspect",
+        owner: owner(),
+        heldForMs: 3 * 60 * MINUTE,
+        heartbeat: {
+          token: "tok-1",
+          updatedAt: new Date(NOW.getTime() - 3 * 60 * MINUTE).toISOString(),
+          phase: "discovery",
+          item: null,
+          executor: null,
+        },
+      },
+      120,
+      CTX,
+      NOW,
+    );
+    expect(lineWith(section, "phase:")).toContain("discovery");
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].command).toContain("ps -p 1234");
   });
 });
 
@@ -188,37 +295,40 @@ describe("tickSection", () => {
         }),
       ]),
       NOW,
+      DIR,
+      FREE,
     );
-    expect(section.lines[0]).toContain("answered=1");
-    expect(section.lines[0]).toContain("skipped=1");
-    expect(section.lines[0]).toContain("exit=0");
-    expect(section.lines[0]).toContain("(4m ago)");
+    const last = lineWith(section, "last tick:");
+    expect(last).toContain("answered=1");
+    expect(last).toContain("skipped=1");
+    expect(last).toContain("exit=0");
+    expect(last).toContain("(4m ago)");
     expect(section.problems).toEqual([]);
   });
 
   it("flags a missing execution log", () => {
-    const section = tickSection(read<ExecutionTick>([], { present: false }), NOW);
+    const section = tickSection(read<ExecutionTick>([], { present: false }), NOW, DIR, FREE);
     expect(section.problems).toHaveLength(1);
     expect(section.problems[0].summary).toContain("no execution log");
   });
 
   it("flags an unreadable execution log distinctly from a missing one", () => {
-    const section = tickSection(read<ExecutionTick>([], { present: false, error: "EACCES" }), NOW);
+    const section = tickSection(read<ExecutionTick>([], { present: false, error: "EACCES" }), NOW, DIR, FREE);
     expect(section.problems[0].summary).toContain("EACCES");
   });
 
   it("flags a log that holds no tick for this repository", () => {
-    const section = tickSection(read<ExecutionTick>([]), NOW);
+    const section = tickSection(read<ExecutionTick>([]), NOW, DIR, FREE);
     expect(section.problems[0].summary).toContain("never successfully run");
   });
 
   it("flags a non-zero exit on the newest tick", () => {
-    const section = tickSection(read([tick({ exitCode: 2 })]), NOW);
+    const section = tickSection(read([tick({ exitCode: 2 })]), NOW, DIR, FREE);
     expect(section.problems.some((problem) => problem.summary.includes("exited 2"))).toBe(true);
   });
 
   it("flags scheduler silence with both the observed and the usual interval", () => {
-    const section = tickSection(read(ticksEvery(5 * MINUTE, 10, 4 * 60 * MINUTE)), NOW);
+    const section = tickSection(read(ticksEvery(5 * MINUTE, 10, 4 * 60 * MINUTE)), NOW, DIR, FREE);
     const silence = section.problems.find((problem) => problem.summary.includes("stopped firing"));
     expect(silence).toBeDefined();
     expect(silence?.summary).toContain("4h 0m");
@@ -226,7 +336,7 @@ describe("tickSection", () => {
   });
 
   it("does not flag an idle loop that is still firing on schedule", () => {
-    const section = tickSection(read(ticksEvery(5 * MINUTE, 10)), NOW);
+    const section = tickSection(read(ticksEvery(5 * MINUTE, 10)), NOW, DIR, FREE);
     expect(section.problems).toEqual([]);
     expect(section.lines.some((line) => line.includes("about one tick every 5m"))).toBe(true);
   });
@@ -235,15 +345,75 @@ describe("tickSection", () => {
     const section = tickSection(
       read(ticksEvery(5 * MINUTE, 6).map((entry) => ({ ...entry, note: "lock-held" }))),
       NOW,
+      DIR,
+      FREE,
     );
     expect(section.problems.some((problem) => problem.summary.includes("wedged"))).toBe(true);
     expect(section.data.lockHeldCount).toBe(6);
+  });
+
+  it("always states the log directory, its derivation and its writability", () => {
+    const section = tickSection(read(ticksEvery(5 * MINUTE, 10)), NOW, DIR, FREE);
+    const line = lineWith(section, "log directory:");
+    expect(line).toBe(
+      "log directory: /srv/checkouts (the parent of the working directory /srv/checkouts/widgets), writable",
+    );
+    expect(section.problems).toEqual([]);
+  });
+
+  it("flags a log directory a tick cannot write to", () => {
+    const section = tickSection(read(ticksEvery(5 * MINUTE, 10)), NOW, {
+      dir: "/srv/checkouts",
+      cwd: "/srv/checkouts/widgets",
+      writable: false,
+      detail: "EACCES: permission denied",
+    }, FREE);
+    expect(lineWith(section, "log directory:")).toContain("not writable: EACCES");
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("records nothing");
+    expect(section.problems[0].command).toBe("ls -ld /srv/checkouts");
+  });
+
+  it("does not call a missing log a problem while a tick is in flight", () => {
+    // The contradiction in issue #82: a live pid beside "no tick has ever run".
+    const held: LockStatus = { kind: "held", owner: owner(), heldForMs: 4 * MINUTE };
+    const section = tickSection(read<ExecutionTick>([], { present: false }), NOW, DIR, held);
+    expect(section.problems).toEqual([]);
+    expect(section.lines.some((line) => line.includes("no execution log"))).toBe(true);
+    expect(section.lines.some((line) => line.includes("has not recorded itself yet"))).toBe(true);
+    expect(section.data.tickInFlight).toBe(true);
+  });
+
+  it("applies the same relief to a log holding no tick for this repository", () => {
+    const held: LockStatus = { kind: "held", owner: owner(), heldForMs: 4 * MINUTE };
+    expect(tickSection(read<ExecutionTick>([]), NOW, DIR, held).problems).toEqual([]);
+  });
+
+  it("keeps a missing log a problem when nothing is running", () => {
+    const section = tickSection(read<ExecutionTick>([], { present: false }), NOW, DIR, FREE);
+    expect(section.problems).toHaveLength(1);
+    expect(section.lines.some((line) => line.includes("has not recorded itself yet"))).toBe(false);
+  });
+
+  it("keeps an unreadable log a problem even while a tick is in flight", () => {
+    // A live tick explains an empty file; it explains nothing about permissions.
+    const held: LockStatus = { kind: "held", owner: owner(), heldForMs: 4 * MINUTE };
+    const section = tickSection(
+      read<ExecutionTick>([], { present: false, error: "EACCES" }),
+      NOW,
+      DIR,
+      held,
+    );
+    expect(section.problems).toHaveLength(1);
+    expect(section.problems[0].summary).toContain("EACCES");
   });
 
   it("mentions unparseable lines and other repositories without calling them problems", () => {
     const section = tickSection(
       read(ticksEvery(5 * MINUTE, 5), { skipped: 2, otherRepos: 7 }),
       NOW,
+      DIR,
+      FREE,
     );
     expect(section.lines.some((line) => line.includes("2 log line(s) could not be parsed"))).toBe(
       true,
@@ -274,7 +444,7 @@ describe("workSection", () => {
   };
 
   it("prints each item with its executor and detail", () => {
-    const section = workSection(read([record]), NOW);
+    const section = workSection(read([record]), NOW, DIR, FREE);
     expect(section.lines[0]).toContain("(30m ago)");
     expect(section.lines[1]).toBe(
       "  #42 issue-discuss answered [claude opus high] — posted an answer",
@@ -418,7 +588,7 @@ describe("assembleReport / renderText / toJson", () => {
       id,
       title: id,
       lines: [`${id} line`],
-      problems: problems.map((summary) => ({ section: id, summary })),
+      problems: problems.map((summary) => ({ section: id, summary, command: null })),
       data: { id },
     };
   }
@@ -501,10 +671,94 @@ describe("assembleReport / renderText / toJson", () => {
     expect(json.repo).toBe("acme/widgets");
     expect(json.offline).toBe(true);
     expect(json.exitCode).toBe(1);
-    expect(json.problems).toEqual([{ section: "lock", summary: "a" }]);
+    expect(json.problems).toEqual([{ section: "lock", summary: "a", command: null }]);
+    expect(json.trace).toBeNull();
+    expect(json.blocked).toBeNull();
     const sections = json.sections as Record<string, { data: unknown; lines: string[] }>;
     expect(Object.keys(sections)).toEqual(["lock"]);
     expect(sections["lock"].data).toEqual({ id: "lock" });
+  });
+
+  it("prints the investigative command under the problem it belongs to", () => {
+    const withCommand: CheckSection = {
+      id: "lock",
+      title: "Run lock",
+      lines: ["line"],
+      problems: [
+        { section: "lock", summary: "the lock is held", command: "cat .automata/automata.lock" },
+        { section: "lock", summary: "nothing investigates this", command: null },
+      ],
+      data: {},
+    };
+    const text = renderText(
+      assembleReport({ generatedAt: NOW, repo: null, offline: false, sections: [withCommand] }),
+    );
+    expect(text).toContain("  · lock: the lock is held\n      try: cat .automata/automata.lock");
+    // The null one prints nothing rather than an invented command.
+    expect(text).toContain("  · lock: nothing investigates this\n\nRESULT");
+  });
+
+  it("renders the command trace after the sections and before the problems", () => {
+    const text = renderText(
+      assembleReport({
+        generatedAt: NOW,
+        repo: null,
+        offline: false,
+        sections: [section("lock", ["a"])],
+        trace: [{ command: "git", args: ["status"], durationMs: 3, exitCode: 0 }],
+      }),
+    );
+    expect(text).toContain("Commands (1)\n  git status — 3ms exit 0");
+    expect(text.indexOf("Commands (1)")).toBeGreaterThan(text.indexOf("lock line"));
+    expect(text.indexOf("Commands (1)")).toBeLessThan(text.indexOf("Problems (1)"));
+  });
+
+  it("omits the command block entirely when tracing was off", () => {
+    const text = renderText(
+      assembleReport({ generatedAt: NOW, repo: null, offline: false, sections: all() }),
+    );
+    expect(text).not.toContain("Commands");
+  });
+
+  it("says so when tracing was on and nothing ran", () => {
+    const text = renderText(
+      assembleReport({ generatedAt: NOW, repo: null, offline: false, sections: all(), trace: [] }),
+    );
+    expect(text).toContain("Commands (0)\n  (no git or gh command was run)");
+  });
+
+  it("heads a blocked dump with its trigger, above the usual header", () => {
+    const report = assembleReport({
+      generatedAt: NOW,
+      repo: "acme/widgets",
+      offline: true,
+      sections: all(),
+      blocked: { reason: "lock-held", trigger: "run lock held by pid 851554 on cisharpai" },
+    });
+    const text = renderText(report);
+    expect(text.split("\n")[0]).toBe("blocked: run lock held by pid 851554 on cisharpai");
+    expect(text.split("\n")[1]).toContain("automata do-work --check");
+    expect(toJson(report).blocked).toEqual({
+      reason: "lock-held",
+      trigger: "run lock held by pid 851554 on cisharpai",
+    });
+  });
+
+  it("keeps the six sections a blocked dump renders identical to the check's", () => {
+    const blocked = assembleReport({
+      generatedAt: NOW,
+      repo: null,
+      offline: true,
+      sections: all(),
+      blocked: { reason: "no-candidates", trigger: "no candidate was picked up (0 of 8)" },
+    });
+    const check = assembleReport({
+      generatedAt: NOW,
+      repo: null,
+      offline: false,
+      sections: all(),
+    });
+    expect(blocked.sections.map((s) => s.title)).toEqual(check.sections.map((s) => s.title));
   });
 });
 
