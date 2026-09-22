@@ -742,6 +742,45 @@ describe("do-work --check --verbose", () => {
     expect(stdout).toContain("PR #62 Unrelated — dropped by the discovery filter");
   });
 
+  it("says a pass did not run rather than reporting it as empty", async () => {
+    // `--issue N` turns the orphan pass off, and `discoverOrphanPrs` then
+    // returns [] without looking at anything. Printing "0 open orphan pull
+    // request(s) considered" would send an operator to debug a filter that was
+    // never applied.
+    gh.listCandidateIssues.mockReturnValue([settled(42).issue]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "develop",
+      orphans: [{ pr: prRef(61, "Bump deps"), labels: ["automated"], assignees: [] }],
+    });
+
+    await runCheck(["--verbose", "--issue", "42"]);
+
+    expect(stdout).toContain(
+      "orphan pull-request pass: not run — --issue 42 restricts this tick to that issue",
+    );
+    expect(stdout).not.toContain("open orphan pull request(s) considered");
+    expect(stdout).toContain("discovery query: label = automated, limit 10, restricted to #42");
+  });
+
+  it("says the issue discovery did not run under --pr", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "develop",
+      orphans: [{ pr: prRef(61, "Bump deps"), labels: ["automated"], assignees: [] }],
+    });
+    gh.getPrSurface.mockImplementation((n: number) => orphanPrSurface(n));
+
+    await runCheck(["--verbose", "--pr", "61"]);
+
+    expect(stdout).toContain(
+      "issue discovery: not run — --pr 61 restricts this tick to that pull request",
+    );
+    expect(stdout).not.toContain("discovery returned");
+    expect(stdout).toContain("1 open orphan pull request(s) considered (only PR #61 would be taken up):");
+  });
+
   it("carries the trace as a top-level array in the JSON payload", async () => {
     const { recordCommand } = await import("../../src/run/commandTrace.js");
     mockInspectRepoStatus.mockImplementation(() => {

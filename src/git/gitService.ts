@@ -87,7 +87,11 @@ function run(cmd: string, args: string[]): { stdout: string; stderr: string; sta
   const result = spawnSync(cmd, args, { encoding: "utf8" });
   const status = result.status ?? 1;
   // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
-  recordCommand(cmd, args, startedAt, status);
+  // `-1` for a command that never started, matching the other three wrappers: a
+  // binary missing from PATH and one that ran and exited 1 are different faults,
+  // and the trace is the only place that distinction survives. Callers keep the
+  // `1` every branch below is written against.
+  recordCommand(cmd, args, startedAt, result.error ? -1 : status);
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

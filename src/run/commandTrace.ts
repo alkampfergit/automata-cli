@@ -18,7 +18,11 @@ export interface TracedCommand {
   command: string;
   args: string[];
   durationMs: number;
-  /** The process's exit status, with a null status reported as 1 by the callers. */
+  /**
+   * The process's exit status, or `-1` when the command never started at all —
+   * a binary missing from PATH, say. All four wrappers report it that way, so a
+   * fault the caller flattens into an ordinary failure is still legible here.
+   */
   exitCode: number;
 }
 

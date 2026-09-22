@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -122,7 +122,7 @@ describe("heartbeat", () => {
       writeHeartbeat("tok-1", { phase: "summary" }, bare);
     }).not.toThrow();
     expect(() => {
-      clearHeartbeat(bare);
+      clearHeartbeat("tok-1", bare);
     }).not.toThrow();
     expect(readHeartbeat("tok-1", bare)).toBeNull();
   });
@@ -130,8 +130,21 @@ describe("heartbeat", () => {
   it("removes the sidecar", () => {
     const dir = checkout();
     writeHeartbeat("tok-1", { phase: "summary" }, dir);
-    clearHeartbeat(dir);
+    clearHeartbeat("tok-1", dir);
 
     expect(readHeartbeat("tok-1", dir)).toBeNull();
+    expect(existsSync(heartbeatPath(dir))).toBe(false);
+  });
+
+  it("leaves another holder's sidecar alone", () => {
+    // The teardown of a tick whose lock was reclaimed as stale. Deleting here
+    // would blind a check to the replacement holder's phase while its lock is
+    // perfectly intact.
+    const dir = checkout();
+    writeHeartbeat("tok-new", { phase: "item", item: { index: 1, total: 4, subject: "#82" } }, dir);
+
+    clearHeartbeat("tok-old", dir);
+
+    expect(readHeartbeat("tok-new", dir)?.phase).toBe("item");
   });
 });

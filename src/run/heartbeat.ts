@@ -168,13 +168,25 @@ export function writeHeartbeat(
 }
 
 /**
- * Remove the sidecar, on the way out of a tick.
+ * Remove the sidecar this token wrote, on the way out of a tick.
  *
- * Best-effort, and a leftover is harmless: the next holder's token will not
- * match, so `readHeartbeat` answers null for it either way. The unlink exists so
- * a checkout is not left with a stale file an operator might read by hand.
+ * Token-scoped for the same reason `release()` is: a holder whose lock was
+ * reclaimed as stale still runs its teardown, and a blind unlink there would
+ * take away the *replacement* holder's heartbeat — leaving a live tick with an
+ * intact lock and no observable phase, which is exactly the blind spot this
+ * file exists to close.
+ *
+ * A leftover, by contrast, is harmless: the next holder's token will not match,
+ * so `readHeartbeat` answers null for it either way. The unlink exists only so a
+ * checkout is not left with a stale file an operator might read by hand — which
+ * is why this stops at a read-then-unlink rather than borrowing the lock's
+ * rename-and-restore dance. The residual window is the microseconds between the
+ * two calls, and losing it costs one diagnostic file that the live holder
+ * rewrites at its next phase change; losing the lock's equivalent race would
+ * admit a second tick into the checkout.
  */
-export function clearHeartbeat(cwd: string = process.cwd()): void {
+export function clearHeartbeat(token: string, cwd: string = process.cwd()): void {
+  if (readHeartbeat(token, cwd) === null) return;
   try {
     unlinkSync(heartbeatPath(cwd));
   } catch {
