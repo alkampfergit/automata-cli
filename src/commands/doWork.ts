@@ -1913,53 +1913,77 @@ function makeSelectionSection(
   };
 }
 
-/** The candidate lists `--verbose` adds above the per-candidate plan. */
+/**
+ * The candidate lists `--verbose` adds above the per-candidate plan.
+ *
+ * One half per pass, because each half has the same shape: either the pass was
+ * turned off by the other pass's flag and says so, or it names what it asked for
+ * and lists what came back. Printing "discovery returned 0 issue(s)" under
+ * `--pr 61` would be a false statement about a query that was never sent, and
+ * the operator's next move — working out why the filter matches nothing — would
+ * be chasing a query that does not exist.
+ */
 function describeSelectionEvidence(
   settings: Settings,
   evidence: SelectionEvidence,
   lines: string[],
 ): void {
-  // A pass that never ran says so. Printing "discovery returned 0 issue(s)"
-  // under `--pr 61` would be a false statement about a query that was never
-  // sent, and the operator's next move — checking why the filter matches
-  // nothing — would be chasing a query that does not exist.
+  lines.push(...describeIssueEvidence(settings, evidence));
+  lines.push(...describeOrphanEvidence(settings, evidence));
+}
+
+/**
+ * `count` items follow, or none do.
+ *
+ * The colon only when something follows it: a heading over nothing reads as a
+ * list that failed to render rather than as an empty one.
+ */
+function heading(text: string, count: number): string {
+  return `${text}${count === 0 ? "" : ":"}`;
+}
+
+function describeIssueEvidence(settings: Settings, evidence: SelectionEvidence): string[] {
   if (!evidence.issuePass) {
-    lines.push(
+    return [
       `issue discovery: not run — --pr ${String(settings.onlyPr)} restricts this tick to that pull request`,
-    );
-  } else {
-    const restriction =
-      settings.onlyIssue === undefined ? "" : `, restricted to #${String(settings.onlyIssue)}`;
-    lines.push(
-      `discovery query: ${settings.technique} = ${settings.discoveryValue}, limit ${String(settings.limit)}${restriction}`,
-    );
-    // The colon only when something follows it: a heading over nothing reads as
-    // a list that failed to render rather than as an empty one.
-    if (evidence.issues !== null) {
-      const count = evidence.issues.length;
-      lines.push(`discovery returned ${String(count)} issue(s)${count === 0 ? "" : ":"}`);
-      for (const issue of evidence.issues) {
-        lines.push(`    #${String(issue.number)} ${issue.title}`);
-      }
-    }
+    ];
   }
 
-  if (!evidence.orphanPass) {
-    lines.push(
-      `orphan pull-request pass: not run — --issue ${String(settings.onlyIssue)} restricts this tick to that issue`,
-    );
-  } else if (evidence.orphans !== null) {
-    const count = evidence.orphans.length;
-    const restriction =
-      settings.onlyPr === undefined ? "" : ` (only PR #${String(settings.onlyPr)} would be taken up)`;
-    lines.push(
-      `${String(count)} open orphan pull request(s) considered${restriction}${count === 0 ? "" : ":"}`,
-    );
-    for (const orphan of evidence.orphans) {
-      const verdict = orphan.matched ? "matches the filter" : "dropped by the discovery filter";
-      lines.push(`    PR #${String(orphan.number)} ${orphan.title} — ${verdict}`);
-    }
+  const restriction =
+    settings.onlyIssue === undefined ? "" : `, restricted to #${String(settings.onlyIssue)}`;
+  const lines = [
+    `discovery query: ${settings.technique} = ${settings.discoveryValue}, limit ${String(settings.limit)}${restriction}`,
+  ];
+  if (evidence.issues === null) return lines;
+
+  lines.push(heading(`discovery returned ${String(evidence.issues.length)} issue(s)`, evidence.issues.length));
+  for (const issue of evidence.issues) {
+    lines.push(`    #${String(issue.number)} ${issue.title}`);
   }
+  return lines;
+}
+
+function describeOrphanEvidence(settings: Settings, evidence: SelectionEvidence): string[] {
+  if (!evidence.orphanPass) {
+    return [
+      `orphan pull-request pass: not run — --issue ${String(settings.onlyIssue)} restricts this tick to that issue`,
+    ];
+  }
+  if (evidence.orphans === null) return [];
+
+  const restriction =
+    settings.onlyPr === undefined ? "" : ` (only PR #${String(settings.onlyPr)} would be taken up)`;
+  const lines = [
+    heading(
+      `${String(evidence.orphans.length)} open orphan pull request(s) considered${restriction}`,
+      evidence.orphans.length,
+    ),
+  ];
+  for (const orphan of evidence.orphans) {
+    const verdict = orphan.matched ? "matches the filter" : "dropped by the discovery filter";
+    lines.push(`    PR #${String(orphan.number)} ${orphan.title} — ${verdict}`);
+  }
+  return lines;
 }
 
 /** The plan lines, shared by the live check and by a blocked dump. */
