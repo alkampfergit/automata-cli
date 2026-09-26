@@ -397,3 +397,24 @@ describe("automata config set git-trunk-branch", () => {
     expect(config.git).toEqual({ trunkBranch: "trunk" });
   });
 });
+
+describe("automata config set git-release-flow", () => {
+  it.each([["gitflow"], ["trunk"]])("pins the %s flow", (flow) => {
+    const output = run(["config", "set", "git-release-flow", flow]);
+    expect(output.trim()).toBe(`git release flow set to: ${flow}`);
+    expect(readConfigFile().git).toEqual({ releaseFlow: flow });
+  });
+
+  it("rejects any other value and writes nothing", () => {
+    expect(runExpectingFailure(["config", "set", "git-release-flow", "trunk-based"])).toMatch(
+      /invalid release flow "trunk-based"\. Must be one of: gitflow, trunk/,
+    );
+    expect(existsSync(join(automataDir(), "config.json"))).toBe(false);
+  });
+
+  it("keeps the trunk branch beside it", () => {
+    run(["config", "set", "git-trunk-branch", "main"]);
+    run(["config", "set", "git-release-flow", "trunk"]);
+    expect(readConfigFile().git).toEqual({ trunkBranch: "main", releaseFlow: "trunk" });
+  });
+});

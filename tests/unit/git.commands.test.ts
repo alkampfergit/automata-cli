@@ -1092,10 +1092,11 @@ function classifyGitCall(args: string[]): string {
   if (a0 === "status") return "status";
   if (a0 === "symbolic-ref") return "origin-head";
   if (a0 === "ls-remote" && a1 === "--symref") return "symref";
+  if (a0 === "ls-remote" && args.at(-1) === "develop") return "develop-probe";
   if (a0 === "ls-remote") return "probe";
   if (a0 === "fetch") return "fetch";
   if (a0 === "describe") return "describe";
-  if (a0 === "tag") return "tag-list";
+  if (a0 === "tag" && a1 === "-l") return "tag-list";
   if (a0 === "rev-list") return "behind";
   return "other";
 }
@@ -1108,6 +1109,7 @@ function publishDefaults(): Record<string, GitResult> {
     "origin-head": ok("refs/remotes/origin/master\n"),
     symref: ok("ref: refs/heads/master\tHEAD\n"),
     probe: ok("abc\trefs/heads/master\n"),
+    "develop-probe": ok("abc\trefs/heads/develop\n"),
     fetch: ok(""),
     describe: ok("1.2.0\n"),
     "tag-list": ok(""),
@@ -1270,7 +1272,9 @@ describe("git publish-release command: preconditions", () => {
     expect(out.stdout).toContain("Trunk branch: trunk (configured as git.trunkBranch)");
     const verbs = executedGitArgs().map((args) => args[0]);
     expect(verbs).not.toContain("symbolic-ref");
-    expect(verbs).not.toContain("ls-remote");
+    // The only remote query left is the release-flow probe for origin/develop.
+    const lsRemote = executedGitArgs().filter((args) => args[0] === "ls-remote");
+    expect(lsRemote).toEqual([["ls-remote", "--exit-code", "--heads", "origin", "develop"]]);
     expect(out.stdout).toContain("git push origin develop trunk 1.3.0");
     expect(out.exitCode).toBeUndefined();
   });
@@ -1358,6 +1362,159 @@ describe("git publish-release command: preconditions", () => {
 
     expect(out.stderr).toContain("CHANGELOG.md has no section for 1.3.0");
     expect(out.exitCode).toBe(1);
+  });
+});
+
+// ── publish-release: release flow ─────────────────────────────────────────────
+
+describe("git publish-release command: release flow", () => {
+  let out: ReturnType<typeof captureStreams>;
+
+  /** A trunk-only repository: origin has no develop, and the operator is on master. */
+  function stubTrunkOnly(overrides: Record<string, GitResult> = {}): void {
+    stubPublish({
+      "develop-probe": fail("", 2),
+      "current-branch": ok("master\n"),
+      "local-trunk": ok("0f0dba2\n"),
+      ...overrides,
+    });
+  }
+
+  const TRUNK_MUTATIONS = [
+    "commit --allow-empty -m chore(release): 1.3.0",
+    "tag 1.3.0",
+    "push --atomic origin master 1.3.0",
+  ];
+
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadConfig.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
+    mockReadConfig.mockReturnValue({});
+    mockReadChangelog.mockReset();
+    mockReadChangelog.mockReturnValue(null);
+    out = captureStreams();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("reports the detected gitflow flow in a repository with origin/develop", async () => {
+    stubPublish();
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0", "--dry-run"]);
+
+    expect(out.stdout).toContain("Release flow: gitflow (detected: origin/develop exists)");
+    expect(out.stdout).toContain("[dry-run] git push origin develop master 1.3.0");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("detects the trunk flow without origin/develop and dry-runs its three commands, executing none", async () => {
+    stubTrunkOnly();
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "--dry-run"]);
+
+    expect(out.stdout).toContain("Release flow: trunk (detected: origin/develop does not exist)");
+    expect(out.stdout).toContain("Auto-detected version: 1.2.0 → 1.3.0");
+    expect(out.stdout).toContain(
+      '[dry-run] git commit --allow-empty -m "chore(release): 1.3.0"\n' +
+        "[dry-run] git tag 1.3.0\n" +
+        "[dry-run] git push --atomic origin master 1.3.0\n",
+    );
+    expect(out.stdout).not.toContain("release/");
+    const executed = executedGitArgs().map((args) => args.join(" "));
+    for (const mutation of TRUNK_MUTATIONS) {
+      expect(executed).not.toContain(mutation);
+    }
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("commits, tags and pushes branch and tag atomically on a real trunk release", async () => {
+    stubTrunkOnly();
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]);
+
+    const executed = executedGitArgs().map((args) => args.join(" "));
+    const mutations = executed.filter((c) => TRUNK_MUTATIONS.includes(c));
+    expect(mutations).toEqual(TRUNK_MUTATIONS);
+    // The fetch and every precondition land before the first write.
+    expect(executed.indexOf(TRUNK_MUTATIONS[0])).toBeGreaterThan(executed.findIndex((c) => c.startsWith("fetch")));
+    expect(executed.some((c) => c.startsWith("checkout") || c.startsWith("merge"))).toBe(false);
+    expect(out.stdout).toContain("Release 1.3.0 published successfully.");
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("refuses the trunk flow from any branch but the trunk, before writing anything", async () => {
+    stubTrunkOnly({ "current-branch": ok("feature/x\n") });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("must be run from the 'master' branch (currently on 'feature/x')");
+    expect(out.exitCode).toBe(1);
+    const executed = executedGitArgs().map((args) => args.join(" "));
+    for (const mutation of TRUNK_MUTATIONS) {
+      expect(executed).not.toContain(mutation);
+    }
+  });
+
+  it("refuses a trunk that is behind origin, before committing", async () => {
+    stubTrunkOnly({ behind: ok("1\n") });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("'master' is 1 commit(s) behind origin/master");
+    expect(executedGitArgs().map((args) => args[0])).not.toContain("commit");
+  });
+
+  it("uses a configured flow and does not probe origin/develop", async () => {
+    mockReadRawConfig.mockReturnValue({ git: { releaseFlow: "trunk" } });
+    // origin/develop exists, which detection would read as gitflow.
+    stubPublish({ "current-branch": ok("master\n"), "local-trunk": ok("0f0dba2\n") });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0", "--dry-run"]);
+
+    expect(out.stdout).toContain("Release flow: trunk (configured as git.releaseFlow)");
+    expect(executedGitArgs().filter((args) => args[0] === "ls-remote" && args.at(-1) === "develop")).toEqual([]);
+    expect(out.exitCode).toBeUndefined();
+  });
+
+  it("refuses an invalid configured flow", async () => {
+    mockReadRawConfig.mockReturnValue({ git: { releaseFlow: "trunk-based" } });
+    stubPublish();
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain('Invalid git.releaseFlow "trunk-based"');
+    expect(executedGitArgs().map((args) => args[0])).not.toContain("fetch");
+  });
+
+  it("refuses when origin/develop cannot be probed, rather than guessing a flow", async () => {
+    stubTrunkOnly({ "develop-probe": fail("fatal: could not read from remote repository", 128) });
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(
+      gitCommand.parseAsync(["node", "git", "publish-release", "1.3.0"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("Could not check whether origin has a 'develop' branch");
+    expect(out.stderr).toContain("could not read from remote repository");
+    expect(executedGitArgs().map((args) => args[0])).not.toContain("fetch");
   });
 });
 
