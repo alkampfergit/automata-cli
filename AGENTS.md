@@ -50,12 +50,17 @@ A command-line interface tool built with TypeScript and commander.js.
 - TypeScript 5.x (strict mode) + commander.js, `gh` CLI via `spawnSync` (033-orphan-pull-requests)
 - TypeScript 5.x (strict mode) + `git cherry` / `git rebase` via `spawnSync` in `src/git/gitService.ts` (036-explicit-rebase-sync)
 - TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync` (036-release-trunk-detection)
+- TypeScript 5.x (strict mode) + commander.js, `git` via `spawnSync`; pure release plan in `src/git/releaseFlow.ts` (039-trunk-release-flow)
 
 ## Recent Changes
 - 038-blocked-diagnostics: a blocked `do-work` tick renders the `--check` report headed by what blocked it
   (`doWork.dumpOnBlock`, default on); `do-work --verbose` traces every `git`/`gh` call; the run lock records the
   holder's cwd and a heartbeat sidecar (`src/run/heartbeat.ts`, `src/run/commandTrace.ts`,
   `AUTOMATA_OWN_PATHS` in `src/run/runLock.ts`)
+- 039-trunk-release-flow: `publish-release` gained a trunk flow for repositories without `develop` (empty
+  `chore(release)` commit, tag, `git push --atomic origin <trunk> <version>`). It is chosen by the new
+  `git.releaseFlow` key or detected from `origin/develop`, and the step lists of both flows are pure data in
+  `planRelease()`
 - 036-do-work-check: `do-work` gained `--check` (a read-only six-section health report, exit 0/1) and
   `--no-fetch`; `inspectRunLock`, `readExecutionTicks`/`readWorkRecords`, `src/git/repoStatus.ts` and
   `src/run/checkReport.ts` are the read-side modules behind it
