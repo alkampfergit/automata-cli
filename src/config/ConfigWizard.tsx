@@ -18,6 +18,7 @@ import {
   type Executor,
   type AutomataConfig,
 } from "./configStore.js";
+import type { ReleaseFlow } from "../git/releaseFlow.js";
 
 function writePromptFile(filename: string, content: string): void {
   const dir = join(process.cwd(), ".automata");
@@ -45,6 +46,13 @@ const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
 const DUMP_ON_BLOCK_OPTIONS: { label: string; value: boolean }[] = [
   { label: "Yes — print the full health report when a tick does nothing", value: true },
   { label: "No — print only the one-line reason", value: false },
+];
+
+// `undefined` clears `git.releaseFlow`, which is how detection is restored.
+const RELEASE_FLOW_OPTIONS: { label: string; value: ReleaseFlow | undefined }[] = [
+  { label: "Detect from origin (gitflow if origin/develop exists)", value: undefined },
+  { label: "GitFlow", value: "gitflow" },
+  { label: "Trunk-based", value: "trunk" },
 ];
 
 // New entries are appended so existing menu positions — and the navigation tests
@@ -92,7 +100,8 @@ type Screen =
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt"
   | "do-work-pr-orphan-prompt"
-  | "git-trunk-branch";
+  | "git-trunk-branch"
+  | "git-release-flow";
 
 /** The subset of ink's key object this wizard reacts to. */
 interface InkKey {
@@ -297,6 +306,8 @@ export function ConfigWizard() {
     existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   );
   const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
+  const initialReleaseFlowIndex = RELEASE_FLOW_OPTIONS.findIndex((o) => o.value === existing.git?.releaseFlow);
+  const [releaseFlowIndex, setReleaseFlowIndex] = useState(Math.max(initialReleaseFlowIndex, 0));
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -498,14 +509,7 @@ export function ConfigWizard() {
     },
     "git-trunk-branch": {
       setValue: setGitTrunkBranch,
-      onSubmit: () => {
-        const branch = gitTrunkBranch.trim();
-        const current = readRawConfig();
-        // Blank clears the key, which is how an operator goes back to detecting
-        // the trunk from the remote.
-        writeConfig({ ...current, git: { ...current.git, trunkBranch: branch || undefined } });
-        exit();
-      },
+      onSubmit: () => setScreen("git-release-flow"),
       onBack: () => setScreen("main"),
     },
   };
@@ -592,6 +596,27 @@ export function ConfigWizard() {
         exit();
       },
       onBack: () => setScreen("do-work-lock-stale"),
+    },
+    "git-release-flow": {
+      index: releaseFlowIndex,
+      length: RELEASE_FLOW_OPTIONS.length,
+      setIndex: setReleaseFlowIndex,
+      onSelect: () => {
+        const branch = gitTrunkBranch.trim();
+        const current = readRawConfig();
+        // Blank / "Detect" clear their keys, which is how an operator goes back
+        // to detecting the trunk and the flow from the remote.
+        writeConfig({
+          ...current,
+          git: {
+            ...current.git,
+            trunkBranch: branch || undefined,
+            releaseFlow: RELEASE_FLOW_OPTIONS[releaseFlowIndex].value,
+          },
+        });
+        exit();
+      },
+      onBack: () => setScreen("git-trunk-branch"),
     },
   };
 
@@ -728,7 +753,7 @@ export function ConfigWizard() {
       title: "Git — Trunk Branch",
       label: "Branch publish-release releases to (blank = detect it from the remote):",
       value: gitTrunkBranch,
-      hint: `Type branch · Enter to save · ${BACK}`,
+      hint: `Type branch · Enter to continue · ${BACK}`,
     },
   };
 
@@ -768,6 +793,12 @@ export function ConfigWizard() {
       options: DUMP_ON_BLOCK_OPTIONS.map((o) => o.label),
       index: doWorkDumpOnBlockIndex,
       hint: `↑/↓ to move · Enter to save and exit · ${BACK}`,
+    },
+    "git-release-flow": {
+      title: "Git — Release Flow",
+      options: RELEASE_FLOW_OPTIONS.map((o) => o.label),
+      index: releaseFlowIndex,
+      hint: `↑/↓ to move · Enter to save · ${BACK}`,
     },
   };
 

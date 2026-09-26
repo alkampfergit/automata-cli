@@ -238,7 +238,7 @@ describe("gitService.publishRelease", () => {
   it("executes the 8-step GitFlow sequence in order against the resolved trunk", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 }); // incl. rev-parse → exists
     const { publishRelease } = await import("../../src/git/gitService.js");
-    publishRelease("1.3.0", false, "main");
+    publishRelease("1.3.0", false, "main", "gitflow");
 
     const calls = mockSpawnSync.mock.calls
       .map((c) => (c as [string, string[]])[1].join(" "))
@@ -265,7 +265,7 @@ describe("gitService.publishRelease", () => {
         : { stdout: "", stderr: "", status: 0 },
     );
     const { publishRelease } = await import("../../src/git/gitService.js");
-    publishRelease("1.3.0", false, "master");
+    publishRelease("1.3.0", false, "master", "gitflow");
 
     const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
     // `--track` is deliberately absent: git refuses it in a --single-branch
@@ -281,7 +281,7 @@ describe("gitService.publishRelease", () => {
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 }) // checkout trunk
       .mockReturnValueOnce({ stdout: "", stderr: "CONFLICT (content)", status: 1 }); // merge fails
     const { publishRelease } = await import("../../src/git/gitService.js");
-    expect(() => publishRelease("1.3.0", false, "master")).toThrow("CONFLICT (content)");
+    expect(() => publishRelease("1.3.0", false, "master", "gitflow")).toThrow("CONFLICT (content)");
   });
 
   it("runs no mutating git command in a dry run", async () => {
@@ -293,7 +293,7 @@ describe("gitService.publishRelease", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     mockSpawnSync.mockReturnValue({ stdout: "0f0dba2", stderr: "", status: 0 });
     const { publishRelease } = await import("../../src/git/gitService.js");
-    publishRelease("1.3.0", true, "main");
+    publishRelease("1.3.0", true, "main", "gitflow");
 
     const executed = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1][0]);
     for (const mutator of MUTATORS) {
@@ -321,13 +321,13 @@ describe("gitService.checkReleasePreconditions", () => {
       .mockReturnValueOnce({ stdout: "develop\n", stderr: "", status: 0 })
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
     const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
-    expect(checkReleasePreconditions()).toEqual({ ok: true });
+    expect(checkReleasePreconditions("develop")).toEqual({ ok: true });
   });
 
   it("names the current branch when it is not develop", async () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "feature/x\n", stderr: "", status: 0 });
     const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
-    const result = checkReleasePreconditions();
+    const result = checkReleasePreconditions("develop");
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.message).toContain("currently on 'feature/x'");
   });
@@ -337,16 +337,140 @@ describe("gitService.checkReleasePreconditions", () => {
       .mockReturnValueOnce({ stdout: "develop\n", stderr: "", status: 0 })
       .mockReturnValueOnce({ stdout: " M src/index.ts\n", stderr: "", status: 0 });
     const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
-    const result = checkReleasePreconditions();
+    const result = checkReleasePreconditions("develop");
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.message).toContain("uncommitted changes");
+  });
+
+  it("checks against the branch it is given, so the trunk flow can require the trunk", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "develop\n", stderr: "", status: 0 });
+    const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
+    const result = checkReleasePreconditions("main");
+    expect(result).toEqual({
+      ok: false,
+      message: "publish-release must be run from the 'main' branch (currently on 'develop').",
+    });
   });
 
   it("reports the failure when the current branch cannot be read", async () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "fatal: not a git repository", status: 128 });
     const { checkReleasePreconditions } = await import("../../src/git/gitService.js");
-    const result = checkReleasePreconditions();
+    const result = checkReleasePreconditions("develop");
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.message).toContain("Failed to determine current branch");
+  });
+});
+
+describe("gitService.probeRemoteBranch", () => {
+  beforeEach(() => mockSpawnSync.mockReset());
+  afterEach(() => vi.resetModules());
+
+  it("asks origin with --exit-code, reading 0 as present", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "abc\trefs/heads/develop\n", stderr: "", status: 0 });
+    const { probeRemoteBranch } = await import("../../src/git/gitService.js");
+    expect(probeRemoteBranch("develop")).toEqual({ ok: true, exists: true });
+    expect(mockSpawnSync.mock.calls[0][1]).toEqual(["ls-remote", "--exit-code", "--heads", "origin", "develop"]);
+  });
+
+  it("reads exit 2 as absent", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 2 });
+    const { probeRemoteBranch } = await import("../../src/git/gitService.js");
+    expect(probeRemoteBranch("develop")).toEqual({ ok: true, exists: false });
+  });
+
+  it("reports any other exit as a failure, not as absent", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "fatal: unable to access remote\n", status: 128 });
+    const { probeRemoteBranch } = await import("../../src/git/gitService.js");
+    expect(probeRemoteBranch("develop")).toEqual({ ok: false, message: "fatal: unable to access remote" });
+  });
+});
+
+describe("gitService.resolveReleaseFlow", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+    mockReadRawConfig.mockReset();
+    mockReadRawConfig.mockReturnValue({});
+  });
+  afterEach(() => vi.resetModules());
+
+  it.each([["gitflow"], ["trunk"]])("uses a configured %s and probes nothing", async (flow) => {
+    mockReadRawConfig.mockReturnValue({ git: { releaseFlow: flow } });
+    const { resolveReleaseFlow } = await import("../../src/git/gitService.js");
+    expect(resolveReleaseFlow()).toEqual({ ok: true, flow, source: "config" });
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("refuses an invalid configured value rather than detecting", async () => {
+    mockReadRawConfig.mockReturnValue({ git: { releaseFlow: "trunk-based" } });
+    const { resolveReleaseFlow } = await import("../../src/git/gitService.js");
+    const result = resolveReleaseFlow();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain('"trunk-based"');
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("detects gitflow when origin has develop", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "abc\trefs/heads/develop\n", stderr: "", status: 0 });
+    const { resolveReleaseFlow } = await import("../../src/git/gitService.js");
+    expect(resolveReleaseFlow()).toEqual({ ok: true, flow: "gitflow", source: "develop-present" });
+  });
+
+  it("detects trunk when origin has no develop", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 2 });
+    const { resolveReleaseFlow } = await import("../../src/git/gitService.js");
+    expect(resolveReleaseFlow()).toEqual({ ok: true, flow: "trunk", source: "develop-absent" });
+  });
+
+  it("refuses when the probe fails, naming git's error and the setter", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "fatal: could not read from remote", status: 128 });
+    const { resolveReleaseFlow } = await import("../../src/git/gitService.js");
+    const result = resolveReleaseFlow();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain("fatal: could not read from remote");
+    expect(result.ok === false && result.message).toContain("automata config set git-release-flow");
+  });
+});
+
+describe("gitService.publishRelease — trunk flow", () => {
+  beforeEach(() => mockSpawnSync.mockReset());
+  afterEach(() => vi.resetModules());
+
+  it("commits, tags and pushes atomically, in that order, and nothing else", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "", status: 0 });
+    const { publishRelease } = await import("../../src/git/gitService.js");
+    publishRelease("1.3.0", false, "main", "trunk");
+
+    const calls = mockSpawnSync.mock.calls.map((c) => (c as [string, string[]])[1].join(" "));
+    expect(calls).toEqual([
+      "commit --allow-empty -m chore(release): 1.3.0",
+      "tag 1.3.0",
+      "push --atomic origin main 1.3.0",
+    ]);
+  });
+
+  it("stops at the failed push and names it", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 })
+      .mockReturnValueOnce({ stdout: "", stderr: "", status: 0 })
+      .mockReturnValueOnce({ stdout: "", stderr: "! [rejected] main -> main (fetch first)", status: 1 });
+    const { publishRelease } = await import("../../src/git/gitService.js");
+    expect(() => publishRelease("1.3.0", false, "main", "trunk")).toThrow(
+      "Command failed: git push --atomic origin main 1.3.0",
+    );
+  });
+
+  it("runs nothing at all in a dry run and prints the three commands", async () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const { publishRelease } = await import("../../src/git/gitService.js");
+    publishRelease("1.3.0", true, "main", "trunk");
+
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+    const output = writeSpy.mock.calls.map((c) => String(c[0])).join("");
+    expect(output).toBe(
+      '[dry-run] git commit --allow-empty -m "chore(release): 1.3.0"\n' +
+        "[dry-run] git tag 1.3.0\n" +
+        "[dry-run] git push --atomic origin main 1.3.0\n",
+    );
+    writeSpy.mockRestore();
   });
 });
