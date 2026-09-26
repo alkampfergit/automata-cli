@@ -9,6 +9,7 @@ import {
   type AutomataDoWorkConfig,
   DEFAULT_DO_WORK,
 } from "../config/configStore.js";
+import { RELEASE_FLOWS, isReleaseFlow } from "../git/releaseFlow.js";
 
 const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
 const VALID_TECHNIQUES: IssueDiscoveryTechnique[] = ["label", "assignee", "title-contains"];
@@ -271,6 +272,20 @@ const configSetGitTrunkBranch = new Command("git-trunk-branch")
     process.stdout.write(`git trunk branch set to: ${branch}\n`);
   });
 
+const configSetGitReleaseFlow = new Command("git-release-flow")
+  .description("Pin the release procedure `publish-release` runs, instead of detecting it")
+  .argument("<value>", `Release flow: ${RELEASE_FLOWS.join(" | ")} (unset = detect it from origin/develop)`)
+  .action((value: string) => {
+    const flow = value.trim();
+    if (!isReleaseFlow(flow)) {
+      process.stderr.write(`Error: invalid release flow "${value}". Must be one of: ${RELEASE_FLOWS.join(", ")}\n`);
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeConfig({ ...current, git: { ...current.git, releaseFlow: flow } });
+    process.stdout.write(`git release flow set to: ${flow}\n`);
+  });
+
 const configSet = new Command("set")
   .description("Set a configuration value")
   .addCommand(configSetType)
@@ -287,7 +302,8 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
   .addCommand(configSetDoWorkPrompt)
-  .addCommand(configSetGitTrunkBranch);
+  .addCommand(configSetGitTrunkBranch)
+  .addCommand(configSetGitReleaseFlow);
 
 export const configCommand = new Command("config")
   .description("Configure automata settings")

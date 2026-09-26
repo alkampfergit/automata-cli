@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import type { ReleaseFlow } from "../git/releaseFlow.js";
 
 export type RemoteType = "gh" | "azdo";
 
@@ -82,6 +83,11 @@ export interface AutomataGitConfig {
    * trunk detection cannot succeed or should not be relied on.
    */
   trunkBranch?: string;
+  /**
+   * Which release procedure `publish-release` runs. Unset means "detect it":
+   * gitflow when `origin` has a `develop` branch, trunk when it does not.
+   */
+  releaseFlow?: ReleaseFlow;
 }
 
 export interface AutomataConfig {

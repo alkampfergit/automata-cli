@@ -82,6 +82,14 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **`git rev-list --count A..B` exits 128 when either ref is missing**, so a "is the local branch behind?" helper needs a `git rev-parse --verify --quiet refs/heads/<b>` guard first; the missing-branch case is "nothing to be behind", not an error. Confirmed: 2026-09-18.
 - **A resolution helper returns a discriminated union carrying what it tried**, not `string | null`: `{ok:true;branch;source}` / `{ok:false;attempted}` lets the command print both the provenance line operators read and a failure message that names every candidate. A nullable string forces the message to be rebuilt at the call site from knowledge it does not have. Confirmed: 2026-09-18.
 - **A settings key for a command a human runs goes in its own top-level section, not under `doWork`**: `doWork.*` is documented as the unattended loop's configuration, so `git.trunkBranch` would mislead there. New section, plus the usual two reach points (`config set <kebab>` and a wizard screen). Confirmed: 2026-09-18.
+- **A probe that *chooses a procedure* must tell "no" from "could not ask"**: `ls-remote --exit-code --heads` exits 2
+  for a missing ref and 128 for an unreachable remote. `remoteBranchExists()` folds both into "absent", which is fine
+  for a fallback chain but would have silently switched `publish-release` to the trunk flow on a network blip. Use
+  `probeRemoteBranch()`, which reports all three outcomes, and refuse on the third. Confirmed: 2026-09-26.
+- **A CI-triggering release must move the branch ref and carry the tag in the same push**: branch-push workflows do not
+  fire on a no-op push or a tag-only push, and a commit pushed before its tag fails `git tag --points-at HEAD`. The
+  trunk flow uses an empty `chore(release)` commit plus `git push --atomic origin <trunk> <tag>`, the same guarantees
+  gitflow gets from `merge --no-ff` and its single multi-ref push. Confirmed: 2026-09-26.
 - **`process.exit` in a `catch`**: the `let x: T; try { x = f(); } catch { …; process.exit(1); }` idiom typechecks because `exit` returns `never`; reuse it instead of non-null assertions. Confirmed: 2026-09-09.
 
 - **A validation helper shared by 3+ commands belongs in `src/cli/spawnUtils.ts`**: it already holds the exit-on-bad-input CLI plumbing (`handleSpawnError`, `handleExitCode`, `shellQuote`), and `do-work`'s local `fail()` prints the identical `Error: <msg>` line, so one exported helper serves every surface. Why: the alternative was four copies, and a new module for one function is the indirection the constitution forbids. Confirmed: 2026-09-10.

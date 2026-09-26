@@ -15,6 +15,7 @@ import {
   tagExists,
   publishRelease,
   checkReleasePreconditions,
+  resolveReleaseFlow,
   type PrCheck,
   type PrInfo,
   type SonarFailureSummary,
@@ -24,6 +25,7 @@ import {
 } from "../git/gitService.js";
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
+import { describeReleaseFlowSource } from "../git/releaseFlow.js";
 import { checkChangelogSection, readChangelog } from "../git/changelogGate.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -438,19 +440,27 @@ const finishFeatureCmd = new Command("finish-feature")
   });
 
 const publishReleaseCmd = new Command("publish-release")
-  .description("Execute the full GitFlow release sequence and push to origin")
+  .description("Execute the release sequence (GitFlow or trunk-based) and push to origin")
   .argument("[version]", "Release version in X.Y.Z format (auto-detected from the trunk tag if omitted)")
   .option("--dry-run", "Print git commands without executing them")
   .addHelpText(
     "after",
     `
-Release sequence:
+Release flow: git.releaseFlow in .automata/config.json if set, else detected —
+gitflow when origin has a 'develop' branch, trunk when it does not.
+
+GitFlow sequence (run from develop):
   1. git checkout -b release/<version>
   2. git checkout <trunk> && git merge --no-ff release/<version>
   3. git tag <version>
   4. git checkout develop && git merge --no-ff release/<version>
   5. git branch -d release/<version>
   6. git push origin develop <trunk> <version>
+
+Trunk sequence (run from <trunk>; it may be ahead of origin, not behind):
+  1. git commit --allow-empty -m "chore(release): <version>"
+  2. git tag <version>
+  3. git push --atomic origin <trunk> <version>
 
 <trunk> is resolved from origin — git.trunkBranch in .automata/config.json if
 set, else origin/HEAD, the remote's advertised HEAD, or a probe of main/master.
@@ -462,22 +472,15 @@ and the minor segment is incremented (e.g. 1.2.0 → 1.3.0).
 
 CHANGELOG.md must already carry a '## [<version>] - YYYY-MM-DD' section for the
 version being released; the release is refused otherwise, in --dry-run too, and
-before any branch, merge or tag is created. A repository with no CHANGELOG.md is
-not subject to the check.`,
+before any commit, branch, merge or tag is created. A repository with no
+CHANGELOG.md is not subject to the check.`,
   )
   .action((version: string | undefined, options: { dryRun?: boolean }) => {
     const dryRun = options.dryRun ?? false;
 
-    // Preconditions: on develop, with a clean working tree.
-    const preconditions = checkReleasePreconditions();
-    if (!preconditions.ok) {
-      process.stderr.write(`Error: ${preconditions.message}\n`);
-      process.exit(1);
-    }
-
     // Resolve the trunk branch before anything else reads or writes a ref: every
-    // remaining step needs its name, and a repository that cannot answer should
-    // fail here, untouched.
+    // remaining step needs its name — including the trunk flow's branch check —
+    // and a repository that cannot answer should fail here, untouched.
     const trunk = resolveTrunkBranch();
     if (!trunk.ok) {
       process.stderr.write(`Error: ${unresolvedTrunkMessage(trunk.attempted)}\n`);
@@ -485,7 +488,23 @@ not subject to the check.`,
     }
     const trunkBranch = trunk.branch;
     const trunkRef = `origin/${trunkBranch}`;
+
+    const flow = resolveReleaseFlow();
+    if (!flow.ok) {
+      process.stderr.write(`Error: ${flow.message}\n`);
+      process.exit(1);
+    }
+    const releaseFlow = flow.flow;
+
+    // Preconditions: on the flow's branch, with a clean working tree.
+    const preconditions = checkReleasePreconditions(releaseFlow === "gitflow" ? "develop" : trunkBranch);
+    if (!preconditions.ok) {
+      process.stderr.write(`Error: ${preconditions.message}\n`);
+      process.exit(1);
+    }
+
     process.stdout.write(`Trunk branch: ${trunkBranch} (${describeTrunkSource(trunk.source, trunkBranch)})\n`);
+    process.stdout.write(`Release flow: ${releaseFlow} (${describeReleaseFlowSource(flow.source)})\n`);
 
     // Read-only, so it runs under --dry-run as well: without it the version
     // would be inferred from whatever tags this clone happens to have.
@@ -541,7 +560,7 @@ not subject to the check.`,
     }
 
     try {
-      publishRelease(resolvedVersion, dryRun, trunkBranch);
+      publishRelease(resolvedVersion, dryRun, trunkBranch, releaseFlow);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exit(1);

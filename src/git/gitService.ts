@@ -8,6 +8,13 @@ import {
   parseOriginHeadRef,
   type TrunkSource,
 } from "./trunkDetection.js";
+import {
+  invalidReleaseFlowMessage,
+  isReleaseFlow,
+  planRelease,
+  type ReleaseFlow,
+  type ReleaseFlowSource,
+} from "./releaseFlow.js";
 
 export interface PrCheck {
   name: string;
@@ -1412,27 +1419,80 @@ export function tagExists(version: string): boolean {
   return stdout.trim().length > 0;
 }
 
+export type RemoteBranchProbe = { ok: true; exists: boolean } | { ok: false; message: string };
+
+/**
+ * Ask `origin` whether it has `branch`, telling "no" apart from "could not ask".
+ * `ls-remote --exit-code` exits 2 for a missing ref and something else (128 for
+ * an unreachable remote) on failure — a distinction `remoteBranchExists` drops,
+ * which is fine for a probe with fallbacks and wrong for one that picks a flow.
+ */
+export function probeRemoteBranch(branch: string): RemoteBranchProbe {
+  const { status, stderr } = run("git", ["ls-remote", "--exit-code", "--heads", "origin", branch]);
+  if (status === 0) return { ok: true, exists: true };
+  if (status === 2) return { ok: true, exists: false };
+  return {
+    ok: false,
+    message: stderr.trim() || `git ls-remote --exit-code --heads origin ${branch} failed.`,
+  };
+}
+
+export type ReleaseFlowResolution =
+  | { ok: true; flow: ReleaseFlow; source: ReleaseFlowSource }
+  | { ok: false; message: string };
+
+/**
+ * Work out which release procedure applies: `git.releaseFlow` if set, otherwise
+ * gitflow when `origin` has a `develop` branch and trunk when it does not.
+ *
+ * The remote is asked directly because a `--single-branch` clone has no
+ * `refs/remotes/origin/develop` to look at. A failed probe refuses rather than
+ * guessing: a transient network error must not quietly select the other flow.
+ */
+export function resolveReleaseFlow(): ReleaseFlowResolution {
+  // Raw for the same reason as `resolveTrunkBranch`: prompt references are
+  // irrelevant here and must not be able to block a release.
+  const configured: unknown = readRawConfig().git?.releaseFlow;
+  if (configured !== undefined) {
+    if (!isReleaseFlow(configured)) return { ok: false, message: invalidReleaseFlowMessage(configured) };
+    return { ok: true, flow: configured, source: "config" };
+  }
+
+  const develop = probeRemoteBranch("develop");
+  if (!develop.ok) {
+    return {
+      ok: false,
+      message:
+        `Could not check whether origin has a 'develop' branch to choose the release flow.\n${develop.message}\n` +
+        "Set it explicitly with: automata config set git-release-flow <gitflow|trunk>",
+    };
+  }
+  return develop.exists
+    ? { ok: true, flow: "gitflow", source: "develop-present" }
+    : { ok: true, flow: "trunk", source: "develop-absent" };
+}
+
 export type ReleasePreconditionResult = { ok: true } | { ok: false; message: string };
 
 /**
  * The checks that must hold before `publish-release` touches anything: the run
- * starts from `develop` and the working tree is clean.
+ * starts from the flow's branch — `develop` for gitflow, the trunk for trunk —
+ * and the working tree is clean.
  *
  * They live here rather than in the command so the command stays a thin printer
- * of whatever this decides. `develop` is deliberately literal — only the trunk
- * side of the release is detected.
+ * of whatever this decides.
  */
-export function checkReleasePreconditions(): ReleasePreconditionResult {
+export function checkReleasePreconditions(expectedBranch: string): ReleasePreconditionResult {
   let branch: string;
   try {
     branch = getCurrentBranch();
   } catch (err) {
     return { ok: false, message: (err as Error).message };
   }
-  if (branch !== "develop") {
+  if (branch !== expectedBranch) {
     return {
       ok: false,
-      message: `publish-release must be run from the 'develop' branch (currently on '${branch}').`,
+      message: `publish-release must be run from the '${expectedBranch}' branch (currently on '${branch}').`,
     };
   }
   if (hasUncommittedChanges()) {
@@ -1444,37 +1504,11 @@ export function checkReleasePreconditions(): ReleasePreconditionResult {
   return { ok: true };
 }
 
-export function publishRelease(version: string, dryRun: boolean, trunk: string): void {
-  const releaseBranch = `release/${version}`;
-
+export function publishRelease(version: string, dryRun: boolean, trunk: string, flow: ReleaseFlow): void {
   // Read-only, so it runs in a dry run too: it decides which checkout line the
-  // transcript shows, and a dry run that prints a different command from the one
-  // a real run would execute is worse than no dry run.
-  //
-  // `-b <trunk> origin/<trunk>` deliberately omits `--track`: in a clone made
-  // with `--single-branch`, git refuses to set an upstream from a ref its
-  // configured refspec does not cover, which is the very clone shape this
-  // feature exists to support.
-  const checkoutTrunk = localBranchExists(trunk)
-    ? { args: ["checkout", trunk], desc: `git checkout ${trunk}` }
-    : {
-        args: ["checkout", "-b", trunk, `origin/${trunk}`],
-        desc: `git checkout -b ${trunk} origin/${trunk}`,
-      };
-
-  const steps: Array<{ args: string[]; desc: string }> = [
-    { args: ["checkout", "-b", releaseBranch], desc: `git checkout -b ${releaseBranch}` },
-    checkoutTrunk,
-    { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
-    { args: ["tag", version], desc: `git tag ${version}` },
-    { args: ["checkout", "develop"], desc: `git checkout develop` },
-    { args: ["merge", "--no-ff", releaseBranch], desc: `git merge --no-ff ${releaseBranch}` },
-    { args: ["branch", "-d", releaseBranch], desc: `git branch -d ${releaseBranch}` },
-    {
-      args: ["push", "origin", "develop", trunk, version],
-      desc: `git push origin develop ${trunk} ${version}`,
-    },
-  ];
+  // gitflow transcript shows, and a dry run that prints a different command from
+  // the one a real run would execute is worse than no dry run.
+  const steps = planRelease(flow, version, trunk, flow === "gitflow" && localBranchExists(trunk));
 
   for (const step of steps) {
     if (dryRun) {

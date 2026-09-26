@@ -45,6 +45,7 @@ const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 const DO_WORK_PR_ORPHAN_SCREEN_TEXT = "Instructions for a pull request with no linked issue:";
 const GIT_TRUNK_SCREEN_TEXT = "Branch publish-release releases to";
+const GIT_RELEASE_FLOW_SCREEN_TEXT = "Git — Release Flow";
 
 // ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
 // tell it apart from the start of a longer escape sequence, so advancing only
@@ -777,7 +778,16 @@ describe("ConfigWizard — Git section", () => {
     expect(lastFrame()).toContain(GIT_TRUNK_SCREEN_TEXT);
   });
 
-  it("saves the typed branch under git.trunkBranch", async () => {
+  it("moves on to the release flow screen, which defaults to detection", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(GIT_RELEASE_FLOW_SCREEN_TEXT);
+    expect(lastFrame()).toContain("❯ Detect from origin");
+  });
+
+  it("saves the typed branch under git.trunkBranch, leaving the flow to detection", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToGit(stdin);
@@ -785,16 +795,52 @@ describe("ConfigWizard — Git section", () => {
     await tick();
     stdin.write(ENTER);
     await tick();
-    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: "trunk" } }));
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: "trunk", releaseFlow: undefined } }),
+    );
   });
 
-  it("clears the key when the field is left blank, restoring detection", async () => {
+  it("clears the trunk key when the field is left blank, restoring detection", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToGit(stdin);
     stdin.write(ENTER);
     await tick();
-    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: undefined } }));
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: undefined, releaseFlow: undefined } }),
+    );
+  });
+
+  it.each([
+    [1, "gitflow"],
+    [2, "trunk"],
+  ])("saves the flow picked %i down as git.releaseFlow = %s", async (downs, flow) => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    for (let i = 0; i < downs; i += 1) stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: undefined, releaseFlow: flow } }),
+    );
+  });
+
+  it("goes back from the release flow screen to the trunk branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(GIT_TRUNK_SCREEN_TEXT);
   });
 
   it("goes back to the main menu from the trunk branch screen", async () => {

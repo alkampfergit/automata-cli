@@ -10,6 +10,16 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- `automata git publish-release` supports trunk-based repositories that only have `main` or `master`. The trunk flow
+  runs from the trunk branch. It creates an empty `chore(release): <version>` commit, tags it, and pushes the trunk
+  and the tag together with `git push --atomic`, so a CI that publishes from the trunk push sees the tag on `HEAD`.
+  The flow is detected (gitflow when `origin` has a `develop` branch, trunk otherwise) and printed as
+  `Release flow: …`. Pin it with the new `git.releaseFlow` key, through
+  `automata config set git-release-flow <gitflow|trunk>` or the wizard's `Git` screen. See
+  [docs/git.md](docs/git.md#the-release-flow-is-detected-not-assumed).
+
 ## [0.8.1] - 2026-09-21
 
 ### Added

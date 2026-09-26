@@ -270,7 +270,8 @@ If any precondition fails the command prints a descriptive error to stderr and e
 
 ## `automata git publish-release`
 
-Execute the full GitFlow release sequence and push the results to `origin`. Does **not** require the `gh` CLI — only `git` is needed.
+Execute the release sequence, GitFlow or trunk-based, and push the results to `origin`. Does **not** require the `gh`
+CLI — only `git` is needed.
 
 ```bash
 automata git publish-release            # auto-detect version from the trunk tag
@@ -297,6 +298,33 @@ Trunk branch: main (from origin/HEAD)
 
 If none of the four answers, the command exits `1` listing every candidate it tried, before touching the repository.
 
+### The release flow is detected, not assumed
+
+There are two release procedures:
+
+- **`gitflow`**: run from `develop`. It creates `release/<version>`, merges it into the trunk and back into `develop`,
+  and tags the trunk merge.
+- **`trunk`**: for repositories that only have `main` or `master`. It runs from the trunk, creates an empty release
+  commit, tags it, and pushes the trunk and the tag together.
+
+The flow is resolved on every run, straight after the trunk branch:
+
+| Order | Source | Result |
+|---|---|---|
+| 1 | `git.releaseFlow` in `.automata/config.json` | That flow; `origin` is not asked. Unset by default. See [docs/config.md](config.md#git). |
+| 2 | `git ls-remote --exit-code --heads origin develop` | `gitflow` if `origin` has a `develop` branch, `trunk` if it does not. |
+
+The resolved flow is printed next to the trunk:
+
+```
+Trunk branch: main (from origin/HEAD)
+Release flow: trunk (detected: origin/develop does not exist)
+```
+
+The probe asks the remote directly, so it gets the same answer in a `--single-branch` clone. If the probe fails for any
+reason other than "no such branch" (an unreachable remote, for example), the command exits `1` with git's error rather
+than guessing a flow. A `git.releaseFlow` value other than `gitflow` or `trunk` is also refused.
+
 ### It fetches first, including in --dry-run
 
 Before the version is inferred, the command runs:
@@ -315,8 +343,9 @@ makes the version a dry run prints the same one a real run would use. A fetch th
 ### Before you run it
 
 The command does not touch `CHANGELOG.md`, but it **checks it**. Roll the `Unreleased` section into the new version
-heading and commit that on `develop` first — `publish-release` requires a clean working tree, so it has to happen
-before, not after. The exact three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-it).
+heading and commit that first — on `develop` for gitflow, on the trunk for the trunk flow. `publish-release` requires a
+clean working tree, so it has to happen before, not after. In the trunk flow the roll commit does not need to be
+pushed; it goes out in the same push as the release. The exact three steps are in [docs/maintenance.md](maintenance.md#what-a-release-does-to-it).
 
 ### The changelog precondition
 
@@ -331,8 +360,8 @@ inside a bullet or a `[1.3.0]: https://…` link-reference footer all count as *
 `tests/unit/changelog.test.ts` rejects those too, so accepting them here would let the release through into a red
 build.
 
-The check is read-only and runs in `--dry-run` as well, before any branch, merge or tag is created, so a refusal leaves
-the repository exactly as it was.
+The check is read-only and runs in `--dry-run` as well, before any commit, branch, merge or tag is created, so a refusal
+leaves the repository exactly as it was.
 
 **A repository with no `CHANGELOG.md` is not subject to it.** An absent or unreadable file passes, so `automata` stays
 usable against projects that keep no changelog.
@@ -354,7 +383,7 @@ moves the detection to before the tag exists.
 |---|---|
 | `--dry-run` | Print each git command that would be executed without running them |
 
-### Release sequence
+### Release sequence — gitflow
 
 The command executes these git operations in order:
 
@@ -370,26 +399,57 @@ The command executes these git operations in order:
 7. `git branch -d release/<version>` — delete the local release branch
 8. `git push origin develop <trunk> <version>` — push all refs
 
+### Release sequence — trunk
+
+1. `git commit --allow-empty -m "chore(release): <version>"`: an empty commit made for the release.
+2. `git tag <version>`: tags that commit.
+3. `git push --atomic origin <trunk> <version>`: pushes the trunk and the tag in one push. Any local commits that are
+   ahead of `origin`, such as the changelog roll, go with them.
+
+There is no release branch and no merge, `develop` is never touched, and `package.json` is not modified.
+
+**Why an empty commit, and why one atomic push.** The trunk flow expects CI to publish from the push to the trunk
+branch when a version tag is on `HEAD`, which is how this repository's `.github/workflows/ci.yml` works. That only
+happens if:
+
+- **the trunk ref moves in the push.** Otherwise no push event fires. The empty commit guarantees the move even when
+  everything else was already pushed, the same way the `--no-ff` merge does in gitflow.
+- **the tag arrives in the same push.** A commit pushed before its tag makes the CI checkout find no version tag on
+  `HEAD`, and a tag pushed on its own does not trigger a branch-push workflow at all. `--atomic` also means that either
+  both refs land or neither does.
+
+A GitHub release, if you want one, comes from CI, not from this command.
+
+**If the push is rejected**, for example because someone pushed to the trunk in the meantime, `origin` is unchanged,
+but the local release commit and tag remain. Undo them, update the trunk and re-run:
+
+```bash
+git tag -d <version>
+git reset --soft HEAD~1
+git pull --ff-only
+```
+
 ### Preconditions (all must pass before any changes are made)
 
 | Check | Failure message |
 |---|---|
-| Current branch is `develop` | `publish-release must be run from the 'develop' branch` |
-| Clean working tree | `You have uncommitted changes...` |
 | Trunk branch resolves | `Could not determine the trunk branch of 'origin'` |
+| Release flow resolves (valid `git.releaseFlow`, or the `origin/develop` probe answers) | `Invalid git.releaseFlow ...` / `Could not check whether origin has a 'develop' branch ...` |
+| Current branch is `develop` (gitflow) or `<trunk>` (trunk) | `publish-release must be run from the '<branch>' branch` |
+| Clean working tree | `You have uncommitted changes...` |
 | `git fetch` from `origin` succeeds | `Failed to fetch <trunk> and tags from origin` |
 | Version matches `X.Y.Z` (if provided) | `Version '...' is not valid semver. Use X.Y.Z format` |
 | Semver tag found on the trunk (if auto-detecting) | `No semver tag found on origin/<trunk>` |
 | Tag does not already exist | `Tag '...' already exists` |
 | `CHANGELOG.md` has a section for the version (skipped when the file is absent) | `CHANGELOG.md has no section for ...` |
-| A local trunk branch is not behind the remote | `Local branch '<trunk>' is N commit(s) behind origin/<trunk>` |
+| A local trunk branch is not behind the remote (being ahead is fine) | `Local branch '<trunk>' is N commit(s) behind origin/<trunk>` |
 
 Every precondition is read-only and runs in `--dry-run` as well. A local trunk that is behind is **refused, never
 fast-forwarded** — it may carry work this command knows nothing about; update it with
 `git merge --ff-only origin/<trunk>` or delete it and re-run.
 
-If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. No branch is
-created, merged, tagged or pushed.
+If any precondition fails the command prints a descriptive error to stderr and exits with code `1`. Nothing is
+committed, branched, merged, tagged or pushed.
 
 ### Exit codes
 

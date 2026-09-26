@@ -71,7 +71,7 @@ Checks that the PR exists and is merged, the working tree is clean, and the remo
 
 ### `automata git publish-release`
 
-Execute the full GitFlow release sequence and push to `origin`. Only requires `git`.
+Execute the release sequence — GitFlow, or trunk-based for a repository without `develop` — and push to `origin`. Only requires `git`.
 
 ```bash
 automata git publish-release            # auto-detect version from the trunk tag
