@@ -14,5 +14,8 @@
   "allowedUsers": [
     "alkampfergit"
   ],
-  "agentUser": "alkampferoutlook"
+  "agentUser": "alkampferoutlook",
+  "git": {
+    "trunkBranch": "master"
+  }
 }
