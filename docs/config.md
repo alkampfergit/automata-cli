@@ -138,6 +138,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
     },
     "maxRunsPerTick": 0,
     "lockStaleMinutes": 120,
+    "dumpOnBlock": true,
     "prompts": {
       "issueDiscuss": "do-work-issue-discuss.md",
       "prWork": "do-work-pr-work.md",
@@ -158,6 +159,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `effort.codex` | *(none)* | Default reasoning effort when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
+| `dumpOnBlock` | `true` | Print the full six-section health report when a tick exits having done nothing — a held run lock, an unusable configuration, a failed pre-flight, no candidate picked up, or every item skipped. Set `false` for the one-line behaviour. See [do-work.md](do-work.md#when-a-tick-does-nothing). |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
 | `prompts.prWork` | built-in | Instructions for a pull-request turn. |
 | `prompts.prOrphan` | built-in | Instructions for a turn on an open pull request that closes no issue of this repository — a dependency bump, say. See [do-work.md](do-work.md#the-orphan-pull-request-pass). |
@@ -174,6 +176,7 @@ automata config set do-work-effort claude high
 automata config set do-work-effort codex medium
 automata config set do-work-max-runs 2
 automata config set do-work-lock-stale-minutes 45
+automata config set do-work-dump-on-block false
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
 automata config set do-work-prompt pr-work "Use the `my-pr-skill` skill."
 automata config set do-work-prompt pr-orphan do-work-pr-orphan.md
@@ -224,7 +227,7 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
-The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick` and `lockStaleMinutes`, so every `doWork` setting is reachable interactively as well as through `config set`.
+The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick`, `lockStaleMinutes` and `dumpOnBlock`, so every `doWork` setting is reachable interactively as well as through `config set`. The last screen, *Report on a Blocked Tick*, is the one that writes the whole section — leaving the wizard before it changes nothing.
 
 ---
 
@@ -235,7 +238,8 @@ Settings for the git commands a human runs. Kept apart from [`doWork`](#dowork),
 ```json
 {
   "git": {
-    "trunkBranch": "main"
+    "trunkBranch": "main",
+    "releaseFlow": "trunk"
   }
 }
 ```
@@ -243,18 +247,24 @@ Settings for the git commands a human runs. Kept apart from [`doWork`](#dowork),
 | Key | Default | Meaning |
 |---|---|---|
 | `trunkBranch` | *(unset — detected)* | The branch [`publish-release`](git.md#automata-git-publish-release) releases to. Unset means the name is resolved from `origin` on every run (`origin/HEAD`, then the remote's advertised HEAD, then a probe of `main`/`master`). Set it when detection cannot succeed, or to pin the name. |
+| `releaseFlow` | *(unset — detected)* | Which procedure [`publish-release`](git.md#the-release-flow-is-detected-not-assumed) runs: `gitflow` (from `develop`, through `release/<version>`) or `trunk` (from the trunk: an empty release commit, a tag and one atomic push). Unset means `gitflow` when `origin` has a `develop` branch and `trunk` when it does not. Any other value makes `publish-release` refuse. |
 
 ### Setting it non-interactively
 
 ```bash
 automata config set git-trunk-branch main
+automata config set git-release-flow trunk     # or: gitflow
 ```
 
-The setter rejects an empty value. To go back to detection, remove the key from `.automata/config.json` or clear the
-field on the wizard's `Git` screen.
+`git-trunk-branch` rejects an empty value, and `git-release-flow` accepts only `gitflow` or `trunk`. To go back to
+detection, remove the key from `.automata/config.json` or use the wizard: clear the trunk field, or pick "Detect from
+origin" as the release flow.
 
 ### Wizard
 
 | Wizard screen | Key written |
 |---|---|
 | Git — Trunk Branch | `git.trunkBranch` (blank clears it) |
+| Git — Release Flow | `git.releaseFlow` ("Detect from origin" clears it) |
+
+The `Git` entry shows both screens in turn and saves them together when the release flow is confirmed.

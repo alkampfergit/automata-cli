@@ -18,6 +18,7 @@ import {
   type Executor,
   type AutomataConfig,
 } from "./configStore.js";
+import type { ReleaseFlow } from "../git/releaseFlow.js";
 
 function writePromptFile(filename: string, content: string): void {
   const dir = join(process.cwd(), ".automata");
@@ -39,6 +40,19 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
 const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
   { label: "Claude Code", value: "claude" },
   { label: "Codex", value: "codex" },
+];
+
+/** On first, so the default sits under the cursor when the screen opens. */
+const DUMP_ON_BLOCK_OPTIONS: { label: string; value: boolean }[] = [
+  { label: "Yes — print the full health report when a tick does nothing", value: true },
+  { label: "No — print only the one-line reason", value: false },
+];
+
+// `undefined` clears `git.releaseFlow`, which is how detection is restored.
+const RELEASE_FLOW_OPTIONS: { label: string; value: ReleaseFlow | undefined }[] = [
+  { label: "Detect from origin (gitflow if origin/develop exists)", value: undefined },
+  { label: "GitFlow", value: "gitflow" },
+  { label: "Trunk-based", value: "trunk" },
 ];
 
 // New entries are appended so existing menu positions — and the navigation tests
@@ -82,10 +96,12 @@ type Screen =
   | "do-work-codex-effort"
   | "do-work-max-runs"
   | "do-work-lock-stale"
+  | "do-work-dump-on-block"
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt"
   | "do-work-pr-orphan-prompt"
-  | "git-trunk-branch";
+  | "git-trunk-branch"
+  | "git-release-flow";
 
 /** The subset of ink's key object this wizard reacts to. */
 interface InkKey {
@@ -265,6 +281,17 @@ export function ConfigWizard() {
   const [doWorkLockStale, setDoWorkLockStale] = useState(
     String(existing.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes),
   );
+  // `Math.max(…, 0)` as for the executor index: a value the option list does not
+  // contain must land on the first entry, not on -1, which every arrow key would
+  // then carry forward as a selection.
+  const [doWorkDumpOnBlockIndex, setDoWorkDumpOnBlockIndex] = useState(
+    Math.max(
+      DUMP_ON_BLOCK_OPTIONS.findIndex(
+        (option) => option.value === (existing.doWork?.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock),
+      ),
+      0,
+    ),
+  );
   const [validationError, setValidationError] = useState("");
   const [doWorkMaxRuns, setDoWorkMaxRuns] = useState(
     String(existing.doWork?.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
@@ -279,6 +306,8 @@ export function ConfigWizard() {
     existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   );
   const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
+  const initialReleaseFlowIndex = RELEASE_FLOW_OPTIONS.findIndex((o) => o.value === existing.git?.releaseFlow);
+  const [releaseFlowIndex, setReleaseFlowIndex] = useState(Math.max(initialReleaseFlowIndex, 0));
   const [pendingRemote, setPendingRemote] = useState<RemoteType>(existing.remoteType ?? "gh");
   const [pendingTechnique, setPendingTechnique] = useState<IssueDiscoveryTechnique>(
     existing.issueDiscoveryTechnique ?? "label",
@@ -433,33 +462,15 @@ export function ConfigWizard() {
         setDoWorkLockStale(update);
       },
       onSubmit: () => {
+        // Validated here but written on the next screen, which is the last of
+        // the Do Work chain: the whole section is saved in one write, so a
+        // wizard abandoned midway leaves the file untouched.
         const parsed = parseWholeInt(doWorkLockStale);
         if (parsed === null || parsed <= 0) {
           setValidationError("Enter a whole number of minutes greater than zero.");
           return;
         }
-        const maxRuns = parseWholeInt(doWorkMaxRuns);
-        const current = readRawConfig();
-        writeConfig({
-          ...current,
-          doWork: {
-            ...current.doWork,
-            baseBranch: doWorkBaseBranch.trim() || undefined,
-            protectedBranches: parseAllowedUsers(doWorkProtectedBranches),
-            executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
-            models: {
-              claude: doWorkClaudeModel.trim() || undefined,
-              codex: doWorkCodexModel.trim() || undefined,
-            },
-            effort: {
-              claude: doWorkClaudeEffort.trim() || undefined,
-              codex: doWorkCodexEffort.trim() || undefined,
-            },
-            maxRunsPerTick: maxRuns ?? undefined,
-            lockStaleMinutes: parsed,
-          },
-        });
-        exit();
+        setScreen("do-work-dump-on-block");
       },
       onBack: () => setScreen("do-work-max-runs"),
     },
@@ -498,14 +509,7 @@ export function ConfigWizard() {
     },
     "git-trunk-branch": {
       setValue: setGitTrunkBranch,
-      onSubmit: () => {
-        const branch = gitTrunkBranch.trim();
-        const current = readRawConfig();
-        // Blank clears the key, which is how an operator goes back to detecting
-        // the trunk from the remote.
-        writeConfig({ ...current, git: { ...current.git, trunkBranch: branch || undefined } });
-        exit();
-      },
+      onSubmit: () => setScreen("git-release-flow"),
       onBack: () => setScreen("main"),
     },
   };
@@ -559,6 +563,60 @@ export function ConfigWizard() {
       setIndex: setDoWorkExecutorIndex,
       onSelect: () => setScreen("do-work-claude-model"),
       onBack: () => setScreen("do-work-protected-branches"),
+    },
+    "do-work-dump-on-block": {
+      index: doWorkDumpOnBlockIndex,
+      length: DUMP_ON_BLOCK_OPTIONS.length,
+      setIndex: setDoWorkDumpOnBlockIndex,
+      onSelect: () => {
+        const maxRuns = parseWholeInt(doWorkMaxRuns);
+        const current = readRawConfig();
+        writeConfig({
+          ...current,
+          doWork: {
+            ...current.doWork,
+            baseBranch: doWorkBaseBranch.trim() || undefined,
+            protectedBranches: parseAllowedUsers(doWorkProtectedBranches),
+            executor: EXECUTOR_OPTIONS[doWorkExecutorIndex].value,
+            models: {
+              claude: doWorkClaudeModel.trim() || undefined,
+              codex: doWorkCodexModel.trim() || undefined,
+            },
+            effort: {
+              claude: doWorkClaudeEffort.trim() || undefined,
+              codex: doWorkCodexEffort.trim() || undefined,
+            },
+            maxRunsPerTick: maxRuns ?? undefined,
+            // Validated on the previous screen, which refuses to advance without
+            // a positive whole number.
+            lockStaleMinutes: parseWholeInt(doWorkLockStale) ?? DEFAULT_DO_WORK.lockStaleMinutes,
+            dumpOnBlock: DUMP_ON_BLOCK_OPTIONS[doWorkDumpOnBlockIndex].value,
+          },
+        });
+        exit();
+      },
+      onBack: () => setScreen("do-work-lock-stale"),
+    },
+    "git-release-flow": {
+      index: releaseFlowIndex,
+      length: RELEASE_FLOW_OPTIONS.length,
+      setIndex: setReleaseFlowIndex,
+      onSelect: () => {
+        const branch = gitTrunkBranch.trim();
+        const current = readRawConfig();
+        // Blank / "Detect" clear their keys, which is how an operator goes back
+        // to detecting the trunk and the flow from the remote.
+        writeConfig({
+          ...current,
+          git: {
+            ...current.git,
+            trunkBranch: branch || undefined,
+            releaseFlow: RELEASE_FLOW_OPTIONS[releaseFlowIndex].value,
+          },
+        });
+        exit();
+      },
+      onBack: () => setScreen("git-trunk-branch"),
     },
   };
 
@@ -671,7 +729,7 @@ export function ConfigWizard() {
       title: "Do Work — Lock Staleness",
       label: "Minutes before a run lock from another host is treated as stale:",
       value: doWorkLockStale,
-      hint: `Type a number · Enter to save · ${BACK}`,
+      hint: `Type a number · Enter to continue · ${BACK}`,
     },
     "do-work-discuss-prompt": {
       title: "Prompts — Do Work — Discuss",
@@ -695,7 +753,7 @@ export function ConfigWizard() {
       title: "Git — Trunk Branch",
       label: "Branch publish-release releases to (blank = detect it from the remote):",
       value: gitTrunkBranch,
-      hint: `Type branch · Enter to save · ${BACK}`,
+      hint: `Type branch · Enter to continue · ${BACK}`,
     },
   };
 
@@ -729,6 +787,18 @@ export function ConfigWizard() {
       options: EXECUTOR_OPTIONS.map((o) => o.label),
       index: doWorkExecutorIndex,
       hint: `↑/↓ to move · Enter to continue · ${BACK}`,
+    },
+    "do-work-dump-on-block": {
+      title: "Do Work — Report on a Blocked Tick",
+      options: DUMP_ON_BLOCK_OPTIONS.map((o) => o.label),
+      index: doWorkDumpOnBlockIndex,
+      hint: `↑/↓ to move · Enter to save and exit · ${BACK}`,
+    },
+    "git-release-flow": {
+      title: "Git — Release Flow",
+      options: RELEASE_FLOW_OPTIONS.map((o) => o.label),
+      index: releaseFlowIndex,
+      hint: `↑/↓ to move · Enter to save · ${BACK}`,
     },
   };
 

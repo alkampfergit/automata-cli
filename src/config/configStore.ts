@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import type { ReleaseFlow } from "../git/releaseFlow.js";
 
 export type RemoteType = "gh" | "azdo";
 
@@ -68,6 +69,14 @@ export interface AutomataDoWorkConfig {
   /** 0 means unlimited. */
   maxRunsPerTick?: number;
   lockStaleMinutes?: number;
+  /**
+   * Render the full health report when a tick exits without doing anything.
+   *
+   * On by default: a blocked tick is precisely the case where one line is not
+   * enough, and a cron log nobody reads costs nothing. Turn it off for a
+   * scheduler whose log is read line by line.
+   */
+  dumpOnBlock?: boolean;
   prompts?: DoWorkPrompts;
 }
 
@@ -82,6 +91,11 @@ export interface AutomataGitConfig {
    * trunk detection cannot succeed or should not be relied on.
    */
   trunkBranch?: string;
+  /**
+   * Which release procedure `publish-release` runs. Unset means "detect it":
+   * gitflow when `origin` has a `develop` branch, trunk when it does not.
+   */
+  releaseFlow?: ReleaseFlow;
 }
 
 export interface AutomataConfig {
@@ -131,6 +145,7 @@ export const DEFAULT_DO_WORK = {
   executor: "claude" as Executor,
   maxRunsPerTick: 0,
   lockStaleMinutes: 120,
+  dumpOnBlock: true,
 };
 
 /**

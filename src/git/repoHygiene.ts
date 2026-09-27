@@ -17,7 +17,7 @@ import {
   listPullRequestsForHead,
   type PullRequestHeadRef,
 } from "../github/ghWorkService.js";
-import { RUN_LOCK_RELATIVE_PATH } from "../run/runLock.js";
+import { AUTOMATA_OWN_PATHS } from "../run/runLock.js";
 
 /**
  * Put the *repository* where a tick needs it, once per tick.
@@ -204,7 +204,7 @@ function findOpenPr(branch: string): PullRequestHeadRef | null {
  * already handles.
  */
 function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOutcome {
-  if (!hasUncommittedChanges([RUN_LOCK_RELATIVE_PATH])) {
+  if (!hasUncommittedChanges([...AUTOMATA_OWN_PATHS])) {
     options.log("  rescue    nothing to do; the working tree is clean\n");
     return { kind: "clean" };
   }
@@ -228,7 +228,7 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
   //
   // Excluding the lock this very run created: committing it would put a pid in
   // the branch and leave the next tick's tree dirty for a file we just added.
-  const staged = stageAllExcept([RUN_LOCK_RELATIVE_PATH]);
+  const staged = stageAllExcept([...AUTOMATA_OWN_PATHS]);
   if (!staged.ok) {
     options.log(`  rescue    FAILED to stage the changes: ${staged.stderr}\n`);
     return { kind: "failed", step: "stage", detail: staged.stderr };

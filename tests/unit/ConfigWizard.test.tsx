@@ -10,7 +10,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
   DEFAULT_CHECK_ISSUE_PROMPT: "default check-issue prompt",
-  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120 },
+  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120, dumpOnBlock: true },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
@@ -37,6 +37,7 @@ const DO_WORK_PROTECTED_SCREEN_TEXT = "Branches a build turn must never push to"
 const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
+const DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT = "Do Work — Report on a Blocked Tick";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
 const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Claude";
@@ -45,6 +46,7 @@ const DO_WORK_DISCUSS_SCREEN_TEXT = "Discussion turn instructions:";
 const DO_WORK_PR_SCREEN_TEXT = "Pull request turn instructions:";
 const DO_WORK_PR_ORPHAN_SCREEN_TEXT = "Instructions for a pull request with no linked issue:";
 const GIT_TRUNK_SCREEN_TEXT = "Branch publish-release releases to";
+const GIT_RELEASE_FLOW_SCREEN_TEXT = "Git — Release Flow";
 
 // ink >= 7 holds a bare ESC for `pendingInputFlushDelayMilliseconds` (20ms) to
 // tell it apart from the start of a longer escape sequence, so advancing only
@@ -469,9 +471,9 @@ describe("ConfigWizard — Do Work section", () => {
     expect(lastFrame()).toContain("develop");
   });
 
-  it("walks base branch, executor, both models, both efforts, run cap and lock staleness, then saves", async () => {
+  it("walks base branch, executor, both models, both efforts, run cap, lock staleness and the blocked-exit report, then saves", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
-    const { stdin } = render(<ConfigWizard />);
+    const { stdin, lastFrame } = render(<ConfigWizard />);
     await navigateToDoWork(stdin);
 
     // Base branch: clear "develop" then type "main".
@@ -523,6 +525,14 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
+    // Blocked-exit report: the last screen of the chain, and the one that writes.
+    // Down once to pick "No", so the assertion cannot pass on the default.
+    expect(lastFrame()).toContain("Report on a Blocked Tick");
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
     expect(writeConfig).toHaveBeenCalledWith({
       doWork: {
         baseBranch: "main",
@@ -532,8 +542,20 @@ describe("ConfigWizard — Do Work section", () => {
         effort: { claude: "high", codex: "medium" },
         maxRunsPerTick: 2,
         lockStaleMinutes: 45,
+        dumpOnBlock: false,
       },
     });
+  });
+
+  it("goes back from the blocked-exit report screen to lock staleness", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT);
+    stdin.write(ESC);
+    await tick();
+
+    expect(lastFrame()).toContain(DO_WORK_LOCK_STALE_SCREEN_TEXT);
   });
 
   it("reaches an effort screen for each executor, after that executor's model screen", async () => {
@@ -777,7 +799,16 @@ describe("ConfigWizard — Git section", () => {
     expect(lastFrame()).toContain(GIT_TRUNK_SCREEN_TEXT);
   });
 
-  it("saves the typed branch under git.trunkBranch", async () => {
+  it("moves on to the release flow screen, which defaults to detection", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    expect(lastFrame()).toContain(GIT_RELEASE_FLOW_SCREEN_TEXT);
+    expect(lastFrame()).toContain("❯ Detect from origin");
+  });
+
+  it("saves the typed branch under git.trunkBranch, leaving the flow to detection", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToGit(stdin);
@@ -785,16 +816,52 @@ describe("ConfigWizard — Git section", () => {
     await tick();
     stdin.write(ENTER);
     await tick();
-    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: "trunk" } }));
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: "trunk", releaseFlow: undefined } }),
+    );
   });
 
-  it("clears the key when the field is left blank, restoring detection", async () => {
+  it("clears the trunk key when the field is left blank, restoring detection", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
     const { stdin } = render(<ConfigWizard />);
     await navigateToGit(stdin);
     stdin.write(ENTER);
     await tick();
-    expect(writeConfig).toHaveBeenCalledWith(expect.objectContaining({ git: { trunkBranch: undefined } }));
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: undefined, releaseFlow: undefined } }),
+    );
+  });
+
+  it.each([
+    [1, "gitflow"],
+    [2, "trunk"],
+  ])("saves the flow picked %i down as git.releaseFlow = %s", async (downs, flow) => {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    for (let i = 0; i < downs; i += 1) stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+    expect(writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ git: { trunkBranch: undefined, releaseFlow: flow } }),
+    );
+  });
+
+  it("goes back from the release flow screen to the trunk branch screen", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToGit(stdin);
+    stdin.write(ENTER);
+    await tick();
+    stdin.write(ESC);
+    await tick();
+    expect(lastFrame()).toContain(GIT_TRUNK_SCREEN_TEXT);
   });
 
   it("goes back to the main menu from the trunk branch screen", async () => {

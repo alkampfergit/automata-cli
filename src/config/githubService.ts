@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { IssueDiscoveryTechnique } from "./configStore.js";
+import { recordCommand } from "../run/commandTrace.js";
 
 export interface GitHubIssue {
   number: number;
@@ -39,7 +40,12 @@ interface RawIssueView {
 const GITHUB_ISSUE_COMMENT_URL_RE = /github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)/;
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
+  const startedAt = Date.now();
   const result = spawnSync(cmd, args, { encoding: "utf8" });
+  // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
+  // `-1` for a command that never started, which is a different fact from one
+  // that ran and failed, and the distinction is what the trace exists for.
+  recordCommand(cmd, args, startedAt, result.error ? -1 : (result.status ?? 1));
   if (result.error) {
     const err = result.error as NodeJS.ErrnoException;
     if (err.code === "ENOENT") {

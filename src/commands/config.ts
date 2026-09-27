@@ -9,6 +9,7 @@ import {
   type AutomataDoWorkConfig,
   DEFAULT_DO_WORK,
 } from "../config/configStore.js";
+import { RELEASE_FLOWS, isReleaseFlow } from "../git/releaseFlow.js";
 
 const VALID_TYPES: RemoteType[] = ["gh", "azdo"];
 const VALID_TECHNIQUES: IssueDiscoveryTechnique[] = ["label", "assignee", "title-contains"];
@@ -222,6 +223,25 @@ const configSetDoWorkLockStaleMinutes = new Command("do-work-lock-stale-minutes"
     process.stdout.write(`do-work lock staleness set to: ${String(minutes)} minutes\n`);
   });
 
+const configSetDoWorkDumpOnBlock = new Command("do-work-dump-on-block")
+  .description(
+    "Set whether `do-work` prints the full health report when a tick exits having done nothing",
+  )
+  .argument("<value>", `true or false (default: ${String(DEFAULT_DO_WORK.dumpOnBlock)})`)
+  .action((value: string) => {
+    const normalized = value.trim().toLowerCase();
+    // Only the two literals, deliberately: accepting "1"/"yes"/"on" as well
+    // would make the file's value and the flag's value two different
+    // vocabularies, and the config file stores a JSON boolean either way.
+    if (normalized !== "true" && normalized !== "false") {
+      process.stderr.write(`Error: do-work-dump-on-block must be true or false (got "${value}").\n`);
+      process.exit(1);
+    }
+    const dumpOnBlock = normalized === "true";
+    writeDoWork({ dumpOnBlock });
+    process.stdout.write(`do-work dump on block set to: ${String(dumpOnBlock)}\n`);
+  });
+
 const configSetDoWorkPrompt = new Command("do-work-prompt")
   .description("Set the turn instructions for a `do-work` turn kind (prompt text or a .md filename)")
   .argument("<turn-kind>", `Turn kind: ${VALID_TURN_KINDS.join(", ")}`)
@@ -271,6 +291,20 @@ const configSetGitTrunkBranch = new Command("git-trunk-branch")
     process.stdout.write(`git trunk branch set to: ${branch}\n`);
   });
 
+const configSetGitReleaseFlow = new Command("git-release-flow")
+  .description("Pin the release procedure `publish-release` runs, instead of detecting it")
+  .argument("<value>", `Release flow: ${RELEASE_FLOWS.join(" | ")} (when the key is absent, the flow is detected from origin/develop)`)
+  .action((value: string) => {
+    const flow = value.trim();
+    if (!isReleaseFlow(flow)) {
+      process.stderr.write(`Error: invalid release flow "${value}". Must be one of: ${RELEASE_FLOWS.join(", ")}\n`);
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    writeConfig({ ...current, git: { ...current.git, releaseFlow: flow } });
+    process.stdout.write(`git release flow set to: ${flow}\n`);
+  });
+
 const configSet = new Command("set")
   .description("Set a configuration value")
   .addCommand(configSetType)
@@ -286,8 +320,10 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
+  .addCommand(configSetDoWorkDumpOnBlock)
   .addCommand(configSetDoWorkPrompt)
-  .addCommand(configSetGitTrunkBranch);
+  .addCommand(configSetGitTrunkBranch)
+  .addCommand(configSetGitReleaseFlow);
 
 export const configCommand = new Command("config")
   .description("Configure automata settings")

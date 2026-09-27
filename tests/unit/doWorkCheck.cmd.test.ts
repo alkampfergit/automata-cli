@@ -28,6 +28,7 @@ const gh = {
 const mockAcquireRunLock = vi.fn();
 const mockInspectRunLock = vi.fn();
 const mockRecordTick = vi.fn();
+const mockInspectLogDirectory = vi.fn();
 const mockReadExecutionTicks = vi.fn();
 const mockReadWorkRecords = vi.fn();
 const mockInspectRepoStatus = vi.fn();
@@ -76,6 +77,10 @@ vi.mock("../../src/run/operationLog.js", async (importOriginal) => {
     recordTick: (...a: unknown[]) => mockRecordTick(...a),
     readExecutionTicks: (...a: unknown[]) => mockReadExecutionTicks(...a),
     readWorkRecords: (...a: unknown[]) => mockReadWorkRecords(...a),
+    // Stubbed because the real one probes `dirname(process.cwd())`, which is the
+    // repository's own parent — read-only in CI and in the dev container, so
+    // every check here would otherwise report an unwritable log directory.
+    inspectLogDirectory: (...a: unknown[]) => mockInspectLogDirectory(...a),
   };
 });
 
@@ -163,6 +168,30 @@ function settled(number: number): IssueSurface {
       message("alice", "2026-01-01T00:00:00Z", "issue-body"),
       message("automata-bot", "2026-01-02T00:00:00Z"),
     ],
+  };
+}
+
+function prRef(number: number, title: string) {
+  return {
+    number,
+    url: `https://gh/p/${String(number)}`,
+    title,
+    headRefName: `feature/${String(number)}`,
+    baseRefName: "develop",
+    isCrossRepository: false,
+    state: "OPEN" as const,
+    isDraft: false,
+    updatedAt: "2026-01-02T00:00:00Z",
+  };
+}
+
+/** An orphan pull request with nothing new on it: selected, then skipped. */
+function orphanPrSurface(number: number) {
+  return {
+    pr: prRef(number, `PR ${String(number)}`),
+    assignees: [],
+    messages: [message("automata-bot", "2026-01-02T00:00:00Z", "pr-comment")],
+    threads: [],
   };
 }
 
@@ -265,6 +294,12 @@ beforeEach(() => {
     defaultBranch: "develop",
   });
   mockInspectRunLock.mockReturnValue({ kind: "free" });
+  mockInspectLogDirectory.mockReturnValue({
+    dir: "/srv/checkouts",
+    cwd: "/srv/checkouts/widgets",
+    writable: true,
+    detail: null,
+  });
   mockReadExecutionTicks.mockReturnValue(emptyRead<ExecutionTick>());
   mockReadWorkRecords.mockReturnValue(emptyRead<WorkRecord>());
   mockInspectRepoStatus.mockReturnValue(cleanRepoStatus());
@@ -647,5 +682,225 @@ describe("do-work --check", () => {
       sections: Record<string, { data: Record<string, unknown> }>;
     };
     expect(parsed.sections["environment"].data["ghAvailable"]).toBe(false);
+  });
+});
+
+describe("do-work --check --verbose", () => {
+  it("lists every git and gh invocation with a duration and an exit code", async () => {
+    // The real `spawnSync` wrappers are mocked out in this suite, so the trace
+    // is driven through the sink the way they drive it — which is the contract
+    // that matters: the report renders whatever was recorded.
+    const { recordCommand } = await import("../../src/run/commandTrace.js");
+    mockInspectRepoStatus.mockImplementation(() => {
+      recordCommand("git", ["rev-parse", "--short", "HEAD"], Date.now(), 0);
+      recordCommand("git", ["fetch", "origin"], Date.now(), 1);
+      return cleanRepoStatus();
+    });
+
+    await runCheck(["--verbose"]);
+
+    expect(stdout).toContain("Commands (2)");
+    expect(stdout).toMatch(/git rev-parse --short HEAD — \d+ms exit 0/);
+    expect(stdout).toMatch(/git fetch origin — \d+ms exit 1/);
+  });
+
+  it("records nothing and prints no command block without --verbose", async () => {
+    const { recordCommand } = await import("../../src/run/commandTrace.js");
+    mockInspectRepoStatus.mockImplementation(() => {
+      recordCommand("git", ["status"], Date.now(), 0);
+      return cleanRepoStatus();
+    });
+
+    await runCheck();
+
+    expect(stdout).not.toContain("Commands (");
+    expect(stdout).not.toContain("git status");
+  });
+
+  it("states the discovery query as sent and every candidate considered", async () => {
+    gh.listCandidateIssues.mockReturnValue([settled(42).issue, settled(43).issue]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "develop",
+      // One that the discovery filter keeps and one it drops, so the line that
+      // says which is which cannot pass by printing them all the same.
+      orphans: [
+        { pr: prRef(61, "Bump deps"), labels: ["automated"], assignees: [] },
+        { pr: prRef(62, "Unrelated"), labels: [], assignees: [] },
+      ],
+    });
+    gh.getPrSurface.mockImplementation((n: number) => orphanPrSurface(n));
+
+    await runCheck(["--verbose"]);
+
+    expect(stdout).toContain("discovery query: label = automated, limit 10");
+    expect(stdout).toContain("discovery returned 2 issue(s):");
+    expect(stdout).toContain("#42 Issue 42");
+    expect(stdout).toContain("2 open orphan pull request(s) considered:");
+    expect(stdout).toContain("PR #61 Bump deps — matches the filter");
+    expect(stdout).toContain("PR #62 Unrelated — dropped by the discovery filter");
+  });
+
+  it("says a pass did not run rather than reporting it as empty", async () => {
+    // `--issue N` turns the orphan pass off, and `discoverOrphanPrs` then
+    // returns [] without looking at anything. Printing "0 open orphan pull
+    // request(s) considered" would send an operator to debug a filter that was
+    // never applied.
+    gh.listCandidateIssues.mockReturnValue([settled(42).issue]);
+    gh.getIssueSurface.mockImplementation((n: number) => settled(n));
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "develop",
+      orphans: [{ pr: prRef(61, "Bump deps"), labels: ["automated"], assignees: [] }],
+    });
+
+    await runCheck(["--verbose", "--issue", "42"]);
+
+    expect(stdout).toContain(
+      "orphan pull-request pass: not run — --issue 42 restricts this tick to that issue",
+    );
+    expect(stdout).not.toContain("open orphan pull request(s) considered");
+    expect(stdout).toContain("discovery query: label = automated, limit 10, restricted to #42");
+  });
+
+  it("says the issue discovery did not run under --pr", async () => {
+    gh.getOpenPrLinkMap.mockReturnValue({
+      byIssue: new Map(),
+      defaultBranch: "develop",
+      orphans: [{ pr: prRef(61, "Bump deps"), labels: ["automated"], assignees: [] }],
+    });
+    gh.getPrSurface.mockImplementation((n: number) => orphanPrSurface(n));
+
+    await runCheck(["--verbose", "--pr", "61"]);
+
+    expect(stdout).toContain(
+      "issue discovery: not run — --pr 61 restricts this tick to that pull request",
+    );
+    expect(stdout).not.toContain("discovery returned");
+    expect(stdout).toContain("1 open orphan pull request(s) considered (only PR #61 would be taken up):");
+  });
+
+  it("carries the trace as a top-level array in the JSON payload", async () => {
+    const { recordCommand } = await import("../../src/run/commandTrace.js");
+    mockInspectRepoStatus.mockImplementation(() => {
+      recordCommand("git", ["status", "--porcelain"], Date.now(), 0);
+      return cleanRepoStatus();
+    });
+
+    await runCheck(["--verbose", "--json"]);
+
+    const payload = JSON.parse(stdout) as { trace: { command: string; args: string[] }[] | null };
+    expect(payload.trace).not.toBeNull();
+    expect(payload.trace?.some((entry) => entry.args.includes("--porcelain"))).toBe(true);
+  });
+
+  it("emits a null trace when --verbose was not given", async () => {
+    await runCheck(["--json"]);
+    expect((JSON.parse(stdout) as { trace: unknown }).trace).toBeNull();
+  });
+
+  it("is still read-only with --verbose", async () => {
+    await runCheck(["--verbose"]);
+    expectNothingWritten();
+  });
+});
+
+describe("do-work --check — where it looked", () => {
+  it("always names the log directory, its derivation and its writability", async () => {
+    await runCheck();
+    expect(stdout).toContain(
+      "log directory: /srv/checkouts (the parent of the working directory /srv/checkouts/widgets), writable",
+    );
+  });
+
+  it("flags a log directory a tick cannot write to, with the command that shows why", async () => {
+    mockInspectLogDirectory.mockReturnValue({
+      dir: "/srv/checkouts",
+      cwd: "/srv/checkouts/widgets",
+      writable: false,
+      detail: "EACCES: permission denied",
+    });
+
+    await runCheck();
+
+    expect(stdout).toContain("not writable: EACCES");
+    expect(stdout).toContain("try: ls -ld /srv/checkouts");
+    expect(exitCode).toBe(1);
+  });
+
+  it("does not report a problem for a first tick still in flight", async () => {
+    // The paste in issue #82: a live pid beside "no execution log", exit 1.
+    mockInspectRunLock.mockReturnValue({
+      kind: "held",
+      owner: {
+        pid: 851554,
+        startedAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        host: "cisharpai",
+        command: "do-work",
+        token: "tok",
+        cwd: "/srv/checkouts/widgets",
+      },
+      heldForMs: 4 * 60 * 1000,
+      heartbeat: null,
+    });
+    mockReadExecutionTicks.mockReturnValue({
+      ...emptyRead<ExecutionTick>(),
+      present: false,
+    });
+
+    await runCheck();
+
+    expect(stdout).toContain("RESULT: healthy");
+    expect(stdout).toContain("has not recorded itself yet");
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("flags a holder that logs somewhere this check is not reading", async () => {
+    mockInspectRunLock.mockReturnValue({
+      kind: "held",
+      owner: {
+        pid: 851554,
+        startedAt: new Date().toISOString(),
+        host: "cisharpai",
+        command: "do-work",
+        token: "tok",
+        cwd: "/home/ci/widgets",
+      },
+      heldForMs: 1000,
+      heartbeat: null,
+    });
+
+    await runCheck();
+
+    expect(stdout).toContain("logs to /home/ci (this check reads /srv/checkouts)");
+    expect(exitCode).toBe(1);
+  });
+
+  it("renders the live tick's heartbeat under the lock", async () => {
+    mockInspectRunLock.mockReturnValue({
+      kind: "held",
+      owner: {
+        pid: 851554,
+        startedAt: new Date().toISOString(),
+        host: "cisharpai",
+        command: "do-work",
+        token: "tok",
+        cwd: "/srv/checkouts/widgets",
+      },
+      heldForMs: 1000,
+      heartbeat: {
+        token: "tok",
+        updatedAt: new Date().toISOString(),
+        phase: "item",
+        item: { index: 3, total: 8, subject: "#82" },
+        executor: { command: "claude", startedAt: new Date(Date.now() - 120_000).toISOString() },
+      },
+    });
+
+    await runCheck();
+
+    expect(stdout).toContain("phase: item — item 3 of 8, #82");
+    expect(stdout).toContain("executor: claude, running for 2m");
   });
 });
