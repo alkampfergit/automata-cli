@@ -369,7 +369,7 @@ describe("gitService.probeRemoteBranch", () => {
     mockSpawnSync.mockReturnValue({ stdout: "abc\trefs/heads/develop\n", stderr: "", status: 0 });
     const { probeRemoteBranch } = await import("../../src/git/gitService.js");
     expect(probeRemoteBranch("develop")).toEqual({ ok: true, exists: true });
-    expect(mockSpawnSync.mock.calls[0][1]).toEqual(["ls-remote", "--exit-code", "--heads", "origin", "develop"]);
+    expect(mockSpawnSync.mock.calls[0][1]).toEqual(["ls-remote", "--exit-code", "origin", "refs/heads/develop"]);
   });
 
   it("reads exit 2 as absent", async () => {

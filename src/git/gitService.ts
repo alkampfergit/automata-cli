@@ -1435,14 +1435,18 @@ export type RemoteBranchProbe = { ok: true; exists: boolean } | { ok: false; mes
  * `ls-remote --exit-code` exits 2 for a missing ref and something else (128 for
  * an unreachable remote) on failure — a distinction `remoteBranchExists` drops,
  * which is fine for a probe with fallbacks and wrong for one that picks a flow.
+ *
+ * The pattern is the full `refs/heads/<branch>` ref: `ls-remote` matches a short
+ * pattern as a tail glob, so `develop` alone would also match `feature/develop`.
  */
 export function probeRemoteBranch(branch: string): RemoteBranchProbe {
-  const { status, stderr } = run("git", ["ls-remote", "--exit-code", "--heads", "origin", branch]);
+  const ref = `refs/heads/${branch}`;
+  const { status, stderr } = run("git", ["ls-remote", "--exit-code", "origin", ref]);
   if (status === 0) return { ok: true, exists: true };
   if (status === 2) return { ok: true, exists: false };
   return {
     ok: false,
-    message: stderr.trim() || `git ls-remote --exit-code --heads origin ${branch} failed.`,
+    message: stderr.trim() || `git ls-remote --exit-code origin ${ref} failed.`,
   };
 }
 
