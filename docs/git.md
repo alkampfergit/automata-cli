@@ -312,7 +312,7 @@ The flow is resolved on every run, straight after the trunk branch:
 | Order | Source | Result |
 |---|---|---|
 | 1 | `git.releaseFlow` in `.automata/config.json` | That flow; `origin` is not asked. Unset by default. See [docs/config.md](config.md#git). |
-| 2 | `git ls-remote --exit-code --heads origin develop` | `gitflow` if `origin` has a `develop` branch, `trunk` if it does not. |
+| 2 | `git ls-remote --exit-code origin refs/heads/develop` | `gitflow` if `origin` has a `develop` branch, `trunk` if it does not. |
 
 The resolved flow is printed next to the trunk:
 
@@ -421,13 +421,17 @@ happens if:
 A GitHub release, if you want one, comes from CI, not from this command.
 
 **If the push is rejected**, for example because someone pushed to the trunk in the meantime, `origin` is unchanged,
-but the local release commit and tag remain. Undo them, update the trunk and re-run:
+but the local release commit and tag remain. Undo them, bring the trunk up to date and re-run:
 
 ```bash
 git tag -d <version>
 git reset --soft HEAD~1
-git pull --ff-only
+git pull --rebase
 ```
+
+`--rebase` replays any local commits the trunk was ahead with (an unpushed changelog roll, say) onto what reached
+`origin` in the meantime; with nothing local left it is a plain fast-forward. If the rebase stops on a conflict,
+resolve it and `git rebase --continue` before re-running `publish-release`.
 
 ### Preconditions (all must pass before any changes are made)
 

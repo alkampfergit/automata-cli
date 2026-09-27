@@ -2,13 +2,13 @@
 
 **Branch**: `feature/039-trunk-release-flow`
 **Date**: 2026-09-26
-**Spec**: [specs/039-trunk-release-flow/spec.md](specs/039-trunk-release-flow/spec.md)
-**Plan**: [specs/039-trunk-release-flow/plan.md](specs/039-trunk-release-flow/plan.md)
-**Research**: [specs/039-trunk-release-flow/research.md](specs/039-trunk-release-flow/research.md)
+**Spec**: [specs/039-trunk-release-flow/spec.md](spec.md)
+**Plan**: [specs/039-trunk-release-flow/plan.md](plan.md)
+**Research**: [specs/039-trunk-release-flow/research.md](research.md)
 
 ## Planning Decisions
 
-- **Flow detection**: `git ls-remote --exit-code --heads origin develop`. Exit 0 means gitflow, exit 2 means trunk,
+- **Flow detection**: `git ls-remote --exit-code origin refs/heads/develop`. Exit 0 means gitflow, exit 2 means trunk,
   and any other exit refuses with git's stderr. **Rationale**: it asks the remote directly, so it also works in a
   `--single-branch` clone, and a network failure cannot silently switch the release procedure. **Alternatives
   considered**: reusing `remoteBranchExists()`, which reads every failure as absent; checking the local

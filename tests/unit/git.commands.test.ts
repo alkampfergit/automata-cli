@@ -1092,7 +1092,7 @@ function classifyGitCall(args: string[]): string {
   if (a0 === "status") return "status";
   if (a0 === "symbolic-ref") return "origin-head";
   if (a0 === "ls-remote" && a1 === "--symref") return "symref";
-  if (a0 === "ls-remote" && args.at(-1) === "develop") return "develop-probe";
+  if (a0 === "ls-remote" && args.at(-1) === "refs/heads/develop") return "develop-probe";
   if (a0 === "ls-remote") return "probe";
   if (a0 === "fetch") return "fetch";
   if (a0 === "describe") return "describe";
@@ -1274,7 +1274,7 @@ describe("git publish-release command: preconditions", () => {
     expect(verbs).not.toContain("symbolic-ref");
     // The only remote query left is the release-flow probe for origin/develop.
     const lsRemote = executedGitArgs().filter((args) => args[0] === "ls-remote");
-    expect(lsRemote).toEqual([["ls-remote", "--exit-code", "--heads", "origin", "develop"]]);
+    expect(lsRemote).toEqual([["ls-remote", "--exit-code", "origin", "refs/heads/develop"]]);
     expect(out.stdout).toContain("git push origin develop trunk 1.3.0");
     expect(out.exitCode).toBeUndefined();
   });

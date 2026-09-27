@@ -9,14 +9,14 @@ The git behaviour below was checked on throwaway repositories: a bare `origin` w
 
 | Probe | Result |
 |---|---|
-| `git ls-remote --exit-code --heads origin develop` on a remote with no `develop` | no output, **exit 2** |
+| `git ls-remote --exit-code origin refs/heads/develop` on a remote with no `develop` | no output, **exit 2** |
 | the same against a non-existent remote | **exit 128** |
 | `git commit --allow-empty -m "chore(release): 1.0.0"` + `git tag 1.0.0` + `git push --atomic origin master 1.0.0` in the single-branch clone | exit 0; `origin` gets `refs/heads/master` and `refs/tags/1.0.0` on the same new commit |
 | the same push from a clone that is behind `origin/master` | exit 1; **both** refs rejected (`1.1.0 -> 1.1.0 (atomic push failed)`), and the tag does not reach `origin` |
 
 ## Decisions
 
-### D-001 — Flow detection: `ls-remote --exit-code --heads origin develop`, three outcomes
+### D-001 — Flow detection: `ls-remote --exit-code origin refs/heads/develop`, three outcomes
 
 **Decision**: With `git.releaseFlow` unset, exit 0 → `gitflow` and exit 2 → `trunk`. Any other exit code is a
 refusal that carries git's stderr.

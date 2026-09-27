@@ -2,7 +2,7 @@
 
 **Branch**: `feature/039-trunk-release-flow`
 **Date**: 2026-09-26
-**Spec**: [specs/039-trunk-release-flow/spec.md](specs/039-trunk-release-flow/spec.md)
+**Spec**: [specs/039-trunk-release-flow/spec.md](spec.md)
 
 ## Summary
 
@@ -15,7 +15,7 @@ one atomic push, so the existing branch-push CI publishes the release.
 
 - **`publish-release` release flow**: the flow, `gitflow` or `trunk`, is resolved after the trunk branch and printed
   as `Release flow: <flow> (<source>)`. It comes from `git.releaseFlow`, or when that is unset from
-  `git ls-remote --exit-code --heads origin develop`. A failed probe or an invalid configured value refuses the release
+  `git ls-remote --exit-code origin refs/heads/develop`. A failed probe or an invalid configured value refuses the release
   rather than guessing a flow.
 - **Trunk flow**: it runs from the trunk branch, and the trunk may be ahead of `origin` but not behind. It runs
   `git commit --allow-empty -m "chore(release): <version>"`, `git tag <version>`, and

@@ -178,7 +178,7 @@ prints `Release flow: trunk (configured as git.releaseFlow)` and does not probe 
 
 ## Assumptions
 
-- [AUTO] **Detection probe**: `git ls-remote --exit-code --heads origin develop`, reading exit 0 as present and 2 as
+- [AUTO] **Detection probe**: `git ls-remote --exit-code origin refs/heads/develop`, reading exit 0 as present and 2 as
   absent. Because it asks the remote directly, it works in a `--single-branch` clone, which has no
   `refs/remotes/origin/develop` (036 lesson).
 - [AUTO] **Probe failure refuses**: any other exit code stops the command. A transient network failure must not select

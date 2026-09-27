@@ -293,7 +293,7 @@ const configSetGitTrunkBranch = new Command("git-trunk-branch")
 
 const configSetGitReleaseFlow = new Command("git-release-flow")
   .description("Pin the release procedure `publish-release` runs, instead of detecting it")
-  .argument("<value>", `Release flow: ${RELEASE_FLOWS.join(" | ")} (unset = detect it from origin/develop)`)
+  .argument("<value>", `Release flow: ${RELEASE_FLOWS.join(" | ")} (when the key is absent, the flow is detected from origin/develop)`)
   .action((value: string) => {
     const flow = value.trim();
     if (!isReleaseFlow(flow)) {
