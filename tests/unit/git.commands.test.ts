@@ -1063,6 +1063,37 @@ describe("git get-pr-info: azdo dispatch", () => {
     expect(out.exitCode).toBeUndefined();
   });
 
+  it("enriches an azdo PR with SonarCloud data when a check points at SonarCloud", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=7";
+    const azdoPrOutput = {
+      pullRequests: [
+        {
+          id: 7,
+          title: "AzDO PR",
+          status: "active",
+          url: "https://dev.azure.com/o/p/_git/r/pullrequest/7",
+          checks: [{ state: "succeeded", name: "sonarcloud/quality gate", description: "Gate passed", targetUrl: sonarUrl }],
+        },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
+      .mockReturnValueOnce(ok(JSON.stringify(azdoPrOutput))); // azdo pr status --json
+    const fetchMock = vi.fn().mockResolvedValueOnce(fetchOk({ paging: { total: 4 } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+    vi.unstubAllGlobals();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(out.stdout).toContain(`Sonar: ${sonarUrl}`);
+    expect(out.stdout).toContain("Sonar New Issues: 4");
+  });
+
   it("getPrInfo(branch) looks up another branch with azdo pr list and lists its pipeline runs as checks", async () => {
     mockReadConfig.mockReturnValue({ remoteType: "azdo" });
     const listOutput = {
