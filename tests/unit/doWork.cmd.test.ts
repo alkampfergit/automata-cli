@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { IssueSurface, PrSurface, PullRequestRef } from "../../src/github/ghWorkService.js";
 import type { RawMessage } from "../../src/github/conversation.js";
+import type { RunSink } from "../../src/run/runTranscript.js";
 
 /* ── mocks ──────────────────────────────────────────────────────────────── */
 
@@ -27,6 +28,14 @@ const mockRecordTick = vi.fn();
 const mockRelease = vi.fn();
 const mockHeartbeat = vi.fn();
 const mockInvokeClaude = vi.fn();
+// The sink a run was handed, so a test can play the agent's output through it.
+let lastSink: RunSink | undefined;
+// The transcript is plumbing, not part of what these tests assert about the runner call.
+function stripSink(mock: ReturnType<typeof vi.fn>, prompt: string, options: { sink?: RunSink }): unknown {
+  const { sink, ...rest } = options;
+  lastSink = sink;
+  return mock(prompt, rest);
+}
 const mockInvokeCodex = vi.fn();
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
@@ -104,13 +113,32 @@ vi.mock("../../src/claude/claudeService.js", async (importOriginal) => {
     ...actual,
     // Only the spawn is stubbed; buildClaudeArgs and resolveCommand stay real so
     // the dry-run tests exercise the same argv builder the real run uses.
-    runClaude: (...a: unknown[]) => mockInvokeClaude(...a),
+    runClaude: (prompt: string, options: { sink?: RunSink } = {}) => stripSink(mockInvokeClaude, prompt, options),
   };
 });
 
 vi.mock("../../src/codex/codexService.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/codex/codexService.js")>();
-  return { ...actual, runCodex: (...a: unknown[]) => mockInvokeCodex(...a) };
+  return {
+    ...actual,
+    runCodex: (prompt: string, options: { sink?: RunSink } = {}) => stripSink(mockInvokeCodex, prompt, options),
+  };
+});
+
+// Transcripts go to a throwaway directory, not the checkout running the tests.
+vi.mock("../../src/run/runTranscript.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/runTranscript.js")>();
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  return {
+    ...actual,
+    RunTranscript: class extends actual.RunTranscript {
+      constructor(label: string) {
+        super(label, mkdtempSync(join(tmpdir(), "automata-run-")));
+      }
+    },
+  };
 });
 
 /* ── fixtures ───────────────────────────────────────────────────────────── */
@@ -708,6 +736,34 @@ describe("do-work marker reconciliation", () => {
     expect(body).not.toMatch(/changed the branch `develop`/);
     expect(exitCode).toBe(2);
     expect(stdout).toMatch(/answered-no-reply/);
+  });
+
+  it("appends run diagnostics and names only the transcript file when no answer was posted", async () => {
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    mockInvokeClaude.mockImplementation(() => {
+      lastSink?.output("stdout", '{"type":"result","result":"I am done, token ghp_abcdefghijklmnopqrstuvwxyz0123456789"}\n');
+      lastSink?.exited(0, null);
+      return Promise.resolve();
+    });
+    await runDoWork();
+    const body = gh.updateMarker.mock.calls[0][1] as string;
+    expect(body).toMatch(/finished without posting an answer/);
+    expect(body).toMatch(/Turn: `issue-discuss`/);
+    expect(body).toMatch(/exit code 0/);
+    expect(body).toMatch(/Full transcript on the machine that ran automata: `[^`/]+-issue-42\.log`/);
+    expect(body).toMatch(/<details>/);
+    expect(body).toMatch(/I am done/);
+    expect(body).not.toContain("ghp_");
+    expect(body).not.toMatch(/\.automata\/runs/);
+  });
+
+  it("leaves the fallback comment as it was when doWork.postRunLog is false", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { postRunLog: false } });
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork();
+    const body = gh.updateMarker.mock.calls[0][1] as string;
+    expect(body).toMatch(/finished without posting an answer/);
+    expect(body).not.toMatch(/<details>|transcript/);
   });
 
   it("reconciles after a failed run and reports the failure in the marker", async () => {

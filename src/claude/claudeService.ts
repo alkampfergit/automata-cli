@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { truncate, handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
+import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeClaudeOptions {
   yolo?: boolean;
@@ -65,7 +66,7 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
@@ -75,8 +76,16 @@ export function runClaude(
       effort: options.effort,
       verbose: true,
     });
-    const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
+    const sink = options.sink;
+    const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "pipe"] });
     trackChild(child);
+
+    // stderr is piped only so the transcript can see it; it still reaches the terminal.
+    child.stderr.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      sink?.output("stderr", chunk.toString("utf8"));
+    });
+    if (sink) child.stdout.on("data", (chunk: Buffer) => sink.output("stdout", chunk.toString("utf8")));
 
     const rl = createInterface({ input: child.stdout });
     let turnCount = 0;
@@ -103,6 +112,7 @@ export function runClaude(
 
     child.on("close", (code, signal) => {
       untrackChild(child);
+      options.sink?.exited(code, signal);
       if (code === 0) {
         resolve();
         return;

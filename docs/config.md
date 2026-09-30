@@ -139,6 +139,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
     "maxRunsPerTick": 0,
     "lockStaleMinutes": 120,
     "dumpOnBlock": true,
+    "postRunLog": true,
     "prompts": {
       "issueDiscuss": "do-work-issue-discuss.md",
       "prWork": "do-work-pr-work.md",
@@ -160,6 +161,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
 | `dumpOnBlock` | `true` | Print the full six-section health report when a tick exits having done nothing — a held run lock, an unusable configuration, a failed pre-flight, no candidate picked up, or every item skipped. Set `false` for the one-line behaviour. See [do-work.md](do-work.md#when-a-tick-does-nothing). |
+| `postRunLog` | `true` | When an agent run posts no answer, add its exit code, duration, repository changes and a redacted output excerpt to the comment, and save the full transcript to `.automata/runs/`. Set `false` for the plain one-sentence comment. Edited in `config.json`; there is no `config set` command or wizard screen for it yet. See [do-work.md](do-work.md#diagnostics-when-no-answer-was-posted). |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
 | `prompts.prWork` | built-in | Instructions for a pull-request turn. |
 | `prompts.prOrphan` | built-in | Instructions for a turn on an open pull request that closes no issue of this repository — a dependency bump, say. See [do-work.md](do-work.md#the-orphan-pull-request-pass). |

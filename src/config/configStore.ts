@@ -77,6 +77,8 @@ export interface AutomataDoWorkConfig {
    * scheduler whose log is read line by line.
    */
   dumpOnBlock?: boolean;
+  /** Append diagnostics and save a transcript when a run posts no answer. Default true. */
+  postRunLog?: boolean;
   prompts?: DoWorkPrompts;
 }
 
@@ -146,6 +148,7 @@ export const DEFAULT_DO_WORK = {
   maxRunsPerTick: 0,
   lockStaleMinutes: 120,
   dumpOnBlock: true,
+  postRunLog: true,
 };
 
 /**
