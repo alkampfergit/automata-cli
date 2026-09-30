@@ -91,6 +91,6 @@ describe("azdoService.getPrInfo", () => {
     mockSpawnSync.mockReturnValue(makeOutput([]));
     const { getPrInfo } = await import("../../src/config/azdoService.js");
     getPrInfo();
-    expect(mockSpawnSync).toHaveBeenCalledWith("azdo", ["pr", "status", "--json"], expect.any(Object));
+    expect(mockSpawnSync).toHaveBeenCalledWith("azdo", ["pr", "status", "--json", "--no-update-check"], expect.any(Object));
   });
 });

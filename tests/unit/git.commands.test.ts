@@ -1058,7 +1058,7 @@ describe("git get-pr-info: azdo dispatch", () => {
     const calls = mockSpawnSync.mock.calls as [string, string[]][];
     const azdoCall = calls.find(([cmd]) => cmd === "azdo");
     expect(azdoCall).toBeDefined();
-    expect(azdoCall?.[1]).toEqual(["pr", "status", "--json"]);
+    expect(azdoCall?.[1]).toEqual(["pr", "status", "--json", "--no-update-check"]);
     expect(out.exitCode).toBeUndefined();
   });
 

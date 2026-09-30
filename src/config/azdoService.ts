@@ -42,7 +42,7 @@ function mapStatus(azdoStatus: string): string {
 }
 
 export function getPrInfo(): PrInfo | null {
-  const { stdout, stderr, status } = run("azdo", ["pr", "status", "--json"]);
+  const { stdout, stderr, status } = run("azdo", ["pr", "status", "--json", "--no-update-check"]);
 
   if (status !== 0) {
     throw new Error(stderr.trim() || "Failed to query Azure DevOps PR status. Is `azdo` installed and authenticated?");
