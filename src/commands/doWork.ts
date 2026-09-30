@@ -336,8 +336,10 @@ function requireParticipants(config: AutomataConfig): {
 } {
   if (!isExplicitGitHub(config)) {
     failSettings(
-      "do-work is only supported for GitHub remotes. Set it with `automata config set type gh`. " +
-        azdoUnsupportedMessage("do-work", "Azure DevOps lacks the issue conversation APIs this needs."),
+      azdoUnsupportedMessage(
+        "do-work",
+        "It needs the GitHub issue conversation APIs; set the remote with `automata config set type gh`.",
+      ),
     );
   }
   if (!config.issueDiscoveryTechnique) {

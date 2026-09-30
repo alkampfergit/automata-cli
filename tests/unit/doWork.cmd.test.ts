@@ -267,7 +267,7 @@ describe("do-work preconditions", () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, remoteType: "azdo" });
     await runDoWork();
     expect(exitCode).toBe(1);
-    expect(stderr).toMatch(/only supported for GitHub/);
+    expect(stderr).toMatch(/do-work is not supported for Azure DevOps/);
     expect(stderr).toMatch(/docs\/azdo-gap\.md/);
   });
 
