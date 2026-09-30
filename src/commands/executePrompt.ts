@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { isAzdo } from "../remote/backend.js";
 import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment, type PrInfo } from "../git/gitService.js";
 import {
   readConfig,
@@ -189,7 +190,7 @@ const executeCheckIssueCmd = addAiOptions(
 
     const config = readConfig();
 
-    if (config.remoteType === "azdo") {
+    if (isAzdo(config)) {
       process.stderr.write(
         "Error: check-issue is not supported for Azure DevOps. See docs/azdo-gap.md for details.\n",
       );
