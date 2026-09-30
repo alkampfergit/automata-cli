@@ -69,7 +69,13 @@ import {
   type PruneOutcome,
 } from "../git/repoHygiene.js";
 import { getCurrentBranch, revParse } from "../git/gitService.js";
-import { RunTranscript, renderRunDiagnostics, type RunSideEffects, type RunSink } from "../run/runTranscript.js";
+import {
+  RunTranscript,
+  renderRunDiagnostics,
+  transcriptLabel,
+  type RunSideEffects,
+  type RunSink,
+} from "../run/runTranscript.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
   inspectLogDirectory,
@@ -1513,6 +1519,30 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
+  const { runError, diagnostics } = await runRecorded(item, prompt, execution, settings, silent);
+  const ranExecutor = true;
+
+  inFlightMarker = null;
+  const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
+  progress(`  ${reconciled.detail}\n`);
+
+  const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
+
+  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
+}
+
+/**
+ * Run the executor, recording its transcript when `doWork.postRunLog` is on.
+ * `diagnostics` is built lazily: only a run that posted nothing needs the git
+ * and gh calls behind it.
+ */
+async function runRecorded(
+  item: WorkItem,
+  prompt: string,
+  execution: ResolvedExecution,
+  settings: Settings,
+  silent: boolean,
+): Promise<{ runError: Error | null; diagnostics: (() => string) | null }> {
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
 
@@ -1522,31 +1552,19 @@ async function processItem(
   } catch (err) {
     runError = err as Error;
   }
-  const ranExecutor = true;
-
-  inFlightMarker = null;
-  // Built lazily: only a run that posted nothing needs the git and gh calls.
-  const diagnostics =
-    transcript === null
-      ? null
-      : () =>
-          renderRunDiagnostics({
-            turn: item.turn,
-            subject: markerSurfaceLabel(item),
-            transcript,
-            effects: describeRunEffects(before, settings.baseBranch),
-          });
-  const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
-  progress(`  ${reconciled.detail}\n`);
-
-  const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
-
-  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
+  if (transcript === null) return { runError, diagnostics: null };
+  return {
+    runError,
+    diagnostics: () =>
+      renderRunDiagnostics({
+        turn: item.turn,
+        subject: markerSurfaceLabel(item),
+        transcript,
+        effects: describeRunEffects(before, settings.baseBranch),
+      }),
+  };
 }
 
-function transcriptLabel(item: WorkItem): string {
-  return item.issue !== null ? `issue-${String(item.issue.number)}` : `pr-${String(item.pr?.number ?? 0)}`;
-}
 
 interface CheckoutSnapshot {
   branch: string | null;

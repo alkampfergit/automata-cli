@@ -15,15 +15,43 @@ export interface RunSink {
   exited(code: number | null, signal: string | null): void;
 }
 
+const PRIVATE_KEY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
+const PRIVATE_KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/g;
+
 const REDACTIONS: RegExp[] = [
+  // An unterminated key is masked to the end of the text: its END line may not
+  // have arrived yet, and nothing after a BEGIN line is safe to show.
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\bgithub_pat_\w{20,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\bsk-[\w-]{20,}/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g,
 ];
+
+const AUTH_HEADER = /\b(Bearer|Basic)\s+[\w.~+/=-]{12,}/gi;
+/** The name side of `NAME=value` / `name: value`, up to where the value starts. */
+const SECRET_NAME = /\b\w*(?:token|secret|passw(?:or)?d|api[_-]?key)\w*\s*[=:]\s*/gi;
+/** The value that follows a secret name: quoted, or up to whitespace, `,` or `;`. */
+const SECRET_VALUE = /"[^"]*"|'[^']*'|[^\s,;]+/y;
+
+/** Replace the value of every `*_TOKEN=…`, `password: …` style assignment. */
+function redactAssignments(text: string): string {
+  let out = "";
+  let copied = 0;
+  for (const match of text.matchAll(SECRET_NAME)) {
+    // A name found inside a value already masked, as in `token=mytoken=x`.
+    if (match.index < copied) continue;
+    const valueStart = match.index + match[0].length;
+    SECRET_VALUE.lastIndex = valueStart;
+    const value = SECRET_VALUE.exec(text);
+    if (value === null) continue;
+    out += `${text.slice(copied, valueStart)}[redacted]`;
+    copied = valueStart + value[0].length;
+  }
+  return out + text.slice(copied);
+}
 
 /**
  * Mask token-shaped strings before text is posted to a public thread. A
@@ -33,12 +61,18 @@ const REDACTIONS: RegExp[] = [
 export function redactSecrets(text: string): string {
   let out = text;
   for (const pattern of REDACTIONS) out = out.replace(pattern, "[redacted]");
-  out = out.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, "$1 [redacted]");
-  out = out.replace(
-    /\b([A-Za-z0-9_]*(?:token|secret|password|passwd|api[_-]?key)[A-Za-z0-9_]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-    "$1$2[redacted]",
-  );
-  return out;
+  out = out.replace(AUTH_HEADER, "$1 [redacted]");
+  return redactAssignments(out);
+}
+
+/** Whether `text` leaves a private key open: a BEGIN line after the last END line. */
+function opensPrivateKey(text: string): boolean {
+  const lastIndex = (pattern: RegExp): number => {
+    let last = -1;
+    for (const match of text.matchAll(pattern)) last = match.index;
+    return last;
+  };
+  return lastIndex(PRIVATE_KEY_BEGIN) > lastIndex(PRIVATE_KEY_END);
 }
 
 /**
@@ -60,25 +94,46 @@ export function readableLine(line: string): string | null {
   if (record["type"] === "result") {
     return typeof record["result"] === "string" ? `result: ${record["result"]}` : null;
   }
-  if (record["type"] !== "assistant") return null;
-  const message = record["message"] as { content?: unknown } | undefined;
-  if (!Array.isArray(message?.content)) return null;
+  return record["type"] === "assistant" ? assistantText(record["message"]) : null;
+}
+
+/** The text blocks and tool names of one assistant message, or null when it has none. */
+function assistantText(message: unknown): string | null {
+  const content = (message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return null;
   const parts: string[] = [];
-  for (const block of message.content as Record<string, unknown>[]) {
+  for (const block of content as Record<string, unknown>[]) {
     if (block["type"] === "text" && typeof block["text"] === "string") parts.push(block["text"]);
     if (block["type"] === "tool_use" && typeof block["name"] === "string") parts.push(`[tool: ${block["name"]}]`);
   }
   return parts.length === 0 ? null : parts.join(" ");
 }
 
+const ELLIPSIS = "…";
+
 /** Keep the last `maxLines` lines and at most `maxBytes` bytes, dropping from the front. */
 export function capExcerpt(text: string, maxLines = EXCERPT_MAX_LINES, maxBytes = EXCERPT_MAX_BYTES): string {
   let out = text.split("\n").slice(-maxLines).join("\n");
   if (Buffer.byteLength(out, "utf8") > maxBytes) {
-    out = Buffer.from(out, "utf8").subarray(-maxBytes).toString("utf8").replace(/^�+/, "");
-    out = `…${out}`;
+    // The marker counts towards the cap, so the result never exceeds `maxBytes`.
+    const keep = Math.max(maxBytes - Buffer.byteLength(ELLIPSIS, "utf8"), 0);
+    const tail = keep === 0 ? "" : Buffer.from(out, "utf8").subarray(-keep).toString("utf8");
+    out = `${ELLIPSIS}${tail.replace(/^\uFFFD+/, "")}`;
   }
   return out;
+}
+
+/**
+ * The file-name label of a run, after the surface the turn works on: `pr-<n>`
+ * for either pull-request turn, even when it also closes an issue.
+ */
+export function transcriptLabel(item: {
+  turn: string;
+  issue: { number: number } | null;
+  pr: { number: number } | null;
+}): string {
+  if (item.turn !== "issue-discuss" && item.pr !== null) return `pr-${String(item.pr.number)}`;
+  return `issue-${String(item.issue?.number ?? 0)}`;
 }
 
 /**
@@ -87,6 +142,8 @@ export function capExcerpt(text: string, maxLines = EXCERPT_MAX_LINES, maxBytes 
  *
  * The directory is created with a `.gitignore` of `*`, so a transcript never
  * shows up as an uncommitted change in a repository that has not ignored it.
+ * The transcript is raw and unredacted, so the directory and the file are
+ * private to the user running automata (0700 / 0600).
  */
 export class RunTranscript implements RunSink {
   readonly fileName: string;
@@ -98,6 +155,10 @@ export class RunTranscript implements RunSink {
   private readonly readable: string[] = [];
   private pending = { stdout: "", stderr: "" };
   private writable = true;
+  /** Whether the next stderr byte written to the file starts a line. */
+  private stderrAtLineStart = true;
+  /** A private key began in an earlier line and has not ended yet. */
+  private inPrivateKey = false;
 
   constructor(label: string, root: string = process.cwd(), now: Date = new Date()) {
     const stamp = now.toISOString().replace(/[:.]/g, "-");
@@ -105,9 +166,10 @@ export class RunTranscript implements RunSink {
     const dir = join(root, RUN_TRANSCRIPT_DIR);
     this.path = join(dir, this.fileName);
     try {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, ".gitignore"), "*\n");
-      writeFileSync(this.path, "");
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeIfAbsent(join(dir, ".gitignore"), "*\n");
+      // `wx`: never append to, or follow a link to, a file that is already there.
+      writeFileSync(this.path, "", { flag: "wx", mode: 0o600 });
     } catch {
       this.writable = false;
     }
@@ -121,7 +183,7 @@ export class RunTranscript implements RunSink {
   output(stream: "stdout" | "stderr", text: string): void {
     if (this.writable) {
       try {
-        appendFileSync(this.path, stream === "stderr" ? prefixLines(text, "[stderr] ") : text);
+        appendFileSync(this.path, stream === "stderr" ? this.prefixStderr(text) : text);
       } catch {
         this.writable = false;
       }
@@ -146,24 +208,57 @@ export class RunTranscript implements RunSink {
     return (this.endedAt ?? Date.now()) - this.startedAt;
   }
 
-  /** The redacted, capped tail of what the agent said and printed. */
+  /**
+   * The redacted, capped tail of what the agent said and printed. Redacted
+   * before it is cut, so a cut never leaves half a token that no longer
+   * matches a pattern.
+   */
   excerpt(): string {
-    return redactSecrets(capExcerpt(this.readable.join("\n")));
+    return capExcerpt(redactSecrets(this.readable.join("\n")));
   }
 
+  /**
+   * Every line is redacted as it is kept, and a private key that spans lines is
+   * masked until its END line, even when its BEGIN line has since dropped out
+   * of the kept tail.
+   */
   private keep(stream: "stdout" | "stderr", line: string): void {
     const shown = stream === "stderr" ? line.trim() : readableLine(line);
     if (shown === null || shown === "") return;
-    this.readable.push(shown);
+    const continuing = this.inPrivateKey;
+    const scanned = continuing ? `-----BEGIN PRIVATE KEY-----\n${shown}` : shown;
+    this.inPrivateKey = opensPrivateKey(scanned);
+    const redacted = redactSecrets(scanned);
+    // The BEGIN line already showed `[redacted]`; one per key is enough.
+    if (continuing && redacted === "[redacted]") return;
+    this.readable.push(redacted);
     if (this.readable.length > EXCERPT_MAX_LINES * 4) this.readable.splice(0, this.readable.length - EXCERPT_MAX_LINES * 4);
+  }
+
+  /**
+   * Mark each stderr line in the file. Chunks split lines anywhere, so the
+   * prefix goes only where a line actually starts.
+   */
+  private prefixStderr(text: string): string {
+    let out = "";
+    for (const piece of text.split(/(?<=\n)/)) {
+      if (this.stderrAtLineStart) out += STDERR_PREFIX;
+      out += piece;
+      this.stderrAtLineStart = piece.endsWith("\n");
+    }
+    return out;
   }
 }
 
-function prefixLines(text: string, prefix: string): string {
-  return text
-    .split("\n")
-    .map((line, i, all) => (line === "" && i === all.length - 1 ? line : `${prefix}${line}`))
-    .join("\n");
+const STDERR_PREFIX = "[stderr] ";
+
+/** Create `path` with `content` unless something is already there. */
+function writeIfAbsent(path: string, content: string): void {
+  try {
+    writeFileSync(path, content, { flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
 }
 
 /** What changed in the checkout while the agent ran. */
@@ -202,10 +297,8 @@ function describeEffects(effects: RunSideEffects | null): string {
  */
 export function renderRunDiagnostics(input: RunDiagnosticsInput): string {
   const { transcript } = input;
-  const ended =
-    transcript.signal !== null
-      ? `terminated on ${transcript.signal}`
-      : `exit code ${transcript.exitCode === null ? "unknown" : String(transcript.exitCode)}`;
+  const exitCode = transcript.exitCode === null ? "unknown" : String(transcript.exitCode);
+  const ended = transcript.signal === null ? `exit code ${exitCode}` : `terminated on ${transcript.signal}`;
   const lines = [
     `- Turn: \`${input.turn}\` on ${input.subject}`,
     `- Agent: ${ended}, ran for ${formatDuration(transcript.durationMs)}`,
@@ -216,7 +309,7 @@ export function renderRunDiagnostics(input: RunDiagnosticsInput): string {
   const details =
     excerpt === ""
       ? ""
-      : `\n\n<details>\n<summary>Last lines of the agent's output</summary>\n\n\`\`\`text\n${excerpt.replace(/```/g, "'''")}\n\`\`\`\n\n</details>`;
+      : `\n\n<details>\n<summary>Last lines of the agent's output</summary>\n\n\`\`\`text\n${excerpt.replaceAll("```", "'''")}\n\`\`\`\n\n</details>`;
   return `\n\n${lines.join("\n")}${details}`;
 }
 
