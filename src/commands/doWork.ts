@@ -12,7 +12,7 @@ import {
   type Executor,
   type TurnKind,
 } from "../config/configStore.js";
-import { addClosesRefToPr, getOpenPrsByHead, hasClosingRef, type GitHubIssue, type HeadPr } from "../config/githubService.js";
+import { addClosesRefToPr, getCurrentBranchPr, getOpenPrsByHead, hasClosingRef, type GitHubIssue, type HeadPr } from "../config/githubService.js";
 import {
   assignIssueToAgent,
   assignPrToAgent,
