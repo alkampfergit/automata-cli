@@ -105,13 +105,9 @@ export async function scrubExcerpt(
   const result = await capture(resolveCommand(codex ? "codex" : "claude"), args, timeoutMs);
 
   if (result.spawnError !== null) {
-    return {
-      ok: false,
-      reason:
-        result.spawnError.code === "ENOENT"
-          ? `\`${codex ? "codex" : "claude"}\` CLI is not installed or not on PATH`
-          : result.spawnError.message,
-    };
+    const missing = result.spawnError.code === "ENOENT";
+    const binary = codex ? "codex" : "claude";
+    return { ok: false, reason: missing ? `\`${binary}\` CLI is not installed or not on PATH` : result.spawnError.message };
   }
   if (result.timedOut) return { ok: false, reason: `${name} did not answer within ${String(timeoutMs / 1000)}s` };
   if (result.signal !== null) return { ok: false, reason: `${name} terminated on ${result.signal}` };

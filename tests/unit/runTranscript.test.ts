@@ -187,6 +187,21 @@ describe("renderRunDiagnostics", () => {
     expect(out).toMatch(/<details>[\s\S]*something failed[\s\S]*<\/details>/);
   });
 
+  it("names the transcript file even when it could not be written", () => {
+    const root = tempRoot();
+    const blocker = join(root, "blocked");
+    writeFileSync(blocker, "");
+    const transcript = new RunTranscript("issue-9", join(blocker, "nested"));
+    transcript.exited(0, null);
+    const out = renderRunDiagnostics({
+      turn: "issue-discuss",
+      subject: "issue #9",
+      transcript,
+      effects: { branchBefore: null, branchAfter: null, headBefore: null, headAfter: null, pr: null },
+    });
+    expect(out).toContain(`\`${transcript.fileName}\` (the file could not be written)`);
+  });
+
   it("replaces the excerpt with the reason when it is withheld", () => {
     const transcript = new RunTranscript("issue-9", tempRoot());
     transcript.output("stderr", "hello\n");
