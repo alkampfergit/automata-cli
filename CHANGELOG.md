@@ -18,7 +18,7 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 ### Changed
 
 - Every "not supported" message for Azure DevOps (`get-pr-comments`, `fix-comments`, `check-issue`, `implement-next`,
-  `do-work`) now reads "<command> is not supported for Azure DevOps." and links [docs/azdo-gap.md](docs/azdo-gap.md).
+  `do-work`) now reads `<command> is not supported for Azure DevOps.` and links [docs/azdo-gap.md](docs/azdo-gap.md).
 
 ## [0.9.0] - 2026-09-27
 
