@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
@@ -99,7 +99,10 @@ export interface TickLog {
 /**
  * Where the logs live: the parent of the working directory, or — when that
  * directory is not writable, as `/workspaces` is for the container user of a
- * devcontainer — an `automata` folder under the system temp directory.
+ * devcontainer — an `automata-<uid>` folder under the system temp directory.
+ *
+ * Pure: it creates nothing, so the read-only `--check` report can call it.
+ * `recordTick` creates the directory when it writes.
  *
  * Not configurable, and deliberately so — one workspace root collects the logs
  * of every checkout beneath it, and the repository slug on each entry keeps
@@ -112,13 +115,26 @@ export function operationLogDirectory(): string {
     accessSync(parent, constants.W_OK);
     return parent;
   } catch {
-    const fallback = join(tmpdir(), "automata");
-    try {
-      mkdirSync(fallback, { recursive: true });
-    } catch {
-      // Best-effort: an unusable fallback is reported by inspectLogDirectory.
-    }
-    return fallback;
+    return fallbackLogDirectory();
+  }
+}
+
+function fallbackLogDirectory(): string {
+  return join(tmpdir(), `automata-${userSegment()}`);
+}
+
+/**
+ * A private per-user name for the temp fallback. A fixed `/tmp/automata` would
+ * belong to whichever user created it first and be unwritable for every other
+ * UID that later resolves to it.
+ */
+function userSegment(): string {
+  const uid = process.getuid?.();
+  if (uid !== undefined) return String(uid);
+  try {
+    return userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_");
+  } catch {
+    return "user";
   }
 }
 
@@ -412,6 +428,14 @@ function appendWithRetention(
  * output this log exists to replace.
  */
 export function recordTick(tick: TickLog, dir: string = operationLogDirectory()): void {
+  try {
+    // Only the temp fallback is created here: the resolver stays read-only for
+    // `--check`, while a directory the caller named must already exist.
+    if (dir === fallbackLogDirectory()) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    return;
+  }
+
   try {
     // The cheap path for a deliberately locked-down parent: no file is created
     // and no error is allocated. It is advisory only — foreign file ownership,
