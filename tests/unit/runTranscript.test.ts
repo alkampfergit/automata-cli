@@ -187,6 +187,21 @@ describe("renderRunDiagnostics", () => {
     expect(out).toMatch(/<details>[\s\S]*something failed[\s\S]*<\/details>/);
   });
 
+  it("replaces the excerpt with the reason when it is withheld", () => {
+    const transcript = new RunTranscript("issue-9", tempRoot());
+    transcript.output("stderr", "hello\n");
+    transcript.exited(0, null);
+    const out = renderRunDiagnostics({
+      turn: "pr-work",
+      subject: "pull request #4",
+      transcript,
+      effects: null,
+      excerpt: { kind: "withheld", reason: "Claude Code exited with code 1" },
+    });
+    expect(out).toMatch(/withheld, the second redaction pass failed \(Claude Code exited with code 1\)/);
+    expect(out).not.toMatch(/<details>|hello/);
+  });
+
   it("says when nothing changed and when the checkout could not be read", () => {
     const transcript = new RunTranscript("issue-9", tempRoot());
     transcript.exited(0, null);

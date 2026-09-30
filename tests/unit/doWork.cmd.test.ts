@@ -125,6 +125,12 @@ vi.mock("../../src/codex/codexService.js", async (importOriginal) => {
   };
 });
 
+// The second redaction pass would spawn a real model; stub it and record the call.
+const mockScrub = vi.fn();
+vi.mock("../../src/run/secondOpinion.js", () => ({
+  scrubExcerpt: (...a: unknown[]) => mockScrub(...a),
+}));
+
 // Transcripts go to a throwaway directory, not the checkout running the tests.
 vi.mock("../../src/run/runTranscript.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/run/runTranscript.js")>();
@@ -261,6 +267,7 @@ beforeEach(() => {
   stderr = "";
   exitCode = undefined;
   vi.clearAllMocks();
+  mockScrub.mockImplementation((_execution: unknown, excerpt: string) => Promise.resolve({ ok: true, text: excerpt }));
   captureIo();
 
   mockReadConfig.mockReturnValue({ ...CONFIG });
@@ -755,6 +762,44 @@ describe("do-work marker reconciliation", () => {
     expect(body).toMatch(/I am done/);
     expect(body).not.toContain("ghp_");
     expect(body).not.toMatch(/\.automata\/runs/);
+  });
+
+  it("posts the second-opinion text, not the pattern-redacted one, when the model filter succeeds", async () => {
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    mockScrub.mockResolvedValue({ ok: true, text: "model-filtered text" });
+    mockInvokeClaude.mockImplementation(() => {
+      lastSink?.output("stdout", '{"type":"result","result":"hello world"}\n');
+      lastSink?.exited(0, null);
+      return Promise.resolve();
+    });
+    await runDoWork();
+    const body = gh.updateMarker.mock.calls[0][1] as string;
+    expect(mockScrub).toHaveBeenCalledTimes(1);
+    expect(mockScrub.mock.calls[0][1]).toMatch(/hello world/);
+    expect(body).toMatch(/model-filtered text/);
+    expect(body).not.toMatch(/hello world/);
+  });
+
+  it("withholds the excerpt and names only the error when the second opinion fails", async () => {
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    mockScrub.mockResolvedValue({ ok: false, reason: "Claude Code exited with code 1" });
+    mockInvokeClaude.mockImplementation(() => {
+      lastSink?.output("stdout", '{"type":"result","result":"hello world"}\n');
+      lastSink?.exited(0, null);
+      return Promise.resolve();
+    });
+    await runDoWork();
+    const body = gh.updateMarker.mock.calls[0][1] as string;
+    expect(body).toMatch(/withheld, the second redaction pass failed \(Claude Code exited with code 1\)/);
+    expect(body).not.toMatch(/<details>/);
+    expect(body).not.toMatch(/hello world/);
+  });
+
+  it("does not call the second opinion when postRunLog is false or the excerpt is empty", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { postRunLog: false } });
+    gh.getIssueSurface.mockReturnValue(needsWork(42));
+    await runDoWork();
+    expect(mockScrub).not.toHaveBeenCalled();
   });
 
   it("leaves the fallback comment as it was when doWork.postRunLog is false", async () => {

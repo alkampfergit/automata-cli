@@ -76,6 +76,7 @@ import {
   type RunSideEffects,
   type RunSink,
 } from "../run/runTranscript.js";
+import { scrubExcerpt } from "../run/secondOpinion.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
   inspectLogDirectory,
@@ -1174,14 +1175,14 @@ interface Reconciled {
   reason: ReconcileReason;
 }
 
-function reconcileMarker(
+async function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
   participants: Participants,
   watermark: string | null,
   runError: Error | null,
-  diagnostics: (() => string) | null,
-): Reconciled {
+  diagnostics: (() => Promise<string>) | null,
+): Promise<Reconciled> {
   let analysis: AnswerAnalysis;
   try {
     analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
@@ -1239,12 +1240,12 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): Reconciled {
  * can commit and push and still fail to comment, and a failed run can leave
  * partial work behind.
  */
-function reportNoAnswer(
+async function reportNoAnswer(
   item: WorkItem,
   marker: MarkerRef,
   runError: Error | null,
-  diagnostics: (() => string) | null,
-): Reconciled {
+  diagnostics: (() => Promise<string>) | null,
+): Promise<Reconciled> {
   const surface = markerSurfaceLabel(item);
   const sideEffects =
     item.turn === "issue-discuss"
@@ -1257,7 +1258,7 @@ function reportNoAnswer(
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
         `${sideEffects} Reply on ${surface} to have another attempt made.`;
   try {
-    updateMarker(marker, explanation + (diagnostics?.() ?? ""));
+    updateMarker(marker, explanation + ((await diagnostics?.()) ?? ""));
   } catch (err) {
     progress(
       `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
@@ -1525,7 +1526,7 @@ async function processItem(
   const ranExecutor = true;
 
   inFlightMarker = null;
-  const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
+  const reconciled = await reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
   progress(`  ${reconciled.detail}\n`);
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
@@ -1544,7 +1545,7 @@ async function runRecorded(
   execution: ResolvedExecution,
   settings: Settings,
   silent: boolean,
-): Promise<{ runError: Error | null; diagnostics: (() => string) | null }> {
+): Promise<{ runError: Error | null; diagnostics: (() => Promise<string>) | null }> {
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
 
@@ -1557,13 +1558,22 @@ async function runRecorded(
   if (transcript === null) return { runError, diagnostics: null };
   return {
     runError,
-    diagnostics: () =>
-      renderRunDiagnostics({
+    diagnostics: async () => {
+      const excerpt = transcript.excerpt();
+      const scrubbed = excerpt === "" ? null : await scrubExcerpt(execution, excerpt);
+      return renderRunDiagnostics({
         turn: item.turn,
         subject: markerSurfaceLabel(item),
         transcript,
         effects: describeRunEffects(before, settings.baseBranch),
-      }),
+        excerpt:
+          scrubbed === null
+            ? { kind: "text", text: "" }
+            : scrubbed.ok
+              ? { kind: "text", text: scrubbed.text }
+              : { kind: "withheld", reason: scrubbed.reason },
+      });
+    },
   };
 }
 

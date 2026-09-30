@@ -271,11 +271,16 @@ export interface RunSideEffects {
   pr: { number: number; url: string } | null;
 }
 
+/** What goes in the `<details>` block: the excerpt, or why it is being withheld. */
+export type ExcerptOutcome = { kind: "text"; text: string } | { kind: "withheld"; reason: string };
+
 export interface RunDiagnosticsInput {
   turn: string;
   subject: string;
   transcript: RunTranscript;
   effects: RunSideEffects | null;
+  /** Defaults to the transcript's pattern-redacted excerpt. */
+  excerpt?: ExcerptOutcome;
 }
 
 function describeEffects(effects: RunSideEffects | null): string {
@@ -305,7 +310,11 @@ export function renderRunDiagnostics(input: RunDiagnosticsInput): string {
     `- Changes in the checkout: ${describeEffects(input.effects)}`,
   ];
   if (transcript.saved) lines.push(`- Full transcript on the machine that ran automata: \`${transcript.fileName}\``);
-  const excerpt = transcript.excerpt();
+  const shown = input.excerpt ?? { kind: "text", text: transcript.excerpt() };
+  if (shown.kind === "withheld") {
+    lines.push(`- Last lines of the agent's output: withheld, the second redaction pass failed (${shown.reason})`);
+  }
+  const excerpt = shown.kind === "text" ? shown.text : "";
   const details =
     excerpt === ""
       ? ""
