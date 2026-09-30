@@ -824,6 +824,20 @@ After the run, `do-work` re-reads the surface:
 | Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
 | The run was refused before it started | **Updated in place** with the reason — an unrecognised `tool:` directive, or a prompt too long to hand to the executor. Nothing was invoked, so nothing changed. |
 
+### Diagnostics when no answer was posted
+
+An updated marker that says only "no answer" leaves you guessing why, so it also carries a short block:
+
+- the turn kind and the issue or pull request;
+- the agent's exit code, or the signal that ended it, and how long it ran;
+- whether the checkout changed during the run — a new branch, a pull request for it, or new commits on the checked-out branch;
+- the **file name** of the full transcript, and nothing else about it;
+- the last 20 lines of what the agent said and printed, at most 4 KB, in a collapsed `<details>` block, with token-shaped strings (GitHub and cloud tokens, `Bearer` values, `*_TOKEN=` style assignments, private keys) replaced by `[redacted]`.
+
+The complete output of every run is saved as `.automata/runs/<timestamp>-issue-<n>.log` (`pr-<n>` for a pull-request turn), stdout and stderr both, so you can read it on the machine that ran `do-work`. Its path and contents are never posted. The directory holds its own `.gitignore`, so a transcript never makes the working tree dirty. Files are not pruned; delete old ones when you like.
+
+Redaction is best-effort, which is why only an excerpt is posted and the file name is all that points at the rest. Set `doWork.postRunLog` to `false` (in `.automata/config.json`) to get the plain one-sentence comment back and skip saving transcripts.
+
 A third comment appears only when the timing was unlucky: if an authorized account posts while a run is already in flight, that message cannot reach the run, and because the agent's answer is newer the next tick will not see it as new either. A stateless boundary cannot carry it forward, so the agent says so and asks for it to be posted again. The same applies to an issue message buried by the pickup note. Either case reports the item as degraded (exit 2) rather than losing the message in silence.
 
 The marker is deleted only after the answer is confirmed to exist, never on the strength of the executor's exit code — a run can exit non-zero having posted a good reply, and exit zero having posted nothing. Updating keeps the comment's creation time, so a run that produced nothing still holds the boundary and is **not** retried automatically; the updated text is what asks a human to step in.
