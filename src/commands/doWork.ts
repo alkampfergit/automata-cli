@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
   DEFAULT_DO_WORK,
@@ -67,7 +68,16 @@ import {
   type HygieneReport,
   type PruneOutcome,
 } from "../git/repoHygiene.js";
-import { getCurrentBranch } from "../git/gitService.js";
+import { getCurrentBranch, revParse } from "../git/gitService.js";
+import {
+  RunTranscript,
+  type ExcerptOutcome,
+  renderRunDiagnostics,
+  transcriptLabel,
+  type RunSideEffects,
+  type RunSink,
+} from "../run/runTranscript.js";
+import { scrubExcerpt } from "../run/secondOpinion.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
   inspectLogDirectory,
@@ -179,6 +189,8 @@ interface Settings {
   lockStaleMinutes: number;
   /** Render the health report when the tick exits having done nothing. */
   dumpOnBlock: boolean;
+  /** Append diagnostics and save a transcript when a run posts no answer. */
+  postRunLog: boolean;
   limit: number;
   participants: Participants;
   prompts: Record<TurnKind, string>;
@@ -333,10 +345,12 @@ function requireParticipants(config: AutomataConfig): {
   technique: NonNullable<AutomataConfig["issueDiscoveryTechnique"]>;
   discoveryValue: string;
 } {
-  if (config.remoteType !== "gh") {
+  if (!isExplicitGitHub(config)) {
     failSettings(
-      "do-work is only supported for GitHub remotes. Set it with `automata config set type gh`. " +
-        "Azure DevOps lacks the issue conversation APIs this needs — see docs/azdo-gap.md.",
+      azdoUnsupportedMessage(
+        "do-work",
+        "It needs the GitHub issue conversation APIs; set the remote with `automata config set type gh`.",
+      ),
     );
   }
   if (!config.issueDiscoveryTechnique) {
@@ -423,6 +437,7 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
         : (doWork.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
     lockStaleMinutes: doWork.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes,
     dumpOnBlock: doWork.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock,
+    postRunLog: doWork.postRunLog ?? DEFAULT_DO_WORK.postRunLog,
     limit: parsePositiveInt(options.limit, "--limit"),
     participants: { allowedUsers, agentUser },
     prompts: {
@@ -709,6 +724,7 @@ function validateDoWorkConfig(section: unknown): void {
   validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
   validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
   validateOptionalBoolean(section, "dumpOnBlock", "doWork.dumpOnBlock");
+  validateOptionalBoolean(section, "postRunLog", "doWork.postRunLog");
 
   validateProtectedBranches(section["protectedBranches"]);
   validateSettingContainer(section["models"], "models", ["claude", "codex"]);
@@ -1160,13 +1176,14 @@ interface Reconciled {
   reason: ReconcileReason;
 }
 
-function reconcileMarker(
+async function reconcileMarker(
   item: WorkItem,
   marker: MarkerRef,
   participants: Participants,
   watermark: string | null,
   runError: Error | null,
-): Reconciled {
+  diagnostics: (() => Promise<string>) | null,
+): Promise<Reconciled> {
   let analysis: AnswerAnalysis;
   try {
     analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
@@ -1196,7 +1213,7 @@ function reconcileMarker(
       : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}`, reason: "answered" };
   }
 
-  return reportNoAnswer(item, marker, runError);
+  return reportNoAnswer(item, marker, runError, diagnostics);
 }
 
 /** The surface could not be re-read, so nothing about the answer is established. */
@@ -1224,7 +1241,12 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): Reconciled {
  * can commit and push and still fail to comment, and a failed run can leave
  * partial work behind.
  */
-function reportNoAnswer(item: WorkItem, marker: MarkerRef, runError: Error | null): Reconciled {
+async function reportNoAnswer(
+  item: WorkItem,
+  marker: MarkerRef,
+  runError: Error | null,
+  diagnostics: (() => Promise<string>) | null,
+): Promise<Reconciled> {
   const surface = markerSurfaceLabel(item);
   const sideEffects =
     item.turn === "issue-discuss"
@@ -1237,7 +1259,7 @@ function reportNoAnswer(item: WorkItem, marker: MarkerRef, runError: Error | nul
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
         `${sideEffects} Reply on ${surface} to have another attempt made.`;
   try {
-    updateMarker(marker, explanation);
+    updateMarker(marker, explanation + ((await diagnostics?.()) ?? ""));
   } catch (err) {
     progress(
       `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
@@ -1253,6 +1275,7 @@ async function invokeExecutor(
   prompt: string,
   execution: ResolvedExecution,
   silent: boolean,
+  sink?: RunSink,
 ): Promise<void> {
   // A model run is the longest thing a tick does and the one an operator most
   // often wants a clock on: "held for 40 minutes" says nothing on its own, while
@@ -1266,10 +1289,10 @@ async function invokeExecutor(
   // throw instead of exiting, so a failed run reconciles its marker and the tick
   // continues with the next item.
   if (execution.executor === "codex") {
-    await runCodex(prompt, { model: execution.model, effort: execution.effort });
+    await runCodex(prompt, { model: execution.model, effort: execution.effort, sink });
     return;
   }
-  await runClaude(prompt, { model: execution.model, effort: execution.effort, printSteps: !silent });
+  await runClaude(prompt, { model: execution.model, effort: execution.effort, printSteps: !silent, sink });
 }
 
 /**
@@ -1500,21 +1523,93 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
-  let runError: Error | null = null;
-  try {
-    await invokeExecutor(prompt, execution, silent);
-  } catch (err) {
-    runError = err as Error;
-  }
+  const { runError, diagnostics } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
 
   inFlightMarker = null;
-  const reconciled = reconcileMarker(item, marker, settings.participants, watermark, runError);
+  const reconciled = await reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
   progress(`  ${reconciled.detail}\n`);
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
 
   return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
+}
+
+/**
+ * Run the executor, recording its transcript when `doWork.postRunLog` is on.
+ * `diagnostics` is built lazily: only a run that posted nothing needs the git
+ * and gh calls behind it.
+ */
+async function runRecorded(
+  item: WorkItem,
+  prompt: string,
+  execution: ResolvedExecution,
+  settings: Settings,
+  silent: boolean,
+): Promise<{ runError: Error | null; diagnostics: (() => Promise<string>) | null }> {
+  const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
+  const before = transcript === null ? null : snapshotCheckout();
+
+  let runError: Error | null = null;
+  try {
+    await invokeExecutor(prompt, execution, silent, transcript ?? undefined);
+  } catch (err) {
+    runError = err as Error;
+  }
+  if (transcript === null) return { runError, diagnostics: null };
+  return {
+    runError,
+    diagnostics: async () => {
+      const excerpt = transcript.excerpt();
+      const scrubbed = excerpt === "" ? null : await scrubExcerpt(execution, excerpt);
+      let shown: ExcerptOutcome = { kind: "text", text: "" };
+      if (scrubbed?.ok === true) shown = { kind: "text", text: scrubbed.text };
+      else if (scrubbed?.ok === false) shown = { kind: "withheld", reason: scrubbed.reason };
+      return renderRunDiagnostics({
+        turn: item.turn,
+        subject: markerSurfaceLabel(item),
+        transcript,
+        effects: describeRunEffects(before, settings.baseBranch),
+        excerpt: shown,
+      });
+    },
+  };
+}
+
+
+interface CheckoutSnapshot {
+  branch: string | null;
+  head: string | null;
+}
+
+function snapshotCheckout(): CheckoutSnapshot | null {
+  try {
+    return { branch: getCurrentBranch(), head: revParse("HEAD") };
+  } catch {
+    return null;
+  }
+}
+
+/** What the run left behind, or null when the checkout cannot be read. */
+function describeRunEffects(before: CheckoutSnapshot | null, baseBranch: string): RunSideEffects | null {
+  const after = snapshotCheckout();
+  if (before === null || after === null) return null;
+  let pr: RunSideEffects["pr"] = null;
+  if (after.branch !== null && after.branch !== before.branch && after.branch !== baseBranch) {
+    try {
+      const found = getCurrentBranchPr();
+      pr = found === null ? null : { number: found.number, url: found.url };
+    } catch {
+      pr = null;
+    }
+  }
+  return {
+    branchBefore: before.branch,
+    branchAfter: after.branch,
+    headBefore: before.head,
+    headAfter: after.head,
+    pr,
+  };
 }
 
 // Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt is

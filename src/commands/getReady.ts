@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { Command } from "commander";
+import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
 import {
   listIssues, postComment, editComment,
@@ -47,9 +48,9 @@ async function promptSelection(
 }
 
 function validateConfig(config: ReturnType<typeof readConfig>): void {
-  if (config.remoteType !== "gh") {
+  if (!isExplicitGitHub(config)) {
     process.stderr.write(
-      "Error: implement-next is not supported in Azure DevOps mode. Work item discovery is not available in azdo-cli. See docs/azdo-gap.md for details.\n",
+      `Error: ${azdoUnsupportedMessage("implement-next", "Work item discovery is not available in azdo-cli.")}\n`,
     );
     process.exit(1);
   }

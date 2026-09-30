@@ -336,6 +336,21 @@ describe("automata config set do-work-*", () => {
     expect(readConfigFile().doWork).toEqual({ dumpOnBlock: true });
   });
 
+  it("turns the silent-run diagnostics off and back on", () => {
+    expect(run(["config", "set", "do-work-post-run-log", "false"]).trim()).toBe(
+      "do-work post run log set to: false",
+    );
+    expect(readConfigFile().doWork).toEqual({ postRunLog: false });
+    run(["config", "set", "do-work-post-run-log", "True"]);
+    expect(readConfigFile().doWork).toEqual({ postRunLog: true });
+  });
+
+  it("rejects a post-run-log value that is not true or false", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-post-run-log", "1"])).toMatch(
+      /do-work-post-run-log must be true or false/,
+    );
+  });
+
   it("rejects anything that is not true or false", () => {
     // Only the two literals: the file stores a JSON boolean, and accepting
     // "yes"/"1" as well would make the flag and the file two vocabularies.

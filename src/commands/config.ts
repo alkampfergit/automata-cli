@@ -223,23 +223,40 @@ const configSetDoWorkLockStaleMinutes = new Command("do-work-lock-stale-minutes"
     process.stdout.write(`do-work lock staleness set to: ${String(minutes)} minutes\n`);
   });
 
+/**
+ * Only the two literals, deliberately: accepting "1"/"yes"/"on" as well would
+ * make the file's value and the flag's value two different vocabularies, and the
+ * config file stores a JSON boolean either way.
+ */
+function parseBooleanLiteral(value: string, name: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (normalized !== "true" && normalized !== "false") {
+    process.stderr.write(`Error: ${name} must be true or false (got "${value}").\n`);
+    process.exit(1);
+  }
+  return normalized === "true";
+}
+
 const configSetDoWorkDumpOnBlock = new Command("do-work-dump-on-block")
   .description(
     "Set whether `do-work` prints the full health report when a tick exits having done nothing",
   )
   .argument("<value>", `true or false (default: ${String(DEFAULT_DO_WORK.dumpOnBlock)})`)
   .action((value: string) => {
-    const normalized = value.trim().toLowerCase();
-    // Only the two literals, deliberately: accepting "1"/"yes"/"on" as well
-    // would make the file's value and the flag's value two different
-    // vocabularies, and the config file stores a JSON boolean either way.
-    if (normalized !== "true" && normalized !== "false") {
-      process.stderr.write(`Error: do-work-dump-on-block must be true or false (got "${value}").\n`);
-      process.exit(1);
-    }
-    const dumpOnBlock = normalized === "true";
+    const dumpOnBlock = parseBooleanLiteral(value, "do-work-dump-on-block");
     writeDoWork({ dumpOnBlock });
     process.stdout.write(`do-work dump on block set to: ${String(dumpOnBlock)}\n`);
+  });
+
+const configSetDoWorkPostRunLog = new Command("do-work-post-run-log")
+  .description(
+    "Set whether `do-work` adds run diagnostics to a no-answer comment and saves the run transcript",
+  )
+  .argument("<value>", `true or false (default: ${String(DEFAULT_DO_WORK.postRunLog)})`)
+  .action((value: string) => {
+    const postRunLog = parseBooleanLiteral(value, "do-work-post-run-log");
+    writeDoWork({ postRunLog });
+    process.stdout.write(`do-work post run log set to: ${String(postRunLog)}\n`);
   });
 
 const configSetDoWorkPrompt = new Command("do-work-prompt")
@@ -321,6 +338,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
   .addCommand(configSetDoWorkDumpOnBlock)
+  .addCommand(configSetDoWorkPostRunLog)
   .addCommand(configSetDoWorkPrompt)
   .addCommand(configSetGitTrunkBranch)
   .addCommand(configSetGitReleaseFlow);

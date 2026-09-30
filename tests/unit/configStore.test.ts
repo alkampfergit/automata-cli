@@ -286,6 +286,7 @@ describe("doWork configuration", () => {
       maxRunsPerTick: 0,
       lockStaleMinutes: 120,
       dumpOnBlock: true,
+      postRunLog: true,
     });
   });
 

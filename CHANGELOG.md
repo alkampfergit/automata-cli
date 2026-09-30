@@ -10,6 +10,26 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-30
+
+### Added
+
+- When a `do-work` agent run posts no answer, the comment now carries the turn, exit code or signal, duration, whether
+  a branch, pull request or commit appeared, and a redacted 4 KB excerpt of the agent's last output in a `<details>`
+  block, filtered a second time by the executor that ran the turn (`claude -p` / `codex exec`) to drop anything that
+  still looks secret; if that call fails the excerpt is withheld and only the error is posted. The full transcript is saved to `.automata/runs/` and only its file name is posted. `doWork.postRunLog`
+  (default `true`, also `automata config set do-work-post-run-log` and the wizard) turns it off. See [docs/do-work.md](docs/do-work.md#diagnostics-when-no-answer-was-posted).
+
+### Fixed
+
+- `do-work` writes its operation logs to `automata-<uid>/` under the system temp directory when the parent of the working
+  directory is not writable (e.g. `/workspaces` in a devcontainer), so `do-work --check` no longer exits 1 for it
+
+### Changed
+
+- Every "not supported" message for Azure DevOps (`get-pr-comments`, `fix-comments`, `check-issue`, `implement-next`,
+  `do-work`) now reads `<command> is not supported for Azure DevOps.` and links [docs/azdo-gap.md](docs/azdo-gap.md).
+
 ## [0.9.0] - 2026-09-27
 
 ### Added

@@ -8,7 +8,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import {
   EXECUTION_LOG_FILE,
   MAX_DETAIL_LENGTH,
@@ -427,14 +428,48 @@ describe("pruneOldRecords", () => {
 /* ── operationLogDirectory ───────────────────────────────────────────────── */
 
 describe("operationLogDirectory", () => {
-  it("is the parent of the working directory", () => {
+  const withCwd = (cwd: string, fn: () => void): void => {
     const original = process.cwd;
-    process.cwd = () => "/home/dev/workspaces/automata-cli";
+    process.cwd = () => cwd;
     try {
-      expect(operationLogDirectory()).toBe("/home/dev/workspaces");
+      fn();
     } finally {
       process.cwd = original;
     }
+  };
+
+  it("is the parent of the working directory when that is writable", () => {
+    mkdirSync(join(TEST_DIR, "repo"), { recursive: true });
+    withCwd(join(TEST_DIR, "repo"), () => {
+      expect(operationLogDirectory()).toBe(TEST_DIR);
+    });
+  });
+
+  it("falls back to a per-user automata folder under the temp directory when the parent is not writable", () => {
+    withCwd("/nonexistent-parent/repo", () => {
+      const dir = operationLogDirectory();
+      expect(dirname(dir)).toBe(tmpdir());
+      expect(basename(dir)).toMatch(/^automata-[A-Za-z0-9_.-]+$/);
+      expect(basename(dir)).not.toBe("automata");
+    });
+  });
+
+  it("does not create the fallback directory while resolving it", () => {
+    withCwd("/nonexistent-parent/repo", () => {
+      const dir = operationLogDirectory();
+      rmSync(dir, { recursive: true, force: true });
+      operationLogDirectory();
+      expect(existsSync(dir)).toBe(false);
+    });
+  });
+
+  it("recordTick creates the temp fallback directory when it is missing", () => {
+    withCwd("/nonexistent-parent/repo", () => {
+      const dir = operationLogDirectory();
+      rmSync(dir, { recursive: true, force: true });
+      recordTick(tick({ items: [item({ subject: "#1" })] }));
+      expect(existsSync(join(dir, EXECUTION_LOG_FILE))).toBe(true);
+    });
   });
 });
 

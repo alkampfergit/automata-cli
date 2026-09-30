@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
+import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeCodexOptions {
   yolo?: boolean;
@@ -67,12 +68,26 @@ function invokeCodexCodeSync(
  * arriving mid-run cannot be handled until the child finishes, and a non-zero
  * status exits the process. See `runClaude` for why a tick cannot accept either.
  */
-export function runCodex(prompt: string, options: { model?: string; effort?: string } = {}): Promise<void> {
+export function runCodex(
+  prompt: string,
+  options: { model?: string; effort?: string; sink?: RunSink } = {},
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
     const args = buildCodexArgs(prompt, { yolo: true, model: options.model, effort: options.effort });
-    const child = spawn(codexBin, args, { stdio: "inherit" });
+    const sink = options.sink;
+    const child = spawn(codexBin, args, { stdio: ["inherit", "pipe", "pipe"] });
     trackChild(child);
+
+    // Piped only so the transcript can see the output; it still reaches the terminal.
+    child.stdout.on("data", (chunk: Buffer) => {
+      process.stdout.write(chunk);
+      sink?.output("stdout", chunk.toString("utf8"));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      sink?.output("stderr", chunk.toString("utf8"));
+    });
 
     child.on("error", (err) => {
       untrackChild(child);
@@ -86,6 +101,7 @@ export function runCodex(prompt: string, options: { model?: string; effort?: str
 
     child.on("close", (code, signal) => {
       untrackChild(child);
+      sink?.exited(code, signal);
       if (code === 0) {
         resolve();
         return;

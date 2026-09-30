@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readConfig, readRawConfig } from "../config/configStore.js";
 import * as azdoService from "../config/azdoService.js";
+import { selectBackend } from "../remote/backend.js";
 import { recordCommand } from "../run/commandTrace.js";
 import {
   TRUNK_CANDIDATES,
@@ -811,7 +812,7 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
 
 export async function getPrInfo(branch: string): Promise<PrInfo | null> {
   const config = readConfig();
-  if (config.remoteType === "azdo") {
+  if (selectBackend(config) === "azdo") {
     return azdoService.getPrInfo();
   }
   return getPrInfoGh(branch);
@@ -1268,7 +1269,7 @@ function getPrCommentsGh(branch: string): PrComment[] | null {
 
 export function getPrComments(branch: string): PrComment[] | null | "unsupported" {
   const config = readConfig();
-  if (config.remoteType === "azdo") {
+  if (selectBackend(config) === "azdo") {
     return "unsupported";
   }
   return getPrCommentsGh(branch);

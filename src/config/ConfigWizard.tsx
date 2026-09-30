@@ -48,6 +48,12 @@ const DUMP_ON_BLOCK_OPTIONS: { label: string; value: boolean }[] = [
   { label: "No — print only the one-line reason", value: false },
 ];
 
+/** On first, for the same reason as the blocked-tick report. */
+const POST_RUN_LOG_OPTIONS: { label: string; value: boolean }[] = [
+  { label: "Yes — add run diagnostics to a no-answer comment and save the transcript", value: true },
+  { label: "No — post the plain one-sentence comment", value: false },
+];
+
 // `undefined` clears `git.releaseFlow`, which is how detection is restored.
 const RELEASE_FLOW_OPTIONS: { label: string; value: ReleaseFlow | undefined }[] = [
   { label: "Detect from origin (gitflow if origin/develop exists)", value: undefined },
@@ -97,6 +103,7 @@ type Screen =
   | "do-work-max-runs"
   | "do-work-lock-stale"
   | "do-work-dump-on-block"
+  | "do-work-post-run-log"
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt"
   | "do-work-pr-orphan-prompt"
@@ -288,6 +295,14 @@ export function ConfigWizard() {
     Math.max(
       DUMP_ON_BLOCK_OPTIONS.findIndex(
         (option) => option.value === (existing.doWork?.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock),
+      ),
+      0,
+    ),
+  );
+  const [doWorkPostRunLogIndex, setDoWorkPostRunLogIndex] = useState(
+    Math.max(
+      POST_RUN_LOG_OPTIONS.findIndex(
+        (option) => option.value === (existing.doWork?.postRunLog ?? DEFAULT_DO_WORK.postRunLog),
       ),
       0,
     ),
@@ -568,6 +583,13 @@ export function ConfigWizard() {
       index: doWorkDumpOnBlockIndex,
       length: DUMP_ON_BLOCK_OPTIONS.length,
       setIndex: setDoWorkDumpOnBlockIndex,
+      onSelect: () => setScreen("do-work-post-run-log"),
+      onBack: () => setScreen("do-work-lock-stale"),
+    },
+    "do-work-post-run-log": {
+      index: doWorkPostRunLogIndex,
+      length: POST_RUN_LOG_OPTIONS.length,
+      setIndex: setDoWorkPostRunLogIndex,
       onSelect: () => {
         const maxRuns = parseWholeInt(doWorkMaxRuns);
         const current = readRawConfig();
@@ -591,11 +613,12 @@ export function ConfigWizard() {
             // a positive whole number.
             lockStaleMinutes: parseWholeInt(doWorkLockStale) ?? DEFAULT_DO_WORK.lockStaleMinutes,
             dumpOnBlock: DUMP_ON_BLOCK_OPTIONS[doWorkDumpOnBlockIndex].value,
+            postRunLog: POST_RUN_LOG_OPTIONS[doWorkPostRunLogIndex].value,
           },
         });
         exit();
       },
-      onBack: () => setScreen("do-work-lock-stale"),
+      onBack: () => setScreen("do-work-dump-on-block"),
     },
     "git-release-flow": {
       index: releaseFlowIndex,
@@ -792,6 +815,12 @@ export function ConfigWizard() {
       title: "Do Work — Report on a Blocked Tick",
       options: DUMP_ON_BLOCK_OPTIONS.map((o) => o.label),
       index: doWorkDumpOnBlockIndex,
+      hint: `↑/↓ to move · Enter to continue · ${BACK}`,
+    },
+    "do-work-post-run-log": {
+      title: "Do Work — Diagnostics for a Silent Run",
+      options: POST_RUN_LOG_OPTIONS.map((o) => o.label),
+      index: doWorkPostRunLogIndex,
       hint: `↑/↓ to move · Enter to save and exit · ${BACK}`,
     },
     "git-release-flow": {

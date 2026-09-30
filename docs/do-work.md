@@ -824,6 +824,22 @@ After the run, `do-work` re-reads the surface:
 | Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
 | The run was refused before it started | **Updated in place** with the reason — an unrecognised `tool:` directive, or a prompt too long to hand to the executor. Nothing was invoked, so nothing changed. |
 
+### Diagnostics when no answer was posted
+
+An updated marker that says only "no answer" leaves you guessing why, so it also carries a short block:
+
+- the turn kind and the issue or pull request;
+- the agent's exit code, or the signal that ended it, and how long it ran;
+- whether the checkout changed during the run — a new branch, a pull request for it, or new commits on the checked-out branch;
+- the **file name** of the full transcript, and nothing else about it;
+- the last 20 lines of what the agent said and printed, at most 4 KB, in a collapsed `<details>` block, with token-shaped strings (GitHub and cloud tokens, `Bearer` values, `*_TOKEN=` style assignments, private keys) replaced by `[redacted]`.
+
+The complete output of every run is saved as `.automata/runs/<timestamp>-issue-<n>.log` (`pr-<n>` for a pull-request turn), stdout and stderr both, so you can read it on the machine that ran `do-work`. Its path and contents are never posted, but its file name always is, so you can look for it on the machine that ran the turn; if the file could not be written the comment says so. The transcript is raw and unredacted, so it is created readable by your user only (`0600`, in a `0700` directory), and an existing file is never overwritten. The directory holds its own `.gitignore` (an existing one is left alone), so a transcript never makes the working tree dirty. Files are not pruned; delete old ones when you like.
+
+**Second opinion.** After the pattern redaction, `do-work` asks the executor that ran the turn (`claude -p` or `codex exec`, same model and effort, no permission bypass, 120 s limit) to remove everything in the excerpt that still looks like a secret: bare random strings, connection strings with credentials, e-mail addresses and so on. What the model returns goes through the pattern redaction once more before it is posted. If that call fails, times out, or returns nothing usable, the excerpt is **not posted at all**; the comment says only that it was withheld and why (`Claude Code exited with code 1`, a timeout, a missing binary), never any model output. The call happens only for a run that posted no answer and had output to show, and it sends the already-redacted excerpt (at most 4 KB) to that executor's service, so it adds no new recipient beyond the one that already ran the turn.
+
+Each line is redacted as it is kept, and the excerpt is redacted again *before* it is cut to size, so a cut never leaves half a token behind. A private key is masked from its `BEGIN` line to its `END` line, even when the `BEGIN` line falls outside the last 20. Redaction is still best-effort — a secret in a shape it does not know, such as a bare random string, passes through — which is why only an excerpt is posted and the file name is all that points at the rest. Set `doWork.postRunLog` to `false` (`automata config set do-work-post-run-log false`, or the *Diagnostics for a Silent Run* wizard screen) to get the plain one-sentence comment back and skip saving transcripts.
+
 A third comment appears only when the timing was unlucky: if an authorized account posts while a run is already in flight, that message cannot reach the run, and because the agent's answer is newer the next tick will not see it as new either. A stateless boundary cannot carry it forward, so the agent says so and asks for it to be posted again. The same applies to an issue message buried by the pickup note. Either case reports the item as degraded (exit 2) rather than losing the message in silence.
 
 The marker is deleted only after the answer is confirmed to exist, never on the strength of the executor's exit code — a run can exit non-zero having posted a good reply, and exit zero having posted nothing. Updating keeps the comment's creation time, so a run that produced nothing still holds the boundary and is **not** retried automatically; the updated text is what asks a human to step in.
@@ -911,6 +927,8 @@ Every non-dry-run `do-work` invocation appends to two plain-text files in the **
 ```
 
 Several checkouts under one parent share the two files. The repository slug on every line and every record header keeps them apart.
+
+When the parent directory is not writable — `/workspaces` for the container user of a devcontainer, say — both files go to `automata-<uid>/` under the system temp directory (`os.tmpdir()`, usually `/tmp/automata-<uid>/`, a private per-user folder so another user cannot leave it unwritable) instead. `do-work --check` reports the directory actually in use.
 
 Nothing to configure, and nothing to turn on: the location, the 1000-line cap and the 30-day window are all fixed.
 

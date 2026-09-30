@@ -131,7 +131,7 @@ describe("getReady command: config validation", () => {
       // expected
     }
 
-    expect(stderrLines.join("")).toContain("implement-next is not supported in Azure DevOps mode");
+    expect(stderrLines.join("")).toContain("implement-next is not supported for Azure DevOps");
     expect(stderrLines.join("")).toContain("docs/azdo-gap.md");
     expect(exitSpy).toHaveBeenCalledWith(1);
 
