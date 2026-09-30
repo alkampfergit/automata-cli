@@ -2,12 +2,14 @@ import {
   accessSync,
   appendFileSync,
   constants,
+  mkdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
@@ -95,14 +97,29 @@ export interface TickLog {
 }
 
 /**
- * Where the logs live: the parent of the working directory.
+ * Where the logs live: the parent of the working directory, or — when that
+ * directory is not writable, as `/workspaces` is for the container user of a
+ * devcontainer — an `automata` folder under the system temp directory.
  *
  * Not configurable, and deliberately so — one workspace root collects the logs
  * of every checkout beneath it, and the repository slug on each entry keeps
- * them apart.
+ * them apart. The fallback is chosen by the same advisory `W_OK` probe the
+ * health report uses, so the two always agree.
  */
 export function operationLogDirectory(): string {
-  return dirname(process.cwd());
+  const parent = dirname(process.cwd());
+  try {
+    accessSync(parent, constants.W_OK);
+    return parent;
+  } catch {
+    const fallback = join(tmpdir(), "automata");
+    try {
+      mkdirSync(fallback, { recursive: true });
+    } catch {
+      // Best-effort: an unusable fallback is reported by inspectLogDirectory.
+    }
+    return fallback;
+  }
 }
 
 /**
