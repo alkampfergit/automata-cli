@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { isExplicitGitHub } from "../remote/backend.js";
+import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
   DEFAULT_DO_WORK,
@@ -337,7 +337,7 @@ function requireParticipants(config: AutomataConfig): {
   if (!isExplicitGitHub(config)) {
     failSettings(
       "do-work is only supported for GitHub remotes. Set it with `automata config set type gh`. " +
-        "Azure DevOps lacks the issue conversation APIs this needs — see docs/azdo-gap.md.",
+        azdoUnsupportedMessage("do-work", "Azure DevOps lacks the issue conversation APIs this needs."),
     );
   }
   if (!config.issueDiscoveryTechnique) {

@@ -15,6 +15,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `do-work` writes its operation logs to `automata-<uid>/` under the system temp directory when the parent of the working
   directory is not writable (e.g. `/workspaces` in a devcontainer), so `do-work --check` no longer exits 1 for it
 
+### Changed
+
+- Every "not supported" message for Azure DevOps (`get-pr-comments`, `fix-comments`, `check-issue`, `implement-next`,
+  `do-work`) now reads "<command> is not supported for Azure DevOps." and links [docs/azdo-gap.md](docs/azdo-gap.md).
+
 ## [0.9.0] - 2026-09-27
 
 ### Added

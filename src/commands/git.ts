@@ -23,6 +23,7 @@ import {
   type SonarIssue,
   type SonarSecurityHotspot,
 } from "../git/gitService.js";
+import { azdoUnsupportedMessage } from "../remote/backend.js";
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
 import { describeReleaseFlowSource } from "../git/releaseFlow.js";
@@ -340,7 +341,7 @@ See docs/azdo-gap.md for details.`,
 
     if (comments === "unsupported") {
       process.stderr.write(
-        `Error: get-pr-comments is not supported for Azure DevOps. See docs/azdo-gap.md for details.\n`,
+        `Error: ${azdoUnsupportedMessage("get-pr-comments")}\n`,
       );
       process.exit(1);
     }

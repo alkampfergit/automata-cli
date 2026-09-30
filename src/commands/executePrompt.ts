@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { isAzdo } from "../remote/backend.js";
+import { azdoUnsupportedMessage, isAzdo } from "../remote/backend.js";
 import { getCurrentBranch, getPrInfo, resolveCurrentBranchComments, type PrComment, type PrInfo } from "../git/gitService.js";
 import {
   readConfig,
@@ -143,7 +143,7 @@ const executeFixCommentsCmd = addAiOptions(
     }
     if (result.kind === "unsupported") {
       process.stderr.write(
-        `Error: fix-comments is not supported for Azure DevOps. See docs/azdo-gap.md for details.\n`,
+        `Error: ${azdoUnsupportedMessage("fix-comments")}\n`,
       );
       process.exit(1);
     }
@@ -192,7 +192,7 @@ const executeCheckIssueCmd = addAiOptions(
 
     if (isAzdo(config)) {
       process.stderr.write(
-        "Error: check-issue is not supported for Azure DevOps. See docs/azdo-gap.md for details.\n",
+        `Error: ${azdoUnsupportedMessage("check-issue")}\n`,
       );
       process.exit(1);
     }
