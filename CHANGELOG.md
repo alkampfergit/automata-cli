@@ -10,6 +10,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Changed
+
+- In Azure DevOps mode, `git get-pr-info` and `git finish-feature` check that `azdo` is installed, at least 0.20.0 and
+  authenticated before calling it, and fail with a clear message otherwise; they also reject an `origin` that is a
+  GitHub URL. See `docs/azdo-gap.md`
+
 ## [0.10.0] - 2026-09-30
 
 ### Added

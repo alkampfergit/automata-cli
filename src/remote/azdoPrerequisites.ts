@@ -97,3 +97,21 @@ export function checkAzdoPrerequisites(run: Runner = defaultRunner): AzdoPrerequ
   }
   return { ok: true, version: formatVersion(version), identity };
 }
+
+let verified: AzdoPrerequisite | null = null;
+
+/**
+ * Throws a clear error unless `azdo` is usable. A success is remembered for the rest of the process, so
+ * the version and authentication probes run once however many `azdo` calls follow; a failure is re-probed.
+ */
+export function assertAzdoReady(run?: Runner): void {
+  if (verified?.ok) return;
+  const result = checkAzdoPrerequisites(run);
+  if (!result.ok) throw new Error(result.message);
+  verified = result;
+}
+
+/** Forgets a remembered success. Tests only. */
+export function resetAzdoReadyCache(): void {
+  verified = null;
+}

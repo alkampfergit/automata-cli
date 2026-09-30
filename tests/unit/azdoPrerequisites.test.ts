@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { checkAzdoPrerequisites, compareVersions, parseVersion } from "../../src/remote/azdoPrerequisites.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  assertAzdoReady,
+  checkAzdoPrerequisites,
+  compareVersions,
+  parseVersion,
+  resetAzdoReadyCache,
+} from "../../src/remote/azdoPrerequisites.js";
 
 const ok = (stdout: string) => ({ stdout, stderr: "", status: 0 });
 
@@ -36,5 +42,32 @@ describe("checkAzdoPrerequisites", () => {
   it("rejects a prerelease of the minimum version", () => {
     const r = checkAzdoPrerequisites(() => ok("0.20.0-beta.1\n"));
     expect(r).toMatchObject({ ok: false, reason: "too-old" });
+  });
+});
+
+describe("assertAzdoReady", () => {
+  const good = (args: string[]) =>
+    args[0] === "--version"
+      ? { stdout: "0.20.0\n", stderr: "", status: 0 }
+      : { stdout: JSON.stringify({ identity: "Ada" }), stderr: "", status: 0 };
+
+  beforeEach(() => resetAzdoReadyCache());
+
+  it("throws the failing check's message", () => {
+    const run = () => ({ stdout: "", stderr: "", status: 1, missing: true });
+    expect(() => assertAzdoReady(run)).toThrow("not installed");
+  });
+
+  it("probes once after a success, then trusts the result", () => {
+    const run = vi.fn(good);
+    assertAzdoReady(run);
+    assertAzdoReady(run);
+    expect(run).toHaveBeenCalledTimes(2); // --version and auth diagnose, first call only
+  });
+
+  it("re-probes after a failure", () => {
+    const bad = () => ({ stdout: "0.5.0", stderr: "", status: 0 });
+    expect(() => assertAzdoReady(bad)).toThrow("too old");
+    expect(() => assertAzdoReady(good)).not.toThrow();
   });
 });
