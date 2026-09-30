@@ -13,8 +13,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 ### Added
 
 - In Azure DevOps mode, `git get-pr-info` (and `--json`) lists the PR's checks with the same symbols and exit codes
-  as GitHub mode, honours the branch argument, and runs the SonarCloud enrichment for a SonarCloud check. The state
-  mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
+  as GitHub mode, fails when Azure DevOps cannot retrieve the checks, and runs the SonarCloud enrichment for a
+  SonarCloud check. The state mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
 
 ### Changed
 

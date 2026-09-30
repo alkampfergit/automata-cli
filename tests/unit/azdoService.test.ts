@@ -78,6 +78,14 @@ describe("azdoService.getPrInfo", () => {
     expect(pr?.checks).toEqual([]);
   });
 
+  it("throws when azdo reports that the checks could not be retrieved", async () => {
+    mockSpawnSync.mockReturnValue(
+      makeOutput([{ id: 3, title: "PR", status: "active", url: "https://example.com", checksError: "all sources failed" }]),
+    );
+    const { getPrInfo } = await import("../../src/config/azdoService.js");
+    expect(() => getPrInfo()).toThrow("could not retrieve the checks of PR #3: all sources failed");
+  });
+
   it("throws when azdo returns non-zero status", async () => {
     mockSpawnSync.mockReturnValue({ stdout: "", stderr: "azdo: not authenticated", status: 1 });
     const { getPrInfo } = await import("../../src/config/azdoService.js");

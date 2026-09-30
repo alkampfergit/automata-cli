@@ -17,6 +17,7 @@ interface AzdoCheck {
 
 interface AzdoPullRequestWithChecks extends AzdoPullRequest {
   checks?: AzdoCheck[];
+  checksError?: string | null;
 }
 
 interface AzdoPrStatusOutput {
@@ -146,5 +147,8 @@ export function getPrInfo(branch?: string): PrInfo | null {
   );
   const pr = parsed.pullRequests[0];
   if (pr === undefined) return null;
+  if (pr.checksError) {
+    throw new Error(`Azure DevOps could not retrieve the checks of PR #${pr.id}: ${pr.checksError}`);
+  }
   return toPrInfo(pr, (pr.checks ?? []).map(toPrCheck));
 }
