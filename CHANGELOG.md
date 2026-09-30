@@ -12,7 +12,7 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Fixed
 
-- `do-work` writes its operation logs to `automata/` under the system temp directory when the parent of the working
+- `do-work` writes its operation logs to `automata-<uid>/` under the system temp directory when the parent of the working
   directory is not writable (e.g. `/workspaces` in a devcontainer), so `do-work --check` no longer exits 1 for it
 
 ## [0.9.0] - 2026-09-27

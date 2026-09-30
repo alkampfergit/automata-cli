@@ -912,7 +912,7 @@ Every non-dry-run `do-work` invocation appends to two plain-text files in the **
 
 Several checkouts under one parent share the two files. The repository slug on every line and every record header keeps them apart.
 
-When the parent directory is not writable — `/workspaces` for the container user of a devcontainer, say — both files go to `automata/` under the system temp directory (`os.tmpdir()`, usually `/tmp/automata/`) instead. `do-work --check` reports the directory actually in use.
+When the parent directory is not writable — `/workspaces` for the container user of a devcontainer, say — both files go to `automata-<uid>/` under the system temp directory (`os.tmpdir()`, usually `/tmp/automata-<uid>/`, a private per-user folder so another user cannot leave it unwritable) instead. `do-work --check` reports the directory actually in use.
 
 Nothing to configure, and nothing to turn on: the location, the 1000-line cap and the 30-day window are all fixed.
 
