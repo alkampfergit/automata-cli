@@ -71,6 +71,7 @@ import {
 import { getCurrentBranch, revParse } from "../git/gitService.js";
 import {
   RunTranscript,
+  type ExcerptOutcome,
   renderRunDiagnostics,
   transcriptLabel,
   type RunSideEffects,
@@ -1559,17 +1560,15 @@ async function runRecorded(
     diagnostics: async () => {
       const excerpt = transcript.excerpt();
       const scrubbed = excerpt === "" ? null : await scrubExcerpt(execution, excerpt);
+      let shown: ExcerptOutcome = { kind: "text", text: "" };
+      if (scrubbed?.ok === true) shown = { kind: "text", text: scrubbed.text };
+      else if (scrubbed?.ok === false) shown = { kind: "withheld", reason: scrubbed.reason };
       return renderRunDiagnostics({
         turn: item.turn,
         subject: markerSurfaceLabel(item),
         transcript,
         effects: describeRunEffects(before, settings.baseBranch),
-        excerpt:
-          scrubbed === null
-            ? { kind: "text", text: "" }
-            : scrubbed.ok
-              ? { kind: "text", text: scrubbed.text }
-              : { kind: "withheld", reason: scrubbed.reason },
+        excerpt: shown,
       });
     },
   };

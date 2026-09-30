@@ -309,7 +309,8 @@ export function renderRunDiagnostics(input: RunDiagnosticsInput): string {
     `- Agent: ${ended}, ran for ${formatDuration(transcript.durationMs)}`,
     `- Changes in the checkout: ${describeEffects(input.effects)}`,
   ];
-  if (transcript.saved) lines.push(`- Full transcript on the machine that ran automata: \`${transcript.fileName}\``);
+  const unsaved = transcript.saved ? "" : " (the file could not be written)";
+  lines.push(`- Full transcript on the machine that ran automata: \`${transcript.fileName}\`${unsaved}`);
   const shown = input.excerpt ?? { kind: "text", text: transcript.excerpt() };
   if (shown.kind === "withheld") {
     lines.push(`- Last lines of the agent's output: withheld, the second redaction pass failed (${shown.reason})`);
