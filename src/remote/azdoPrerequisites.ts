@@ -12,7 +12,8 @@ export type AzdoPrerequisite =
 type Runner = (args: string[]) => { stdout: string; stderr: string; status: number; missing?: boolean };
 
 function defaultRunner(args: string[]): ReturnType<Runner> {
-  const result = spawnSync("azdo", args, { encoding: "utf8" });
+  // Resolving `azdo` through PATH is the point of the "on PATH" prerequisite.
+  const result = spawnSync("azdo", args, { encoding: "utf8" }); // NOSONAR
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
   return {
     stdout: result.stdout ?? "",
@@ -22,16 +23,32 @@ function defaultRunner(args: string[]): ReturnType<Runner> {
   };
 }
 
-export function parseVersion(text: string): number[] | null {
-  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+export interface ParsedVersion {
+  parts: number[];
+  /** SemVer prerelease tag (`beta.1` in `0.20.0-beta.1`), or `null` for a stable release. */
+  prerelease: string | null;
 }
 
-export function compareVersions(a: number[], b: number[]): number {
+export function parseVersion(text: string): ParsedVersion | null {
+  // Bounded quantifiers keep the match linear on hostile input.
+  const match = /(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z.-]{1,64}))?/.exec(text);
+  if (!match) return null;
+  return { parts: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: match[4] ?? null };
+}
+
+/** SemVer precedence: a prerelease sorts below the stable release with the same numbers. */
+export function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
   for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    if (a.parts[i] !== b.parts[i]) return a.parts[i] < b.parts[i] ? -1 : 1;
   }
-  return 0;
+  if (a.prerelease === b.prerelease) return 0;
+  if (a.prerelease === null) return 1;
+  if (b.prerelease === null) return -1;
+  return a.prerelease < b.prerelease ? -1 : 1;
+}
+
+function formatVersion(v: ParsedVersion): string {
+  return v.parts.join(".") + (v.prerelease ? `-${v.prerelease}` : "");
 }
 
 function extractIdentity(stdout: string): string | null {
@@ -61,12 +78,12 @@ export function checkAzdoPrerequisites(run: Runner = defaultRunner): AzdoPrerequ
   if (!version) {
     return { ok: false, reason: "missing", message: "Could not determine the `azdo` CLI version (`azdo --version`)." };
   }
-  const min = parseVersion(MIN_AZDO_VERSION) as number[];
+  const min = parseVersion(MIN_AZDO_VERSION) as ParsedVersion;
   if (compareVersions(version, min) < 0) {
     return {
       ok: false,
       reason: "too-old",
-      message: `azdo-cli ${version.join(".")} is too old; ${MIN_AZDO_VERSION} or newer is required.`,
+      message: `azdo-cli ${formatVersion(version)} is too old; ${MIN_AZDO_VERSION} or newer is required.`,
     };
   }
   const auth = run(["auth", "diagnose", "--json", AZDO_NO_UPDATE_CHECK]);
@@ -78,5 +95,5 @@ export function checkAzdoPrerequisites(run: Runner = defaultRunner): AzdoPrerequ
       message: "`azdo` is not authenticated. Run `azdo auth login` and check `azdo auth diagnose`.",
     };
   }
-  return { ok: true, version: version.join("."), identity };
+  return { ok: true, version: formatVersion(version), identity };
 }

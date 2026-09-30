@@ -24,6 +24,10 @@ describe("parseOrigin", () => {
     expect(parseOrigin("git@github.com:o/r.git")).toEqual({ kind: "github", owner: "o", repo: "r" });
   });
   it("returns null for unknown hosts and parseAzdoOrigin ignores GitHub", () => {
+    expect(parseOrigin("https://evilgithub.com/o/r")).toBeNull();
+    expect(parseOrigin("https://github.com.evil.io/o/r")).toBeNull();
+    expect(parseOrigin("https://evil.io/github.com/o/r")).toBeNull();
+    expect(parseOrigin("https://dev.azure.com/acme/Proj/_git/repo%")).toBeNull();
     expect(parseOrigin("https://example.com/a/b")).toBeNull();
     expect(parseAzdoOrigin("https://github.com/o/r")).toBeNull();
   });

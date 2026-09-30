@@ -27,7 +27,14 @@ describe("checkAzdoPrerequisites", () => {
     expect(calls[1]).toEqual(["auth", "diagnose", "--json", "--no-update-check"]);
   });
   it("compares versions", () => {
-    expect(compareVersions([0, 20, 0], [0, 5, 0])).toBe(1);
+    const v = (text: string) => parseVersion(text) as NonNullable<ReturnType<typeof parseVersion>>;
+    expect(compareVersions(v("0.20.0"), v("0.5.0"))).toBe(1);
+    expect(compareVersions(v("0.20.0-beta.1"), v("0.20.0"))).toBe(-1);
+    expect(compareVersions(v("0.20.0"), v("0.20.0"))).toBe(0);
     expect(parseVersion("nope")).toBeNull();
+  });
+  it("rejects a prerelease of the minimum version", () => {
+    const r = checkAzdoPrerequisites(() => ok("0.20.0-beta.1\n"));
+    expect(r).toMatchObject({ ok: false, reason: "too-old" });
   });
 });

@@ -17,8 +17,21 @@ function strip(name: string): string {
   return decodeURIComponent(name).replace(/\.git$/, "");
 }
 
+/** Runs `parse`, treating malformed percent-encoding (a `URIError`) as "not recognised". */
+function orNull<T>(parse: () => T | null): T | null {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof URIError) return null;
+    throw error;
+  }
+}
+
 function parseGitHub(url: string): GitHubOrigin | null {
-  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
+  const match =
+    /^(?:https?:\/\/(?:[^@/]+@)?(?:www\.)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
+      url,
+    );
   return match ? { kind: "github", owner: match[1], repo: match[2] } : null;
 }
 
@@ -46,7 +59,7 @@ function parseAzdo(url: string): AzdoOrigin | null {
 /** Recognises a GitHub or Azure DevOps remote URL; anything else is `null`. */
 export function parseOrigin(rawUrl: string): ParsedOrigin | null {
   const url = rawUrl.trim();
-  return parseAzdo(url) ?? parseGitHub(url);
+  return orNull(() => parseAzdo(url) ?? parseGitHub(url));
 }
 
 export function parseAzdoOrigin(rawUrl: string): AzdoOrigin | null {
