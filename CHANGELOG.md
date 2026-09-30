@@ -10,6 +10,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- In Azure DevOps mode, `git get-pr-info` (and `--json`) lists the PR's checks with the same symbols and exit codes
+  as GitHub mode, honours the branch argument, and runs the SonarCloud enrichment for a SonarCloud check. The state
+  mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
+
 ### Changed
 
 - In Azure DevOps mode, `git get-pr-info` and `git finish-feature` check that `azdo` is installed, at least 0.20.0 and

@@ -1,0 +1,23 @@
+{
+  "branch": "feature/x",
+  "repository": "repo",
+  "pullRequests": [
+    {
+      "id": 42,
+      "title": "My PR",
+      "repository": "repo",
+      "sourceRefName": "refs/heads/feature/x",
+      "targetRefName": "refs/heads/develop",
+      "status": "active",
+      "url": "https://dev.azure.com/o/p/_git/repo/pullrequest/42",
+      "checks": [
+        { "id": 1, "state": "succeeded", "name": "Policy/Build", "description": "ok", "targetUrl": null, "source": "policy", "isBlocking": true },
+        { "id": 2, "state": "failed", "name": "sonarcloud/quality gate", "description": "Quality Gate failed", "targetUrl": "https://sonarcloud.io/dashboard?id=my_project&pullRequest=42", "source": "status", "isBlocking": null },
+        { "id": 3, "state": "pending", "name": "deploy", "description": null, "targetUrl": null, "source": "status" },
+        { "id": 4, "state": "error", "name": "lint", "description": "boom", "targetUrl": null, "source": "status" }
+      ],
+      "codeCommentCounts": { "open": 1, "closed": 2 },
+      "checksError": null
+    }
+  ]
+}

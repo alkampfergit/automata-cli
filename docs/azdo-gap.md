@@ -9,7 +9,7 @@ Status legend: ✅ supported by azdo-cli · ⚠️ partial · ❌ missing in azd
 
 | Command | Backend call |
 |---|---|
-| `automata git get-pr-info` | `azdo pr status --json` (checks are not yet mapped) |
+| `automata git get-pr-info` | `azdo pr status --json` (current branch), `azdo pr list --branch` + `azdo pipeline get-runs --pr` (other branches); see [git.md](git.md#azure-devops-mode) |
 | `automata git finish-feature` | `azdo pr status --json`, `status: "completed"` confirms the merge |
 
 Everything else short-circuits when `remoteType` is `azdo`. The epic tracked in issue #89 closes the gaps below.

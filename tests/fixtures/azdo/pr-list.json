@@ -1,0 +1,16 @@
+{
+  "repository": "repo",
+  "branch": "feature/other",
+  "status": "all",
+  "pullRequests": [
+    {
+      "id": 7,
+      "title": "Other PR",
+      "repository": "repo",
+      "sourceRefName": "refs/heads/feature/other",
+      "targetRefName": "refs/heads/develop",
+      "status": "completed",
+      "url": "https://dev.azure.com/o/p/_git/repo/pullrequest/7"
+    }
+  ]
+}
