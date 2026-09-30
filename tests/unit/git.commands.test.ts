@@ -1047,6 +1047,7 @@ describe("git get-pr-info: azdo dispatch", () => {
     mockSpawnSync
       .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
       .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
       .mockReturnValueOnce(ok(JSON.stringify(azdoPrOutput))); // azdo pr status --json
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1062,6 +1063,30 @@ describe("git get-pr-info: azdo dispatch", () => {
     expect(out.exitCode).toBeUndefined();
   });
 
+  it("getPrInfo(branch) looks up another branch with azdo pr list and lists its pipeline runs as checks", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const listOutput = {
+      pullRequests: [
+        { id: 7, title: "Other PR", status: "active", url: "https://dev.azure.com/o/p/_git/r/pullrequest/7" },
+      ],
+    };
+    const runs = [{ id: 900, name: "20260930.2", state: "completed", result: "failed" }];
+    mockSpawnSync
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok(JSON.stringify(listOutput))) // azdo pr list
+      .mockReturnValueOnce(ok(JSON.stringify(runs))); // azdo pipeline get-runs
+
+    const { getPrInfo } = await import("../../src/git/gitService.js");
+    const pr = await getPrInfo("feature/other");
+
+    const azdoCalls = (mockSpawnSync.mock.calls as [string, string[]][]).filter(([cmd]) => cmd === "azdo");
+    expect(azdoCalls[0]?.[1]).toContain("--branch");
+    expect(pr?.checks).toEqual([
+      { name: "Build 20260930.2", status: "COMPLETED", conclusion: "FAILURE", description: "", detailsUrl: "" },
+    ]);
+  });
+
   it("maps azdo completed status to MERGED for finish-feature", async () => {
     mockReadConfig.mockReturnValue({ remoteType: "azdo" });
     const azdoMergedOutput = {
@@ -1073,6 +1098,7 @@ describe("git get-pr-info: azdo dispatch", () => {
       .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
       .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
       .mockReturnValueOnce(ok("git@ssh.dev.azure.com:v3/o/p/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
       .mockReturnValueOnce(ok(JSON.stringify(azdoMergedOutput))) // azdo pr status → MERGED
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // isUpstreamGone → gone
       .mockReturnValueOnce(ok("")) // fetchPrune

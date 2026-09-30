@@ -67,6 +67,30 @@ The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check i
 
 When the Sonar check is failing and the SonarCloud project is public, an additional `Sonar Failures:` section is printed with structured quality-gate details, issue details, and security-hotspot details when Sonar exposes them. If the SonarCloud public API returns `401`, the section explains that the project is private and advises opening the Sonar URL in an authenticated browser.
 
+### Azure DevOps mode
+
+With `remoteType: "azdo"` the command reads the same fields from the `azdo` CLI (0.20.0+) and renders them exactly
+like GitHub mode, including `--json` and the exit codes.
+
+- **Current branch** (what `get-pr-info` always queries, and any caller passing the checked-out branch): `azdo pr status --json`, which reports policy and
+  status checks.
+- **Another branch** (callers that pass a different branch to `getPrInfo`, such as `execute-prompt`): `azdo pr list --branch <branch> --status all --json` finds the newest PR (any state), and
+  `azdo pipeline get-runs --pr <id> --json` supplies its build runs, shown as `Build <run name>`. `azdo pr status`
+  has no branch option and `pr list` carries no checks, so policy and status checks are not shown for this case.
+- A check whose URL is on SonarCloud gets the same `Sonar:` / `Sonar New Issues:` / `Sonar Failures:` enrichment.
+
+| azdo state | `status` | `conclusion` | Symbol |
+|---|---|---|---|
+| `succeeded` | `COMPLETED` | `SUCCESS` | ✓ |
+| `failed`, `rejected`, `error` | `COMPLETED` | `FAILURE` | ✗ |
+| `notApplicable`, `notSet` | `COMPLETED` | `SKIPPED` | ○ |
+| `queued` | `QUEUED` | `null` | ● (pending) |
+| `running` | `IN_PROGRESS` | `null` | ● (pending) |
+| `pending`, any other state | `PENDING` | `null` | ● (pending) |
+
+Pipeline runs map as: not completed → `pending`; `succeeded` → `succeeded`; `failed` → `failed`; `canceled` →
+`error`; any other result → `pending`.
+
 ### Machine-readable summary fields
 
 These fields appear on every invocation and are easy to grep or parse:

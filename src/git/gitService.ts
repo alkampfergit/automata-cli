@@ -797,24 +797,20 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     };
   });
 
-  // SonarCloud detection
-  const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
-  const sonar = sonarCheck === undefined ? undefined : await describeSonarCheck(sonarCheck, raw.number);
+  return withSonar({ number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks });
+}
 
+/** Adds the SonarCloud summary when one of the checks points at SonarCloud. */
+async function withSonar(pr: PrInfo): Promise<PrInfo> {
+  const sonarCheck = pr.checks.find((c) => isSonarUrl(c.detailsUrl));
+  if (sonarCheck === undefined) return pr;
+  const sonar = await describeSonarCheck(sonarCheck, pr.number);
   return {
-    number: raw.number,
-    title: raw.title,
-    state: raw.state,
-    url: raw.url,
-    checks,
-    ...(sonar === undefined
-      ? {}
-      : {
-          sonarcloudUrl: sonar.sonarcloudUrl,
-          sonarNewIssues: sonar.sonarNewIssues,
-          sonarNewIssuesNote: sonar.sonarNewIssuesNote,
-        }),
-    ...(sonar?.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
+    ...pr,
+    sonarcloudUrl: sonar.sonarcloudUrl,
+    sonarNewIssues: sonar.sonarNewIssues,
+    sonarNewIssuesNote: sonar.sonarNewIssuesNote,
+    ...(sonar.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
   };
 }
 
@@ -822,7 +818,8 @@ export async function getPrInfo(branch: string): Promise<PrInfo | null> {
   const config = readConfig();
   if (selectBackend(config) === "azdo") {
     assertAzdoRemote();
-    return azdoService.getPrInfo();
+    const pr = azdoService.getPrInfo(branch === getCurrentBranch() ? undefined : branch);
+    return pr === null ? null : withSonar(pr);
   }
   return getPrInfoGh(branch);
 }
