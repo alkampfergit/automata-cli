@@ -12,7 +12,7 @@ import {
   type Executor,
   type TurnKind,
 } from "../config/configStore.js";
-import { addClosesRefToPr, getCurrentBranchPr, type GitHubIssue } from "../config/githubService.js";
+import { addClosesRefToPr, getOpenPrsByHead, hasClosingRef, type GitHubIssue, type HeadPr } from "../config/githubService.js";
 import {
   assignIssueToAgent,
   assignPrToAgent,
@@ -68,7 +68,7 @@ import {
   type HygieneReport,
   type PruneOutcome,
 } from "../git/repoHygiene.js";
-import { getCurrentBranch, revParse } from "../git/gitService.js";
+import { getCurrentBranch, listLocalBranches, revParse } from "../git/gitService.js";
 import {
   RunTranscript,
   type ExcerptOutcome,
@@ -1378,40 +1378,71 @@ async function invokeExecutor(
 }
 
 /**
- * After a discuss turn the model may have opened a pull request; the link is the
- * state machine, so make sure it exists.
+ * The head branches a turn may have opened a pull request from.
  *
- * Only ever for a branch the turn moved onto. A discussion turn starts on the
- * base branch, and if the model merely replied we are still there — where
- * `getCurrentBranchPr()` would return the base branch's *own* pull request (a
- * release PR into `main`, say) and appending `Closes #<issue>` to it would make
- * an unrelated merge close this issue.
+ * A build turn works on the pull request's own head. A discussion turn starts on
+ * the base branch, so its candidates are the branch it is left on and every
+ * local branch that did not exist before it ran — the model may open the pull
+ * request from a branch and then switch back. Never the base branch: it can head
+ * an unrelated pull request (a release into `main`), and appending
+ * `Closes #<issue>` to that would make its merge close this issue.
  */
-function repairIssueLink(item: WorkItem, baseBranch: string, agentUser: string): boolean {
+function linkCandidateBranches(
+  item: WorkItem,
+  baseBranch: string,
+  branchesBefore: ReadonlySet<string>,
+): string[] {
+  if (item.turn !== "issue-discuss") return [item.branch];
+  const candidates = new Set<string>([getCurrentBranch(), ...listLocalBranches().filter((b) => !branchesBefore.has(b))]);
+  candidates.delete(baseBranch);
+  return [...candidates];
+}
+
+/** Of the open pull requests on a head, the one aimed at the base branch, else the only one. */
+function pickHeadPr(prs: HeadPr[], baseBranch: string): HeadPr | null {
+  return prs.find((pr) => pr.baseRefName === baseBranch) ?? (prs.length === 1 ? prs[0] : null);
+}
+
+/**
+ * After a turn the model may have opened, or reworded, a pull request; the
+ * closing reference is the state machine, so make sure it exists.
+ *
+ * The pull request is looked up by head branch, not by what is checked out, so
+ * it does not matter where the model left the working tree.
+ */
+function repairIssueLink(
+  item: WorkItem,
+  baseBranch: string,
+  agentUser: string,
+  branchesBefore: ReadonlySet<string>,
+): boolean {
   const issue = item.issue;
   if (issue === null) return false;
   try {
-    const branch = getCurrentBranch();
-    if (branch === baseBranch) {
+    const branches = linkCandidateBranches(item, baseBranch, branchesBefore);
+    if (branches.length === 0) {
       progress(`  issue #${String(issue.number)} is still in discussion (no branch was created).\n`);
       return false;
     }
 
-    const pr = getCurrentBranchPr();
+    let pr: HeadPr | null = null;
+    for (const branch of branches) {
+      pr = pickHeadPr(getOpenPrsByHead(branch), baseBranch);
+      if (pr) break;
+    }
     if (!pr) {
       progress(`  issue #${String(issue.number)} is still in discussion (no pull request).\n`);
       return false;
     }
     // Claimed here rather than in the plan: a discuss turn has no pull request
     // when the decision is made, so this is the first point at which the one the
-    // model just opened is visible. Before the `Closes #N` check on purpose, so a
-    // second discuss turn on an already-linked pull request still claims it.
+    // model just opened is visible. Before the closing-reference check on
+    // purpose, so a second discuss turn on an already-linked pull request still
+    // claims it.
     if (pr.assignees.length === 0) {
       claimPr(pr.number, agentUser);
     }
-    // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
-    const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`, "i");
-    if (closesRef.test(pr.body)) {
+    if (hasClosingRef(pr.body, issue.number)) {
       progress(`  pull request #${String(pr.number)} already closes issue #${String(issue.number)}.\n`);
       return true;
     }
@@ -1605,6 +1636,10 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
+  // Taken before the run so the link repair can tell a branch the model created
+  // from one that was already there.
+  const branchesBefore = new Set(listLocalBranches());
+
   const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
 
@@ -1626,7 +1661,7 @@ async function processItem(
   }
   progress(`  ${reconciled.detail}\n`);
 
-  const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
+  const outcome = adjustOutcome(reconciled, item, settings, buriedByNote, branchesBefore);
 
   return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
 }
@@ -1736,6 +1771,7 @@ function adjustOutcome(
   item: WorkItem,
   settings: Settings,
   buriedByNote: number,
+  branchesBefore: ReadonlySet<string>,
 ): Reconciled {
   let outcome = reconciled;
   if (buriedByNote > 0 && outcome.outcome === "answered") {
@@ -1746,9 +1782,11 @@ function adjustOutcome(
     };
   }
 
+  // Every turn that has an issue is repaired: a `pr-work` turn can also lose the
+  // reference (the model rewrote the body). A `pr-orphan` turn has no issue.
+  const linked = repairIssueLink(item, settings.baseBranch, settings.participants.agentUser, branchesBefore);
   if (item.turn !== "issue-discuss") return outcome;
 
-  const linked = repairIssueLink(item, settings.baseBranch, settings.participants.agentUser);
   // A discuss turn that implemented and opened a pull request has plainly not
   // stalled, even if the model never commented on the issue. Reporting it as
   // "produced no answer" would raise a false alarm; the pull request is the

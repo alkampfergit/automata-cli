@@ -19,7 +19,8 @@ const gh = {
   getRepoSlug: vi.fn(),
   getAuthenticatedLogin: vi.fn(),
 };
-const mockGetCurrentBranchPr = vi.fn();
+const mockGetOpenPrsByHead = vi.fn();
+const mockListLocalBranches = vi.fn();
 const mockAddClosesRefToPr = vi.fn();
 const mockPrepareBaseBranch = vi.fn();
 const mockPreparePrBranch = vi.fn();
@@ -58,7 +59,8 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
 }));
 
 vi.mock("../../src/config/githubService.js", () => ({
-  getCurrentBranchPr: (...a: unknown[]) => mockGetCurrentBranchPr(...a),
+  getOpenPrsByHead: (...a: unknown[]) => mockGetOpenPrsByHead(...a),
+  hasClosingRef: (body: string, n: number) => new RegExp(`closes\\s+#${n}\\b`, "i").test(body),
   addClosesRefToPr: (...a: unknown[]) => mockAddClosesRefToPr(...a),
 }));
 
@@ -66,6 +68,7 @@ const mockGetCurrentBranch = vi.fn();
 
 vi.mock("../../src/git/gitService.js", () => ({
   getCurrentBranch: () => mockGetCurrentBranch(),
+  listLocalBranches: () => mockListLocalBranches(),
 }));
 
 vi.mock("../../src/git/workspaceService.js", () => ({
@@ -291,7 +294,8 @@ beforeEach(() => {
   mockRunRepoHygiene.mockReturnValue({ ...CLEAN_HYGIENE });
   mockPrepareBaseBranch.mockReturnValue({ ok: true, branch: "develop", strategy: "fast-forward" });
   mockPreparePrBranch.mockReturnValue({ ok: true, branch: "feature/042", strategy: "fast-forward" });
-  mockGetCurrentBranchPr.mockReturnValue(null);
+  mockGetOpenPrsByHead.mockReturnValue([])
+  mockListLocalBranches.mockReturnValue(["develop"]);
   // A discussion turn that created a branch is the normal case for link repair.
   mockGetCurrentBranch.mockReturnValue("feature/042-flag");
   gh.getIssueSurface.mockImplementation((n: number) => needsWork(n));
@@ -608,19 +612,19 @@ describe("do-work discuss turn", () => {
   });
 
   it("claims the pull request the model opened during the turn", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] }, baseRefName: "develop" }]);
     await runDoWork();
     expect(gh.assignPrToAgent).toHaveBeenCalledWith(57, "automata-bot");
   });
 
   it("leaves a pull request somebody has already taken alone", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: ["alice"] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "https://gh/pr/57", body: "body", assignees: ["alice"] }, baseRefName: "develop" }]);
     await runDoWork();
     expect(gh.assignPrToAgent).not.toHaveBeenCalled();
   });
 
   it("still links the pull request when claiming it fails", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "https://gh/pr/57", body: "body", assignees: [] }, baseRefName: "develop" }]);
     gh.assignPrToAgent.mockImplementation(() => {
       throw new Error("HTTP 403: not a collaborator");
     });
@@ -1158,9 +1162,24 @@ describe("do-work build turn", () => {
     expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
   });
 
-  it("does not attempt link repair on a build turn", async () => {
+  it("looks the pull request up by its head branch on a build turn", async () => {
     await runDoWork();
-    expect(mockGetCurrentBranchPr).not.toHaveBeenCalled();
+    expect(mockGetOpenPrsByHead).toHaveBeenCalledWith("feature/042");
+  });
+
+  it("restores a closing reference the model removed from the body on a build turn", async () => {
+    mockGetOpenPrsByHead.mockReturnValue([
+      { number: 7, url: "u", body: "reworded, no reference", assignees: ["alice"], baseRefName: "develop" },
+    ]);
+    await runDoWork();
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(7, 42);
+  });
+
+  it("leaves a build turn's body alone while the reference is still there", async () => {
+    mockGetOpenPrsByHead.mockReturnValue([
+      { number: 7, url: "u", body: "Closes #42", assignees: ["alice"], baseRefName: "develop" },
+    ]);
+    await runDoWork();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
   });
 
@@ -1236,13 +1255,13 @@ describe("do-work link repair", () => {
   });
 
   it("adds the closing reference when the model opened an unlinked pull request", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "some body", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "https://gh/pr/57", body: "some body", assignees: [] }, baseRefName: "develop" }]);
     await runDoWork();
     expect(mockAddClosesRefToPr).toHaveBeenCalledWith(57, 42);
   });
 
   it("leaves the body untouched when the reference is already present", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "https://gh/pr/57", body: "Closes #42", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "https://gh/pr/57", body: "Closes #42", assignees: [] }, baseRefName: "develop" }]);
     await runDoWork();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
     expect(stderr).toMatch(/already closes issue #42/);
@@ -1255,19 +1274,60 @@ describe("do-work link repair", () => {
   });
 
   it("never touches the base branch's own pull request when the model only replied", async () => {
-    // Still on the base branch after the turn, where getCurrentBranchPr() would
+    // Still on the base branch after the turn, where a checkout-based lookup would
     // return develop's own PR — a release PR into main, say. Appending
     // `Closes #42` to that would make an unrelated merge close this issue.
     mockGetCurrentBranch.mockReturnValue("develop");
-    mockGetCurrentBranchPr.mockReturnValue({ number: 99, url: "https://gh/pr/99", body: "release", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 99, url: "https://gh/pr/99", body: "release", assignees: [] }, baseRefName: "develop" }]);
     await runDoWork();
-    expect(mockGetCurrentBranchPr).not.toHaveBeenCalled();
+    expect(mockGetOpenPrsByHead).not.toHaveBeenCalled();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
     expect(stderr).toMatch(/no branch was created/);
   });
 
+  it("finds the pull request of a new branch the model created and then left", async () => {
+    // Back on develop, but `feature/x` did not exist before the turn.
+    mockGetCurrentBranch.mockReturnValue("develop");
+    mockListLocalBranches.mockReturnValueOnce(["develop"]).mockReturnValue(["develop", "feature/x"]);
+    mockGetOpenPrsByHead.mockImplementation((branch: string) =>
+      branch === "feature/x"
+        ? [{ number: 58, url: "u", body: "no ref", assignees: [], baseRefName: "develop" }]
+        : [],
+    );
+    await runDoWork();
+    expect(mockGetOpenPrsByHead).toHaveBeenCalledWith("feature/x");
+    expect(mockGetOpenPrsByHead).not.toHaveBeenCalledWith("develop");
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(58, 42);
+  });
+
+  it("never links a branch that already existed before the turn", async () => {
+    mockGetCurrentBranch.mockReturnValue("develop");
+    mockListLocalBranches.mockReturnValue(["develop", "release/1.0"]);
+    await runDoWork();
+    expect(mockGetOpenPrsByHead).not.toHaveBeenCalled();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+  });
+
+  it("prefers the pull request aimed at the base branch when a head has several", async () => {
+    mockGetOpenPrsByHead.mockReturnValue([
+      { number: 60, url: "u", body: "", assignees: [], baseRefName: "main" },
+      { number: 61, url: "u", body: "", assignees: [], baseRefName: "develop" },
+    ]);
+    await runDoWork();
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(61, 42);
+  });
+
+  it("does not guess between several pull requests none of which targets the base", async () => {
+    mockGetOpenPrsByHead.mockReturnValue([
+      { number: 60, url: "u", body: "", assignees: [], baseRefName: "main" },
+      { number: 62, url: "u", body: "", assignees: [], baseRefName: "staging" },
+    ]);
+    await runDoWork();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+  });
+
   it("warns rather than failing when the link cannot be repaired", async () => {
-    mockGetCurrentBranchPr.mockReturnValue({ number: 57, url: "u", body: "", assignees: [] });
+    mockGetOpenPrsByHead.mockReturnValue([{ ...{ number: 57, url: "u", body: "", assignees: [] }, baseRefName: "develop" }]);
     mockAddClosesRefToPr.mockImplementation(() => {
       throw new Error("HTTP 403");
     });
