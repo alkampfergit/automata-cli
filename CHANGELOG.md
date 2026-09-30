@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-30
+
 ### Added
 
 - When a `do-work` agent run posts no answer, the comment now carries the turn, exit code or signal, duration, whether
