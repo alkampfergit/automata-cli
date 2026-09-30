@@ -10,7 +10,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_SONAR_PROMPT: "default sonar prompt",
   DEFAULT_FIX_COMMENTS_PROMPT: "default fix-comments prompt",
   DEFAULT_CHECK_ISSUE_PROMPT: "default check-issue prompt",
-  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120, dumpOnBlock: true },
+  DEFAULT_DO_WORK: { baseBranch: "develop", protectedBranches: ["main", "master"], executor: "claude", maxRunsPerTick: 0, lockStaleMinutes: 120, dumpOnBlock: true, postRunLog: true },
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
@@ -38,6 +38,7 @@ const DO_WORK_EXECUTOR_SCREEN_TEXT = "Do Work — Executor";
 const DO_WORK_MAX_RUNS_SCREEN_TEXT = "Model runs allowed per tick";
 const DO_WORK_LOCK_STALE_SCREEN_TEXT = "Minutes before a run lock";
 const DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT = "Do Work — Report on a Blocked Tick";
+const DO_WORK_POST_RUN_LOG_SCREEN_TEXT = "Do Work — Diagnostics for a Silent Run";
 const DO_WORK_CLAUDE_MODEL_SCREEN_TEXT = "Default model when the executor is Claude";
 const DO_WORK_CODEX_MODEL_SCREEN_TEXT = "Default model when the executor is Codex";
 const DO_WORK_CLAUDE_EFFORT_SCREEN_TEXT = "Default reasoning effort when the executor is Claude";
@@ -525,9 +526,16 @@ describe("ConfigWizard — Do Work section", () => {
     stdin.write(ENTER);
     await tick();
 
-    // Blocked-exit report: the last screen of the chain, and the one that writes.
-    // Down once to pick "No", so the assertion cannot pass on the default.
+    // Blocked-exit report. Down once to pick "No", so the assertion cannot pass
+    // on the default.
     expect(lastFrame()).toContain("Report on a Blocked Tick");
+    stdin.write(DOWN);
+    await tick();
+    stdin.write(ENTER);
+    await tick();
+
+    // Silent-run diagnostics: the last screen of the chain, and the one that writes.
+    expect(lastFrame()).toContain(DO_WORK_POST_RUN_LOG_SCREEN_TEXT);
     stdin.write(DOWN);
     await tick();
     stdin.write(ENTER);
@@ -543,8 +551,20 @@ describe("ConfigWizard — Do Work section", () => {
         maxRunsPerTick: 2,
         lockStaleMinutes: 45,
         dumpOnBlock: false,
+        postRunLog: false,
       },
     });
+  });
+
+  it("goes back from the silent-run diagnostics screen to the blocked-exit report", async () => {
+    const { stdin, lastFrame } = render(<ConfigWizard />);
+    await navigateToDoWork(stdin);
+
+    await advanceTo(stdin, lastFrame, DO_WORK_POST_RUN_LOG_SCREEN_TEXT, 12);
+    stdin.write(ESC);
+    await tick();
+
+    expect(lastFrame()).toContain(DO_WORK_DUMP_ON_BLOCK_SCREEN_TEXT);
   });
 
   it("goes back from the blocked-exit report screen to lock staleness", async () => {

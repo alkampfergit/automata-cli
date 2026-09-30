@@ -15,7 +15,7 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - When a `do-work` agent run posts no answer, the comment now carries the turn, exit code or signal, duration, whether
   a branch, pull request or commit appeared, and a redacted 4 KB excerpt of the agent's last output in a `<details>`
   block. The full transcript is saved to `.automata/runs/` and only its file name is posted. `doWork.postRunLog`
-  (default `true`) turns it off. See [docs/do-work.md](docs/do-work.md#diagnostics-when-no-answer-was-posted).
+  (default `true`, also `automata config set do-work-post-run-log` and the wizard) turns it off. See [docs/do-work.md](docs/do-work.md#diagnostics-when-no-answer-was-posted).
 
 ### Fixed
 

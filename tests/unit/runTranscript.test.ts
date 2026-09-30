@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   readableLine,
   redactSecrets,
   renderRunDiagnostics,
+  transcriptLabel,
   EXCERPT_MAX_BYTES,
 } from "../../src/run/runTranscript.js";
 
@@ -34,6 +35,16 @@ describe("redactSecrets", () => {
     const out = redactSecrets(text);
     expect(out).not.toMatch(/ghp_|github_pat_|sk-abc|abcdefghijklmnop1234|abc123def456|AKIA/);
     expect(out).toContain("[redacted]");
+  });
+
+  it("masks quoted and colon-separated secret assignments whole", () => {
+    const out = redactSecrets(`password: "correct horse battery"; api_key='k-1', token=mytoken=x`);
+    expect(out).toBe(`password: [redacted]; api_key=[redacted], token=[redacted]`);
+  });
+
+  it("masks an unterminated private key to the end of the text", () => {
+    const out = redactSecrets("before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nAAAA");
+    expect(out).toBe("before\n[redacted]");
   });
 
   it("leaves ordinary text alone", () => {
@@ -64,7 +75,14 @@ describe("capExcerpt", () => {
     expect(capExcerpt(many).split("\n")).toHaveLength(20);
     expect(capExcerpt(many)).toMatch(/line 49$/);
     const big = capExcerpt("x".repeat(20000));
-    expect(Buffer.byteLength(big, "utf8")).toBeLessThanOrEqual(EXCERPT_MAX_BYTES + 4);
+    expect(Buffer.byteLength(big, "utf8")).toBe(EXCERPT_MAX_BYTES);
+    expect(big.startsWith("…")).toBe(true);
+  });
+
+  it("stays within the byte cap when the cut lands inside a multi-byte character", () => {
+    const out = capExcerpt("é".repeat(5000), 20, 100);
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(100);
+    expect(out).not.toContain("\uFFFD");
   });
 });
 
@@ -83,14 +101,64 @@ describe("RunTranscript", () => {
     expect(readdirSync(join(root, ".automata/runs"))).toContain(transcript.fileName);
   });
 
+  it("keeps the raw transcript private to the user", () => {
+    const transcript = new RunTranscript("issue-7", tempRoot());
+    expect(statSync(transcript.path).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps an existing .gitignore in the runs directory", () => {
+    const root = tempRoot();
+    mkdirSync(join(root, ".automata/runs"), { recursive: true });
+    writeFileSync(join(root, ".automata/runs/.gitignore"), "*.log\n");
+    new RunTranscript("issue-7", root);
+    expect(readFileSync(join(root, ".automata/runs/.gitignore"), "utf8")).toBe("*.log\n");
+  });
+
+  it("prefixes a stderr line once even when it arrives in several chunks", () => {
+    const transcript = new RunTranscript("issue-7", tempRoot());
+    transcript.output("stderr", "hel");
+    transcript.output("stderr", "lo\nwor");
+    transcript.output("stderr", "ld\n");
+    expect(readFileSync(transcript.path, "utf8")).toBe("[stderr] hello\n[stderr] world\n");
+  });
+
   it("still yields an excerpt when the directory cannot be created", () => {
     const root = tempRoot();
     // A file where the directory should be makes mkdir fail.
     const blocker = join(root, "blocked");
+    writeFileSync(blocker, "");
     const transcript = new RunTranscript("pr-3", join(blocker, "nested"));
+    expect(transcript.saved).toBe(false);
     transcript.output("stderr", "oops");
     transcript.exited(2, null);
     expect(transcript.excerpt()).toBe("oops");
+  });
+
+  it("redacts a secret before the excerpt is cut, so no half-token survives", () => {
+    const transcript = new RunTranscript("issue-7", tempRoot());
+    const secret = `ghp_${"a".repeat(40)}`;
+    transcript.output("stderr", `${"x".repeat(5000)} ${secret}\n`);
+    transcript.exited(1, null);
+    expect(transcript.excerpt()).not.toMatch(/a{10}/);
+  });
+
+  it("masks a private key whose BEGIN line fell out of the kept tail", () => {
+    const transcript = new RunTranscript("issue-7", tempRoot());
+    const body = Array.from({ length: 200 }, (_, i) => `KEYMATERIAL${String(i)}`);
+    transcript.output("stderr", ["-----BEGIN OPENSSH PRIVATE KEY-----", ...body, ""].join("\n"));
+    transcript.output("stderr", "-----END OPENSSH PRIVATE KEY-----\nafter the key\n");
+    transcript.exited(1, null);
+    const excerpt = transcript.excerpt();
+    expect(excerpt).not.toContain("KEYMATERIAL");
+    expect(excerpt).toMatch(/after the key$/);
+  });
+});
+
+describe("transcriptLabel", () => {
+  it("names a pull-request turn after the pull request, even when it closes an issue", () => {
+    expect(transcriptLabel({ turn: "pr-work", issue: { number: 5 }, pr: { number: 9 } })).toBe("pr-9");
+    expect(transcriptLabel({ turn: "pr-orphan", issue: null, pr: { number: 9 } })).toBe("pr-9");
+    expect(transcriptLabel({ turn: "issue-discuss", issue: { number: 5 }, pr: null })).toBe("issue-5");
   });
 });
 
