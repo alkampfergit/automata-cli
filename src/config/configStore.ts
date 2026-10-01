@@ -174,6 +174,7 @@ export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
   "Address every message marked NEW and every unresolved review thread listed. " +
   "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch. " +
   "Do not merge the pull request and do not push to the base branch.\n\n" +
+  "Once a review thread is fixed and pushed, resolve it (GraphQL `resolveReviewThread`) after replying; leave open any thread you did not fix. " +
   "Reply on the pull request with a short summary of what you changed, or reply in the review thread when your answer belongs to a specific comment. " +
   "Always post a reply — silence looks like a crash.";
 
@@ -194,6 +195,7 @@ export const DEFAULT_DO_WORK_PR_ORPHAN_PROMPT =
   "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch.\n\n" +
   "Do not merge the pull request, do not close it, and do not push to the base branch. " +
   "If you conclude that it should be merged or closed, say so in your reply and leave the decision to the humans.\n\n" +
+  "Once a review thread is fixed and pushed, resolve it (GraphQL `resolveReviewThread`) after replying; leave open any thread you did not fix. " +
   "Reply on the pull request with a short summary of what you did and what you recommend, or reply in the review thread " +
   "when your answer belongs to a specific comment. Always post a reply — silence looks like a crash.";
 

@@ -15,6 +15,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - In Azure DevOps mode, `git get-pr-info` (and `--json`) lists the PR's checks with the same symbols and exit codes
   as GitHub mode, fails when Azure DevOps cannot retrieve the checks, and runs the SonarCloud enrichment for a
   SonarCloud check. The state mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
+- The default `do-work` build and orphan prompts tell the agent to resolve the review threads it fixed, so Copilot
+  threads no longer stay open after a fix.
 
 ### Changed
 
