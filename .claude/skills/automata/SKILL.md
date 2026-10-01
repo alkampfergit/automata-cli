@@ -199,6 +199,18 @@ Each block is one unresolved review thread with author, file and line.
 before. Expected loop: read comments → fix → test → push →
 `get-pr-info --wait-finish-checks` → repeat.
 
+**Close what you fix.** Replying to a review thread does not resolve it. After
+a fix is pushed, resolve each thread that is actually fixed — Copilot never
+resolves its own — and leave open any you declined or could not fix:
+
+```bash
+gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"PRRT_..."}){thread{isResolved}}}'
+```
+
+Thread ids come from `reviewThreads` in the GraphQL `pullRequest` query.
+Outdated threads (code since changed) still need resolving. Re-run
+`get-pr-comments` to confirm `No open comments.`
+
 ### Targeted prompt workflows
 
 ```bash
@@ -237,6 +249,8 @@ deletes the local branch. Do not run it before the PR is merged.
 - When asked why the agent repeated itself or answered twice, suspect
   `agentUser` not matching the account `gh` posts as — that is the failure the
   identity guard exists to catch.
+- After fixing review feedback, resolve the fixed threads on the PR; a reply
+  alone leaves them open.
 - `do-work` never merges, never closes an issue, and never pushes to the base
   branch. Do not ask it to; use the manual commands or do it yourself.
 - If a command's flags do not match this document, trust `--help` and the

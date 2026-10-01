@@ -65,6 +65,7 @@ That last exception is what moves an issue from talking to building. Removing it
 - commit and **push** to that branch;
 - **not** merge the pull request and **not** push to the base branch;
 - reply on the pull request, or in the review thread when the answer belongs to a specific comment;
+- resolve each review thread it fixed (a reply alone leaves it open) and leave the others open;
 - always post a reply.
 
 **An orphan turn (`pr-orphan`)** — a pull request that closes no issue of this repository — should tell the model the same things as a build turn, plus:
