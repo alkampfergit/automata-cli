@@ -20,6 +20,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Changed
 
+- The default `do-work` issue-discuss prompt now tells the model to post its reply with `gh issue comment` / `gh pr comment`
+  `--body-file`, and states that printing to stdout is not a posted reply. See `docs/wiki/Prompts.md`
 - In Azure DevOps mode, `git get-pr-info` and `git finish-feature` check that `azdo` is installed, at least 0.20.0 and
   authenticated before calling it, and fail with a clear message otherwise; they also reject an `origin` that is a
   GitHub URL. See `docs/azdo-gap.md`

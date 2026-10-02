@@ -165,7 +165,10 @@ export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
   "Otherwise do not touch the code at all: reply on the issue with the specification, the plan, or the open questions you need answered. " +
   "Keep the reply short and concrete.\n\n" +
   "Either way, always post a reply on the issue before you finish — including when you implemented and opened a pull request. " +
-  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.";
+  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.\n\n" +
+  "Post the reply yourself with the GitHub CLI: write it to a file and run `gh issue comment <issue-number> --body-file <file>`, " +
+  "or `gh pr comment <pr-number> --body-file <file>` when you are replying on a pull request. " +
+  "`do-work` does not publish your output, so printing the answer to stdout does not count as a posted reply.";
 
 /** Default instructions for a build turn on an existing pull request. */
 export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
