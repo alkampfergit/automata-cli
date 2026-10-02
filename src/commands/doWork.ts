@@ -1603,16 +1603,22 @@ async function processItem(
   const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
 
-  inFlightMarker = null;
-  const reconciled = await reconcileMarker(
-    item,
-    marker,
-    settings.participants,
-    watermark,
-    runError,
-    diagnostics,
-    recovery,
-  );
+  // Kept registered until reconciliation (which may run a recovery pass) ends,
+  // so an interrupt during recovery still releases the marker.
+  let reconciled: Awaited<ReturnType<typeof reconcileMarker>>;
+  try {
+    reconciled = await reconcileMarker(
+      item,
+      marker,
+      settings.participants,
+      watermark,
+      runError,
+      diagnostics,
+      recovery,
+    );
+  } finally {
+    inFlightMarker = null;
+  }
   progress(`  ${reconciled.detail}\n`);
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
