@@ -23,9 +23,17 @@ function fail(message: string): number {
   return 1;
 }
 
-function saveWatch(watch: number[]): void {
+/**
+ * Apply a change to the watch list against the config as it is on disk right
+ * now, so a concurrent `add`/`remove`/prune is not overwritten by a stale
+ * snapshot taken earlier in the command (the network calls in between are slow).
+ */
+function updateWatch(change: (current: number[]) => number[]): void {
   const raw = readRawConfig();
-  writeConfig({ ...raw, conductor: { ...raw.conductor, watch } });
+  const current = normalizeWatch(raw.conductor?.watch);
+  const next = change(current);
+  if (next.length === current.length && next.every((id, i) => id === current[i])) return;
+  writeConfig({ ...raw, conductor: { ...raw.conductor, watch: next } });
 }
 
 function describe(target: WatchTarget): string {
@@ -39,7 +47,7 @@ function describe(target: WatchTarget): string {
  */
 export function pruneWatchList(config: AutomataConfig): void {
   const watch = normalizeWatch(config.conductor?.watch);
-  let kept = watch;
+  const dropped: number[] = [];
   for (const id of watch) {
     try {
       const target = getWatchTarget(id);
@@ -47,13 +55,13 @@ export function pruneWatchList(config: AutomataConfig): void {
         process.stdout.write(
           `Conductor: dropped ${target.kind === "pr" ? "PR" : "issue"} #${String(id)} from the watch list (closed).\n`,
         );
-        kept = withoutWatched(kept, id);
+        dropped.push(id);
       }
     } catch (err) {
       process.stderr.write(`Warning: could not check #${String(id)}, keeping it watched: ${(err as Error).message}\n`);
     }
   }
-  if (kept.length !== watch.length) saveWatch(kept);
+  if (dropped.length > 0) updateWatch((current) => current.filter((id) => !dropped.includes(id)));
 }
 
 /** Config shared by `add`: GitHub mode and a discovery setting that can be applied. */
@@ -89,9 +97,7 @@ export function runWatchAdd(rawId: string): number {
       target.kind === "issue"
         ? (getOpenPrLinkMap().byIssue.get(id) ?? []).map((pr) => pr.number)
         : [];
-    const before = normalizeWatch(config.conductor?.watch);
-    const after = withWatched(before, id, ...followed);
-    if (after.length !== before.length) saveWatch(after);
+    updateWatch((current) => withWatched(current, id, ...followed));
     process.stdout.write(`Watching ${describe(target)}.\n`);
     for (const pr of followed) process.stdout.write(`Also following linked PR #${String(pr)}.\n`);
     return 0;
@@ -105,7 +111,7 @@ export function runWatchRemove(rawId: string): number {
   if (id === null) return fail(`"${rawId}" is not an issue or pull request number.`);
   const before = normalizeWatch(readRawConfig().conductor?.watch);
   if (!before.includes(id)) return fail(`#${String(id)} is not on the watch list.`);
-  saveWatch(withoutWatched(before, id));
+  updateWatch((current) => withoutWatched(current, id));
   process.stdout.write(`Stopped watching #${String(id)}.\n`);
   return 0;
 }

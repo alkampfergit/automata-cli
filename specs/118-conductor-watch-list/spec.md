@@ -12,7 +12,7 @@ knows what to follow and `do-work` picks the same items up.
 - FR-1: The list lives in `.automata/config.json` as `conductor.watch`, an array of issue/PR numbers.
 - FR-2: `automata conductor add <id>` resolves `<id>` as an issue or a PR, refuses a closed/merged one, adds it to the
   list (no duplicates) and applies the discovery setting so `do-work` picks it up: `label` adds the label,
-  `assignee` assigns `agentUser`. Adding an issue also adds its open linked PR(s) to the list.
+  `assignee` assigns the `issueDiscoveryValue` login. Adding an issue also adds its open linked PR(s) to the list.
 - FR-3: `automata conductor remove <id>` removes the id from the list and touches nothing on GitHub.
 - FR-4: `automata conductor list` prints each watched id with its kind, state and title.
 - FR-5: At the start of every tick (after the lock is taken) closed issues and closed/merged PRs are dropped from the
