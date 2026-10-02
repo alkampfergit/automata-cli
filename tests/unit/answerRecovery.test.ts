@@ -91,4 +91,12 @@ describe("recoverAnswer", () => {
     mockRunModel.mockResolvedValueOnce({ ok: true, stdout: "" });
     expect((await recoverAnswer({ executor: "claude" }, input)).ok).toBe(false);
   });
+
+  it("turns a rejected executor call into a failed result", async () => {
+    mockRunModel.mockRejectedValue(new Error("argv contains a NUL byte"));
+    expect(await recoverAnswer({ executor: "claude" }, input)).toEqual({
+      ok: false,
+      reason: "the recovery pass threw: argv contains a NUL byte",
+    });
+  });
 });
