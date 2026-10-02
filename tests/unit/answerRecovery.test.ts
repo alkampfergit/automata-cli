@@ -61,6 +61,21 @@ describe("interpretRecoveryOutput", () => {
     expect(interpretRecoveryOutput(" \n")).toEqual({ ok: false, reason: "the model returned an empty answer" });
     expect(interpretRecoveryOutput("x".repeat(RECOVERY_ANSWER_MAX_CHARS + 1)).ok).toBe(false);
   });
+
+  it("rejects an answer within the character cap but over the byte cap", () => {
+    expect(interpretRecoveryOutput("漢".repeat(40_000)).ok).toBe(false);
+  });
+
+  it("redacts secrets in the transcript before building the prompt", () => {
+    const prompt = buildRecoveryPrompt({
+      subject: "issue #1",
+      transcript: "ok ghp_abcdefghijklmnopqrstuvwxyz0123456789\nabcdef\n-----END PRIVATE KEY-----\nafter",
+      conversation: "hi",
+    });
+    expect(prompt).not.toContain("ghp_");
+    expect(prompt).not.toContain("abcdef");
+    expect(prompt).toContain("after");
+  });
 });
 
 describe("readTranscriptTail", () => {

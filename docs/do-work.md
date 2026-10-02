@@ -829,7 +829,7 @@ After the run, `do-work` re-reads the surface:
 A run can write a complete answer to its output and never call `gh`. When a run **finished** (a failed run is not recovered), the post-run check found no answer, and `doWork.postRunLog` is on, `do-work` makes one recovery pass before giving up:
 
 1. It re-reads the thread; if an answer is there by now, nothing is posted.
-2. It asks the executor that ran the turn (same model and effort, no tools, 300 s limit) to write, from the tail of the run transcript and of the original prompt (the whole prompt is capped at 96 KiB, the limit for one command-line argument; the newest content is kept), the GitHub-ready answer itself — not an explanation that nothing was posted.
+2. It asks the executor that ran the turn (same model and effort, no tools, 300 s limit) to write, from the tail of the run transcript and of the original prompt (the whole prompt is capped at 96 KiB, the limit for one command-line argument; the newest content is kept; the transcript is redacted of token-shaped secrets first, and an answer over 90 KiB of UTF-8 is rejected), the GitHub-ready answer itself — not an explanation that nothing was posted.
 3. A non-empty answer goes through the token redaction and is posted as a comment on the same issue or pull request the run answered.
 4. The thread is read back; only when the answer is visible is the `working…` marker deleted and the item reported as `answered`.
 
