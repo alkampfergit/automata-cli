@@ -23,3 +23,9 @@ detail belongs in `docs/`, not the README.
 
 Otherwise reply on the issue only. Keep the reply short and concrete, and always
 post a reply.
+
+Post the reply yourself with the GitHub CLI: write it to a file and run
+`gh issue comment <issue-number> --body-file <file>`, or
+`gh pr comment <pr-number> --body-file <file>` when replying on a pull request.
+`do-work` does not publish your output, so printing the answer to stdout does
+not count as a posted reply.
