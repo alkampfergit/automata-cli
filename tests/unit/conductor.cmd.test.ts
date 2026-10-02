@@ -134,7 +134,7 @@ describe("conductor watch list", () => {
     mockTarget.mockReturnValue(issue(114));
     mockLinks.mockReturnValue({ byIssue: new Map([[114, [{ number: 130 }]]]) });
     expect(await call("runWatchAdd", "114")).toBe(0);
-    expect(mockApply).toHaveBeenCalledWith(issue(114), "label", "automata", "bot");
+    expect(mockApply).toHaveBeenCalledWith(issue(114), "label", "automata");
     expect(written().conductor.watch).toEqual([114, 130]);
     expect(stdout).toMatch(/linked PR #130/);
   });
@@ -167,6 +167,15 @@ describe("conductor watch list", () => {
   it("add requires a discovery technique", async () => {
     mockRawConfig.mockReturnValue(CONFIG);
     expect(await call("runWatchAdd", "9")).toBe(1);
+  });
+
+  it("add rejects a missing discovery value before touching GitHub", async () => {
+    for (const technique of ["label", "assignee"]) {
+      mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: technique, issueDiscoveryValue: "  " });
+      expect(await call("runWatchAdd", "9")).toBe(1);
+    }
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
   });
 
   it("remove drops the id and leaves GitHub alone", async () => {

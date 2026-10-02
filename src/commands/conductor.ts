@@ -77,15 +77,14 @@ export function runWatchAdd(rawId: string): number {
   if (typeof config === "number") return config;
   const technique = config.issueDiscoveryTechnique;
   if (!technique) return fail("No issue discovery technique configured. Run `automata config`.");
-  const value = config.issueDiscoveryValue ?? "";
-  const agentUser = (config.agentUser ?? "").trim();
-  if (technique === "assignee" && agentUser.length === 0) {
-    return fail("No agent user configured. Run `automata config set agent-user <login>`.");
+  const value = (config.issueDiscoveryValue ?? "").trim();
+  if (technique !== "title-contains" && value.length === 0) {
+    return fail("No issue discovery value configured. Run `automata config`.");
   }
   try {
     const target = getWatchTarget(id);
     if (target.state === "closed") return fail(`${describe(target)} is closed; nothing to watch.`);
-    applyDiscovery(target, technique, value, agentUser);
+    applyDiscovery(target, technique, value);
     const followed =
       target.kind === "issue"
         ? (getOpenPrLinkMap().byIssue.get(id) ?? []).map((pr) => pr.number)
