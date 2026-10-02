@@ -6,6 +6,10 @@ import { runModelOnce, type ScrubExecution } from "./secondOpinion.js";
 export const RECOVERY_TIMEOUT_MS = 300_000;
 /** Bytes of the transcript's tail handed to the model. */
 export const RECOVERY_TRANSCRIPT_BYTES = 120_000;
+/** The whole recovery prompt stays under the per-argument limit the normal run is held to (96 KiB). */
+export const RECOVERY_PROMPT_MAX_BYTES = 96 * 1024;
+/** Most bytes of the conversation kept in the prompt; the transcript gets the rest. */
+export const RECOVERY_CONVERSATION_BYTES = 32 * 1024;
 /** Longest answer automata will post; GitHub rejects a comment above 65536 characters. */
 export const RECOVERY_ANSWER_MAX_CHARS = 60_000;
 
@@ -19,13 +23,28 @@ export interface RecoveryPromptInput {
   conversation: string;
 }
 
+/** The last `maxBytes` bytes of `text`, without a character cut in half at the start. */
+function tailByBytes(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) return text;
+  return bytes.subarray(bytes.length - Math.max(0, maxBytes)).toString("utf8").replace(/^\uFFFD+/, "");
+}
+
 /**
  * The instruction for the recovery pass: the first run produced its answer on
  * stdout and never posted it, so the model is asked to write that answer out.
  */
 export function buildRecoveryPrompt(input: RecoveryPromptInput): string {
+  const conversation = tailByBytes(input.conversation, RECOVERY_CONVERSATION_BYTES);
+  const compose = (transcript: string): string => assemblePrompt(input.subject, transcript, conversation);
+  const overhead = Buffer.byteLength(compose(""), "utf8");
+  const transcriptBudget = Math.min(RECOVERY_TRANSCRIPT_BYTES, RECOVERY_PROMPT_MAX_BYTES - overhead);
+  return compose(tailByBytes(input.transcript, transcriptBudget));
+}
+
+function assemblePrompt(subject: string, transcript: string, conversation: string): string {
   return [
-    `An earlier agent run was asked to reply on ${input.subject}, but it never posted a comment.`,
+    `An earlier agent run was asked to reply on ${subject}, but it never posted a comment.`,
     "Below is the transcript of that run, followed by the conversation it was answering.",
     "Inspect the transcript and write the answer that should be posted on the GitHub thread.",
     "Your output is posted verbatim as the comment, so it must be the complete, GitHub-ready answer itself,",
@@ -35,11 +54,11 @@ export function buildRecoveryPrompt(input: RecoveryPromptInput): string {
     "Do not use any tool. If the transcript contains no answer to give, reply with nothing at all.",
     "",
     "BEGIN-TRANSCRIPT",
-    input.transcript,
+    transcript,
     "END-TRANSCRIPT",
     "",
     "BEGIN-CONVERSATION",
-    input.conversation,
+    conversation,
     "END-CONVERSATION",
   ].join("\n");
 }
