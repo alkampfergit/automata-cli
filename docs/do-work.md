@@ -824,6 +824,17 @@ After the run, `do-work` re-reads the surface:
 | Cannot be determined | **Updated in place** to say the answer could not be verified. Asserting "no answer" would state something `do-work` has not established. |
 | The run was refused before it started | **Updated in place** with the reason — an unrecognised `tool:` directive, or a prompt too long to hand to the executor. Nothing was invoked, so nothing changed. |
 
+### Recovering an answer that was only printed
+
+A run can write a complete answer to its output and never call `gh`. When a run **finished** (a failed run is not recovered), the post-run check found no answer, and `doWork.postRunLog` is on, `do-work` makes one recovery pass before giving up:
+
+1. It re-reads the thread; if an answer is there by now, nothing is posted.
+2. It asks the executor that ran the turn (same model and effort, no tools, 300 s limit) to write, from the last 120 KB of the run transcript and the original prompt, the GitHub-ready answer itself — not an explanation that nothing was posted.
+3. A non-empty answer goes through the token redaction and is posted as a comment on the same issue or pull request the run answered.
+4. The thread is read back; only when the answer is visible is the `working…` marker deleted and the item reported as `answered`.
+
+Empty output, an executor failure or timeout, a failed post or an unverifiable read-back leave the run as it was: the marker is updated with the usual notice, plus one sentence naming why recovery did not help. The progress lines the recovery pass writes to stderr start with `recovery:`, so the normal run and the recovery pass are distinguishable.
+
 ### Diagnostics when no answer was posted
 
 An updated marker that says only "no answer" leaves you guessing why, so it also carries a short block:

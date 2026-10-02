@@ -86,20 +86,20 @@ function capture(bin: string, args: string[], timeoutMs: number): Promise<Captur
   });
 }
 
+export type ModelRun = { ok: true; stdout: string } | { ok: false; reason: string };
+
 /**
- * Ask the executor that ran the turn to remove what still looks secret from an
- * already-redacted excerpt. Never throws; a failure is returned as a short,
- * neutral reason that carries no model output, so nothing unfiltered can leak
- * through an error message.
+ * One headless, tool-less model call through the executor that ran the turn.
+ * Never throws; a failure is a short, neutral reason that carries no model
+ * output, so nothing unfiltered can leak through an error message.
  */
-export async function scrubExcerpt(
+export async function runModelOnce(
   execution: ScrubExecution,
-  excerpt: string,
+  prompt: string,
   timeoutMs: number = SECOND_OPINION_TIMEOUT_MS,
-): Promise<ScrubResult> {
+): Promise<ModelRun> {
   const codex = execution.executor === "codex";
   const name = codex ? "Codex" : "Claude Code";
-  const prompt = buildScrubPrompt(excerpt);
   const options = { model: execution.model, effort: execution.effort };
   const args = codex ? buildCodexArgs(prompt, options) : buildClaudeArgs(prompt, options);
   const result = await capture(resolveCommand(codex ? "codex" : "claude"), args, timeoutMs);
@@ -112,5 +112,18 @@ export async function scrubExcerpt(
   if (result.timedOut) return { ok: false, reason: `${name} did not answer within ${String(timeoutMs / 1000)}s` };
   if (result.signal !== null) return { ok: false, reason: `${name} terminated on ${result.signal}` };
   if (result.code !== 0) return { ok: false, reason: `${name} exited with code ${String(result.code)}` };
-  return interpretScrubOutput(result.stdout, excerpt);
+  return { ok: true, stdout: result.stdout };
+}
+
+/**
+ * Ask the executor that ran the turn to remove what still looks secret from an
+ * already-redacted excerpt.
+ */
+export async function scrubExcerpt(
+  execution: ScrubExecution,
+  excerpt: string,
+  timeoutMs: number = SECOND_OPINION_TIMEOUT_MS,
+): Promise<ScrubResult> {
+  const result = await runModelOnce(execution, buildScrubPrompt(excerpt), timeoutMs);
+  return result.ok ? interpretScrubOutput(result.stdout, excerpt) : result;
 }

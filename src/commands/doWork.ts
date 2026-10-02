@@ -78,6 +78,7 @@ import {
   type RunSink,
 } from "../run/runTranscript.js";
 import { scrubExcerpt } from "../run/secondOpinion.js";
+import { readTranscriptTail, recoverAnswer, type RecoveryResult } from "../run/answerRecovery.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
   inspectLogDirectory,
@@ -1183,6 +1184,7 @@ async function reconcileMarker(
   watermark: string | null,
   runError: Error | null,
   diagnostics: (() => Promise<string>) | null,
+  recovery: (() => Promise<RecoveryResult>) | null = null,
 ): Promise<Reconciled> {
   let analysis: AnswerAnalysis;
   try {
@@ -1192,6 +1194,19 @@ async function reconcileMarker(
       `  warning: could not re-read ${markerSurfaceLabel(item)} to check for an answer: ${(err as Error).message}\n`,
     );
     return reportUnverified(item, marker);
+  }
+
+  let recoveryNote: string | null = null;
+  let recovered = false;
+  // Only a run that finished: a failed run's output is not an answer to publish.
+  if (analysis.answeredAt === null && runError === null && recovery !== null) {
+    const attempt = await attemptRecovery(item, marker, participants, watermark, recovery);
+    if ("analysis" in attempt) {
+      analysis = attempt.analysis;
+      recovered = attempt.posted;
+    } else {
+      recoveryNote = attempt.reason;
+    }
   }
 
   if (analysis.answeredAt !== null) {
@@ -1208,12 +1223,71 @@ async function reconcileMarker(
         reason: "flagged",
       };
     }
+    if (recovered) {
+      return { outcome: "answered", detail: "answered (recovered from the run transcript)", reason: "answered" };
+    }
     return runError === null
       ? { outcome: "answered", detail: "answered", reason: "answered" }
       : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}`, reason: "answered" };
   }
 
-  return reportNoAnswer(item, marker, runError, diagnostics);
+  return reportNoAnswer(item, marker, runError, diagnostics, recoveryNote);
+}
+
+type RecoveryAttempt = { analysis: AnswerAnalysis; posted: boolean } | { reason: string };
+
+/**
+ * The run finished and posted nothing. Ask the model to write the answer its
+ * transcript implies, post it, and read the thread back to confirm.
+ *
+ * The thread is re-read before posting, so an answer that appeared in the
+ * meantime is never duplicated. Every failure is a reason string for the
+ * fallback notice; nothing here throws.
+ */
+async function attemptRecovery(
+  item: WorkItem,
+  marker: MarkerRef,
+  participants: Participants,
+  watermark: string | null,
+  recovery: () => Promise<RecoveryResult>,
+): Promise<RecoveryAttempt> {
+  const surface = markerSurfaceLabel(item);
+  progress(`  recovery: the run posted no answer on ${surface}; asking the model to write it from the transcript.\n`);
+  const reread = (): AnswerAnalysis =>
+    analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
+  const fail = (reason: string): { reason: string } => {
+    progress(`  recovery: failed — ${reason}\n`);
+    return { reason };
+  };
+
+  const result = await recovery();
+  if (!result.ok) return fail(result.reason);
+
+  try {
+    const current = reread();
+    if (current.answeredAt !== null) {
+      progress(`  recovery: an answer appeared on ${surface} in the meantime; nothing posted.\n`);
+      return { analysis: current, posted: false };
+    }
+  } catch (err) {
+    return fail(`could not re-read ${surface} before posting: ${(err as Error).message}`);
+  }
+
+  const target = markerSurfaceTarget(item);
+  try {
+    postMarker(target.surface, target.number, result.answer);
+  } catch (err) {
+    return fail(`could not post the recovered answer: ${(err as Error).message}`);
+  }
+
+  try {
+    const verified = reread();
+    if (verified.answeredAt === null) return fail(`the recovered answer is not visible on ${surface} after posting`);
+    progress(`  recovery: posted the answer recovered from the run transcript on ${surface}.\n`);
+    return { analysis: verified, posted: true };
+  } catch (err) {
+    return fail(`could not re-read ${surface} to verify the recovered answer: ${(err as Error).message}`);
+  }
 }
 
 /** The surface could not be re-read, so nothing about the answer is established. */
@@ -1246,6 +1320,7 @@ async function reportNoAnswer(
   marker: MarkerRef,
   runError: Error | null,
   diagnostics: (() => Promise<string>) | null,
+  recoveryNote: string | null = null,
 ): Promise<Reconciled> {
   const surface = markerSurfaceLabel(item);
   const sideEffects =
@@ -1258,8 +1333,10 @@ async function reportNoAnswer(
         `${sideEffects} Reply on ${surface} to have another attempt made.`
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
         `${sideEffects} Reply on ${surface} to have another attempt made.`;
+  const recovery =
+    recoveryNote === null ? "" : ` A second pass tried to recover the answer from the run transcript and could not: ${recoveryNote}.`;
   try {
-    updateMarker(marker, explanation + ((await diagnostics?.()) ?? ""));
+    updateMarker(marker, explanation + recovery + ((await diagnostics?.()) ?? ""));
   } catch (err) {
     progress(
       `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
@@ -1523,11 +1600,19 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
-  const { runError, diagnostics } = await runRecorded(item, prompt, execution, settings, silent);
+  const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
 
   inFlightMarker = null;
-  const reconciled = await reconcileMarker(item, marker, settings.participants, watermark, runError, diagnostics);
+  const reconciled = await reconcileMarker(
+    item,
+    marker,
+    settings.participants,
+    watermark,
+    runError,
+    diagnostics,
+    recovery,
+  );
   progress(`  ${reconciled.detail}\n`);
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
@@ -1546,7 +1631,11 @@ async function runRecorded(
   execution: ResolvedExecution,
   settings: Settings,
   silent: boolean,
-): Promise<{ runError: Error | null; diagnostics: (() => Promise<string>) | null }> {
+): Promise<{
+  runError: Error | null;
+  diagnostics: (() => Promise<string>) | null;
+  recovery: (() => Promise<RecoveryResult>) | null;
+}> {
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
 
@@ -1556,9 +1645,14 @@ async function runRecorded(
   } catch (err) {
     runError = err as Error;
   }
-  if (transcript === null) return { runError, diagnostics: null };
+  if (transcript === null) return { runError, diagnostics: null, recovery: null };
   return {
     runError,
+    recovery: async () => {
+      const text = (transcript.saved ? readTranscriptTail(transcript.path) : null) ?? transcript.excerpt();
+      if (text.trim() === "") return { ok: false, reason: "the run transcript is empty" };
+      return recoverAnswer(execution, { subject: markerSurfaceLabel(item), transcript: text, conversation: prompt });
+    },
     diagnostics: async () => {
       const excerpt = transcript.excerpt();
       const scrubbed = excerpt === "" ? null : await scrubExcerpt(execution, excerpt);

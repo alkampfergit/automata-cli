@@ -95,7 +95,7 @@ You can also link them by hand in the GitHub UI — `closingIssuesReferences` co
 
 Either a tick is running right now, or a run produced no answer and the marker was updated to explain it. Read the comment:
 
-- *"the agent run finished without posting an answer here"* → the model ran but posted nothing. Often a prompt that does not tell the model where to reply. Reply on the issue to trigger another attempt.
+- *"the agent run finished without posting an answer here"* → the model ran but posted nothing. Often a prompt that does not tell the model where to reply. `do-work` first tries to recover the answer from the run transcript and post it; this message means that recovery found nothing or failed (the comment says why). Reply on the issue to trigger another attempt.
 - *"the agent run failed before posting an answer (…)"* → the executor errored; the message includes the error.
 
 Note the marker is **not** retried automatically — that is deliberate, so a broken input cannot burn model calls indefinitely. Your reply is what starts the next attempt.
