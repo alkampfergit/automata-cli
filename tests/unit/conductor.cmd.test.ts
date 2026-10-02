@@ -48,6 +48,13 @@ describe("conductor", () => {
     expect(mockRelease).toHaveBeenCalledOnce();
   });
 
+  it.each([0, -5, "30", 1.5])("exits 1 on an invalid doWork.lockStaleMinutes (%j), without taking the lock", async (bad) => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { lockStaleMinutes: bad } });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/doWork\.lockStaleMinutes must be a positive integer/);
+    expect(mockAcquire).not.toHaveBeenCalled();
+  });
+
   it("exits 1 when gh is the agent, without taking the lock", async () => {
     mockLogin.mockReturnValue("bot");
     expect(await run()).toBe(1);

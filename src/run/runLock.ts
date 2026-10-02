@@ -380,6 +380,11 @@ const UNKNOWN_OWNER: LockOwner = {
   token: "",
 };
 
+/** Acquire the conductor's own lock, independent of the `do-work` lock so both can run side by side. */
+export function acquireConductorLock(staleMinutes: number): AcquireResult {
+  return acquireRunLock("conductor", staleMinutes, CONDUCTOR_LOCK_FILE);
+}
+
 /**
  * Claim the right to replace a stale lock.
  *
@@ -397,10 +402,6 @@ const UNKNOWN_OWNER: LockOwner = {
  * Exported for tests, which need to drive two contenders against one stale lock
  * deterministically — the race cannot be reproduced by sequential acquisition.
  */
-export function acquireConductorLock(staleMinutes: number): AcquireResult {
-  return acquireRunLock("conductor", staleMinutes, CONDUCTOR_LOCK_FILE);
-}
-
 export function claimStaleLock(path: string, token: string, expected?: LockOwner | null): boolean {
   const claimed = `${path}.stale.${token}`;
   try {
