@@ -23,6 +23,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - When a `do-work` agent run finishes without posting an answer, `do-work` now asks the same executor to write the
   answer from the run transcript, posts it on the issue or pull request, and verifies it before deleting the marker;
   any failure keeps the existing notice and adds why recovery did not help. See `docs/do-work.md`
+- `automata conductor add|remove|list` manage a watch list stored as `conductor.watch` in `.automata/config.json`;
+  `add` applies the discovery label (or assigns the `issueDiscoveryValue` login) and follows an issue's linked PR, and each tick drops
+  closed issues and closed/merged PRs from the list, logging each removal. See `docs/conductor.md`
 
 ### Changed
 

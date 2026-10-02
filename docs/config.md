@@ -271,3 +271,12 @@ origin" as the release flow.
 | Git — Release Flow | `git.releaseFlow` ("Detect from origin" clears it) |
 
 The `Git` entry shows both screens in turn and saves them together when the release flow is confirmed.
+
+## `conductor`
+
+```json
+{ "conductor": { "watch": [114, 120] } }
+```
+
+`watch` is the list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it
+with `conductor add|remove|list` rather than by hand; entries that are not positive integers are ignored.
