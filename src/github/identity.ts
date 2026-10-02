@@ -38,3 +38,39 @@ export function identityProblemFor(
     `Authenticate \`gh\` as the agent account (${agentUser}) in this environment, or correct \`agentUser\`.`
   );
 }
+
+/**
+ * Whether the account `gh` is authenticated as can act as the conductor.
+ *
+ * The mirror image of `identityProblemFor`: the conductor is a human instructing
+ * the agent, so it must be listed in `allowedUsers` and must not be the agent.
+ * An unverifiable identity is a problem here, not a pass — the role is defined
+ * by *being* an allowed account, and an app token or an unauthenticated `gh`
+ * cannot show that.
+ */
+export function conductorIdentityProblemFor(
+  login: string | null,
+  agentUser: string,
+  allowedUsers: string[],
+): string | null {
+  if (login === null) {
+    return (
+      "Could not determine which account `gh` is authenticated as, and the conductor must run as an account " +
+      "listed in allowedUsers. Run `gh auth login` as that account, or set `GH_TOKEN` in the scheduler's environment."
+    );
+  }
+  const lower = login.toLowerCase();
+  if (lower === agentUser.toLowerCase()) {
+    return (
+      `\`gh\` is authenticated as "${login}", which is the agent (agentUser). The conductor instructs the agent ` +
+      "and must run as a different account listed in allowedUsers."
+    );
+  }
+  if (!allowedUsers.some((user) => user.toLowerCase() === lower)) {
+    return (
+      `\`gh\` is authenticated as "${login}", which is not listed in allowedUsers. ` +
+      "Authenticate `gh` as one of the allowed users, or add this account to allowedUsers."
+    );
+  }
+  return null;
+}

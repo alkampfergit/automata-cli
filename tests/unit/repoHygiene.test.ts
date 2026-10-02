@@ -131,7 +131,7 @@ describe("rescue", () => {
     mockHasUncommittedChanges.mockReturnValue(true);
     const { runRepoHygiene } = await hygiene();
     runRepoHygiene(options(), NOW);
-    const own = [".automata/automata.lock", ".automata/automata-heartbeat.json"];
+    const own = [".automata/automata.lock", ".automata/conductor.lock", ".automata/automata-heartbeat.json"];
     expect(mockHasUncommittedChanges).toHaveBeenCalledWith(own);
     expect(mockStageAllExcept).toHaveBeenCalledWith(own);
   });
