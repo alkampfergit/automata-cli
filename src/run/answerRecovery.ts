@@ -97,6 +97,10 @@ export async function recoverAnswer(
   input: RecoveryPromptInput,
   timeoutMs: number = RECOVERY_TIMEOUT_MS,
 ): Promise<RecoveryResult> {
-  const run = await runModelOnce(execution, buildRecoveryPrompt(input), timeoutMs);
-  return run.ok ? interpretRecoveryOutput(run.stdout) : run;
+  try {
+    const run = await runModelOnce(execution, buildRecoveryPrompt(input), timeoutMs);
+    return run.ok ? interpretRecoveryOutput(run.stdout) : run;
+  } catch (err) {
+    return { ok: false, reason: `the recovery pass threw: ${(err as Error).message}` };
+  }
 }

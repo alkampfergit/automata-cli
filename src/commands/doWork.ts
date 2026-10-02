@@ -1260,7 +1260,12 @@ async function attemptRecovery(
     return { reason };
   };
 
-  const result = await recovery();
+  let result: RecoveryResult;
+  try {
+    result = await recovery();
+  } catch (err) {
+    return fail(`the recovery pass threw: ${(err as Error).message}`);
+  }
   if (!result.ok) return fail(result.reason);
 
   try {
