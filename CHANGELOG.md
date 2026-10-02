@@ -20,6 +20,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `automata conductor`, the skeleton of the conductor role (epic #114): it loads the `do-work` configuration, exits 1
   unless `gh` is authenticated as a user listed in `allowedUsers` who is not `agentUser`, and takes its own run lock
   (`.automata/conductor.lock`) so it runs next to `do-work`. See `docs/conductor.md`
+- When a `do-work` agent run finishes without posting an answer, `do-work` now asks the same executor to write the
+  answer from the run transcript, posts it on the issue or pull request, and verifies it before deleting the marker;
+  any failure keeps the existing notice and adds why recovery did not help. See `docs/do-work.md`
 
 ### Changed
 

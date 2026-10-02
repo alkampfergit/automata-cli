@@ -131,6 +131,13 @@ vi.mock("../../src/run/secondOpinion.js", () => ({
   scrubExcerpt: (...a: unknown[]) => mockScrub(...a),
 }));
 
+// The recovery pass would spawn a real model too; stub it and record the call.
+const mockRecover = vi.fn();
+vi.mock("../../src/run/answerRecovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/run/answerRecovery.js")>();
+  return { ...actual, recoverAnswer: (...a: unknown[]) => mockRecover(...a) };
+});
+
 // Transcripts go to a throwaway directory, not the checkout running the tests.
 vi.mock("../../src/run/runTranscript.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/run/runTranscript.js")>();
@@ -268,6 +275,7 @@ beforeEach(() => {
   exitCode = undefined;
   vi.clearAllMocks();
   mockScrub.mockImplementation((_execution: unknown, excerpt: string) => Promise.resolve({ ok: true, text: excerpt }));
+  mockRecover.mockResolvedValue({ ok: false, reason: "the model returned an empty answer" });
   captureIo();
 
   mockReadConfig.mockReturnValue({ ...CONFIG });
@@ -800,6 +808,117 @@ describe("do-work marker reconciliation", () => {
     gh.getIssueSurface.mockReturnValue(needsWork(42));
     await runDoWork();
     expect(mockScrub).not.toHaveBeenCalled();
+  });
+
+  describe("transcript recovery", () => {
+    /** The run prints an answer on stdout and posts nothing. */
+    function silentRun(): void {
+      mockInvokeClaude.mockImplementation(() => {
+        lastSink?.output("stdout", '{"type":"result","result":"Here is the answer."}\n');
+        lastSink?.exited(0, null);
+        return Promise.resolve();
+      });
+    }
+
+    it("posts the recovered answer, verifies it and deletes the marker", async () => {
+      silentRun();
+      // answered once a second comment (the recovered answer) follows the marker
+      gh.getIssueSurface.mockImplementation((n: number) =>
+        gh.postMarker.mock.calls.length > 1 ? answered(n) : needsWork(n),
+      );
+      mockRecover.mockResolvedValue({ ok: true, answer: "Here is the answer." });
+      await runDoWork();
+
+      expect(mockRecover).toHaveBeenCalledTimes(1);
+      const input = mockRecover.mock.calls[0][1] as { subject: string; transcript: string; conversation: string };
+      expect(input.subject).toBe("issue #42");
+      expect(input.transcript).toMatch(/Here is the answer/);
+      expect(input.conversation).toMatch(/Issue #42/);
+      expect(gh.postMarker).toHaveBeenCalledTimes(2);
+      expect(gh.postMarker).toHaveBeenLastCalledWith("issue", 42, "Here is the answer.");
+      expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
+      expect(gh.updateMarker).not.toHaveBeenCalled();
+      expect(stderr).toMatch(/recovery: posted the answer recovered from the run transcript/);
+      expect(stdout).toMatch(/recovered from the run transcript/);
+      expect(exitCode).toBeUndefined();
+    });
+
+    it("does not run when the agent already answered", async () => {
+      silentRun();
+      answersAfterMarker();
+      await runDoWork();
+      expect(mockRecover).not.toHaveBeenCalled();
+      expect(gh.postMarker).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not post a duplicate when an answer appears while recovering", async () => {
+      silentRun();
+      let recovering = false;
+      mockRecover.mockImplementation(() => {
+        recovering = true;
+        return Promise.resolve({ ok: true, answer: "Late answer." });
+      });
+      gh.getIssueSurface.mockImplementation((n: number) => (recovering ? answered(n) : needsWork(n)));
+      await runDoWork();
+      expect(gh.postMarker).toHaveBeenCalledTimes(1);
+      expect(stderr).toMatch(/an answer appeared .* in the meantime/);
+      expect(gh.deleteMarker).toHaveBeenCalledWith(MARKER);
+    });
+
+    it("keeps the diagnostic notice when the recovery pass returns nothing", async () => {
+      silentRun();
+      await runDoWork();
+      expect(gh.postMarker).toHaveBeenCalledTimes(1);
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/finished without posting an answer/);
+      expect(body).toMatch(/could not: the model returned an empty answer/);
+      expect(stderr).toMatch(/recovery: failed/);
+      expect(exitCode).toBe(2);
+    });
+
+    it("keeps the diagnostic notice when the executor fails", async () => {
+      silentRun();
+      mockRecover.mockResolvedValue({ ok: false, reason: "Claude Code exited with code 1" });
+      await runDoWork();
+      expect(gh.postMarker).toHaveBeenCalledTimes(1);
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/finished without posting an answer/);
+      expect(body).toMatch(/Claude Code exited with code 1/);
+    });
+
+    it("keeps the diagnostic notice when posting the recovered answer fails", async () => {
+      silentRun();
+      mockRecover.mockResolvedValue({ ok: true, answer: "Here is the answer." });
+      gh.postMarker.mockReturnValueOnce(MARKER).mockImplementationOnce(() => {
+        throw new Error("HTTP 502");
+      });
+      await runDoWork();
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/finished without posting an answer/);
+      expect(body).toMatch(/could not post the recovered answer: HTTP 502/);
+      expect(gh.deleteMarker).not.toHaveBeenCalled();
+    });
+
+    it("keeps the diagnostic notice when the posted answer cannot be seen on read-back", async () => {
+      silentRun();
+      mockRecover.mockResolvedValue({ ok: true, answer: "Here is the answer." });
+      await runDoWork();
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/not visible on issue #42 after posting/);
+      expect(gh.deleteMarker).not.toHaveBeenCalled();
+    });
+
+    it("does not recover from a run that failed", async () => {
+      mockInvokeClaude.mockRejectedValue(new Error("claude exited with code 1"));
+      await runDoWork();
+      expect(mockRecover).not.toHaveBeenCalled();
+    });
+
+    it("does not recover when doWork.postRunLog is false", async () => {
+      mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { postRunLog: false } });
+      await runDoWork();
+      expect(mockRecover).not.toHaveBeenCalled();
+    });
   });
 
   it("leaves the fallback comment as it was when doWork.postRunLog is false", async () => {
