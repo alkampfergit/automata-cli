@@ -296,6 +296,7 @@ describe("doWork configuration", () => {
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("gh issue comment <issue-number> --body-file <file>");
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("gh pr comment <pr-number> --body-file <file>");
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/stdout does not count as a posted reply/);
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("temporary file outside the repository");
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/Do not merge the pull request/);
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/do not push to the base branch/);
     // The defaults must work with no plugin installed, so they name no skill.
