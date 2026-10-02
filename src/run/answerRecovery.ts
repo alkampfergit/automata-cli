@@ -1,5 +1,5 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { redactSecrets } from "./runTranscript.js";
+import { redactSecrets, redactTranscriptTail } from "./runTranscript.js";
 import { runModelOnce, type ScrubExecution } from "./secondOpinion.js";
 
 /** How long the recovery pass may take: it writes a whole answer, not a filtered excerpt. */
@@ -10,7 +10,9 @@ export const RECOVERY_TRANSCRIPT_BYTES = 120_000;
 export const RECOVERY_PROMPT_MAX_BYTES = 96 * 1024;
 /** Most bytes of the conversation kept in the prompt; the transcript gets the rest. */
 export const RECOVERY_CONVERSATION_BYTES = 32 * 1024;
-/** Longest answer automata will post; GitHub rejects a comment above 65536 characters. */
+/** Longest answer automata will post, in UTF-8 bytes: it travels as one argv entry, held to the 96 KiB cap. */
+export const RECOVERY_ANSWER_MAX_BYTES = 90 * 1024;
+/** GitHub rejects a comment above 65536 characters. */
 export const RECOVERY_ANSWER_MAX_CHARS = 60_000;
 
 export type RecoveryResult = { ok: true; answer: string } | { ok: false; reason: string };
@@ -36,10 +38,11 @@ function tailByBytes(text: string, maxBytes: number): string {
  */
 export function buildRecoveryPrompt(input: RecoveryPromptInput): string {
   const conversation = tailByBytes(input.conversation, RECOVERY_CONVERSATION_BYTES);
-  const compose = (transcript: string): string => assemblePrompt(input.subject, transcript, conversation);
+  const transcript = redactTranscriptTail(input.transcript);
+  const compose = (body: string): string => assemblePrompt(input.subject, body, conversation);
   const overhead = Buffer.byteLength(compose(""), "utf8");
   const transcriptBudget = Math.min(RECOVERY_TRANSCRIPT_BYTES, RECOVERY_PROMPT_MAX_BYTES - overhead);
-  return compose(tailByBytes(input.transcript, transcriptBudget));
+  return compose(tailByBytes(transcript, transcriptBudget));
 }
 
 function assemblePrompt(subject: string, transcript: string, conversation: string): string {
@@ -67,7 +70,7 @@ function assemblePrompt(subject: string, transcript: string, conversation: strin
 export function interpretRecoveryOutput(output: string): RecoveryResult {
   const answer = redactSecrets(output.trim());
   if (answer === "") return { ok: false, reason: "the model returned an empty answer" };
-  if (answer.length > RECOVERY_ANSWER_MAX_CHARS) {
+  if (answer.length > RECOVERY_ANSWER_MAX_CHARS || Buffer.byteLength(answer, "utf8") > RECOVERY_ANSWER_MAX_BYTES) {
     return { ok: false, reason: "the model returned an answer too long to post as a comment" };
   }
   return { ok: true, answer };

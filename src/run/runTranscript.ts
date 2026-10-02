@@ -65,6 +65,19 @@ export function redactSecrets(text: string): string {
   return redactAssignments(out);
 }
 
+/**
+ * `redactSecrets` for a slice cut from the middle of a transcript file: a tail
+ * that starts inside a private key (its END line comes before any BEGIN line)
+ * is masked from the top, as `keep` does for the kept lines.
+ */
+export function redactTranscriptTail(text: string): string {
+  const first = (pattern: RegExp): number => text.search(new RegExp(pattern.source));
+  const end = first(PRIVATE_KEY_END);
+  const begin = first(PRIVATE_KEY_BEGIN);
+  const startsInsideKey = end !== -1 && (begin === -1 || end < begin);
+  return redactSecrets(startsInsideKey ? `-----BEGIN PRIVATE KEY-----\n${text}` : text);
+}
+
 /** Whether `text` leaves a private key open: a BEGIN line after the last END line. */
 function opensPrivateKey(text: string): boolean {
   const lastIndex = (pattern: RegExp): number => {
