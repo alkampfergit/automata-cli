@@ -14,6 +14,7 @@ import {
   readTranscriptTail,
   recoverAnswer,
   RECOVERY_ANSWER_MAX_CHARS,
+  RECOVERY_PROMPT_MAX_BYTES,
 } from "../../src/run/answerRecovery.js";
 
 beforeEach(() => {
@@ -29,6 +30,22 @@ describe("buildRecoveryPrompt", () => {
     expect(prompt).toMatch(/issue #114/);
     expect(prompt).toMatch(/BEGIN-TRANSCRIPT\nT-BODY\nEND-TRANSCRIPT/);
     expect(prompt).toMatch(/BEGIN-CONVERSATION\nC-BODY\nEND-CONVERSATION/);
+  });
+});
+
+describe("buildRecoveryPrompt size bound", () => {
+  it("keeps the whole prompt under the argument limit, keeping the newest of both inputs", () => {
+    const prompt = buildRecoveryPrompt({
+      subject: "issue #1",
+      transcript: "old-transcript" + "é".repeat(120_000) + "NEW-TRANSCRIPT",
+      conversation: "old-conversation" + "x".repeat(96 * 1024) + "NEW-CONVERSATION",
+    });
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(RECOVERY_PROMPT_MAX_BYTES);
+    expect(prompt).toContain("NEW-TRANSCRIPT");
+    expect(prompt).toContain("NEW-CONVERSATION");
+    expect(prompt).not.toContain("old-transcript");
+    expect(prompt).not.toContain("old-conversation");
+    expect(prompt).not.toContain("\uFFFD");
   });
 });
 
