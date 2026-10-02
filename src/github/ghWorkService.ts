@@ -683,6 +683,66 @@ export function assignPrToAgent(prNumber: number, agentUser: string): void {
   }
 }
 
+export interface WatchTarget {
+  number: number;
+  kind: "issue" | "pr";
+  /** `closed` covers a merged pull request too. */
+  state: "open" | "closed";
+  title: string;
+}
+
+interface RawWatchTarget {
+  number: number;
+  state: string;
+  title: string;
+  pull_request?: unknown;
+}
+
+/** Resolve an issue or pull request number with one REST call (a PR is an issue in GitHub's model). */
+export function getWatchTarget(id: number): WatchTarget {
+  const { owner, repo } = getRepoSlug();
+  const raw = ghJson<RawWatchTarget>(["api", `repos/${owner}/${repo}/issues/${String(id)}`], `read #${String(id)}`);
+  return {
+    number: raw.number,
+    kind: raw.pull_request === undefined ? "issue" : "pr",
+    state: raw.state === "closed" ? "closed" : "open",
+    title: raw.title,
+  };
+}
+
+/**
+ * Make `do-work` pick an item up under the configured discovery technique.
+ * `title-contains` cannot be applied to an existing item, so it throws.
+ */
+export function applyDiscovery(
+  target: WatchTarget,
+  technique: IssueDiscoveryTechnique,
+  value: string,
+  agentUser: string,
+): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  let flag: string;
+  let arg: string;
+  switch (technique) {
+    case "label":
+      flag = "--add-label";
+      arg = value;
+      break;
+    case "assignee":
+      flag = "--add-assignee";
+      arg = agentUser;
+      break;
+    default:
+      throw new Error(
+        "issueDiscoveryTechnique `title-contains` cannot be applied to an existing item; use `label` or `assignee`.",
+      );
+  }
+  const { stderr, status } = run("gh", [edit, "edit", String(target.number), flag, arg]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to apply the discovery setting to #${String(target.number)}.`);
+  }
+}
+
 /**
  * Post the "working" marker and return its identity.
  *

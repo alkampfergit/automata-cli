@@ -1,14 +1,39 @@
 # `automata conductor`
 
 One tick of the conductor role, meant to be fired from cron like [`do-work`](do-work.md). It is part of the conductor
-epic (#114); for now it does the pre-flight only — configuration, identity and lock — and then exits 0. The work itself
-is added by later issues.
+epic (#114). A tick does the pre-flight — configuration, identity and lock — prunes the [watch list](#watch-list) and
+exits 0. The rest of the work is added by later issues.
 
 ```bash
-automata conductor
+automata conductor              # one tick
+automata conductor add <id>     # watch an issue or pull request
+automata conductor remove <id>  # stop watching it
+automata conductor list         # show what is watched
 ```
 
-The command has no options.
+The tick has no options.
+
+## Watch list
+
+The items the conductor follows are stored in `.automata/config.json` as `conductor.watch`, an array of issue and pull
+request numbers (see [config.md](config.md)):
+
+```json
+{ "conductor": { "watch": [114, 120] } }
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `add <id>` | Resolves `<id>` as an issue or a pull request (`#114` is accepted too) and refuses a closed or merged one. Applies the discovery setting so [`do-work`](do-work.md) picks it up — the `issueDiscoveryValue` label for `label`, an assignment to `agentUser` for `assignee`. Adding an issue also adds its open linked pull request(s) to the list; those get no label or assignee, because `do-work` reaches them through the issue. Adding an id already listed is not an error. |
+| `remove <id>` | Takes the id off the list and changes nothing on GitHub — the label or assignee stays. Exits 1 if the id is not listed. |
+| `list` | One line per watched item: kind, number, state and title. An item that cannot be read is shown as unavailable. |
+
+`add` needs `issueDiscoveryTechnique` configured. `title-contains` cannot be applied to an existing item, so `add` fails
+with it and stores nothing. The three subcommands do not need the conductor identity or the lock.
+
+At the start of each tick, after the lock is taken, every closed issue and closed or merged pull request is dropped from
+the list, and each removal is logged on stdout (`Conductor: dropped issue #114 from the watch list (closed).`). An item
+that cannot be looked up (network or `gh` error) stays on the list, with a warning on stderr.
 
 ## Configuration
 

@@ -994,3 +994,27 @@ describe("createDraftPullRequest", () => {
     );
   });
 });
+
+describe("getWatchTarget and applyDiscovery", () => {
+  it("tells an issue from a pull request and reads the state", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json({ number: 7, state: "closed", title: "x", pull_request: {} }));
+    const { getWatchTarget } = await import("../../src/github/ghWorkService.js");
+    expect(getWatchTarget(7)).toEqual({ number: 7, kind: "pr", state: "closed", title: "x" });
+    expect(calls()[1].args).toEqual(["api", "repos/acme/widget/issues/7"]);
+  });
+
+  it("labels an issue, assigns a pull request, and rejects title-contains", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { applyDiscovery } = await import("../../src/github/ghWorkService.js");
+    const t = { number: 7, state: "open" as const, title: "x" };
+    applyDiscovery({ ...t, kind: "issue" }, "label", "automata", "bot");
+    applyDiscovery({ ...t, kind: "pr" }, "assignee", "", "bot");
+    expect(calls().map((c) => c.args)).toEqual([
+      ["issue", "edit", "7", "--add-label", "automata"],
+      ["pr", "edit", "7", "--add-assignee", "bot"],
+    ]);
+    expect(() => applyDiscovery({ ...t, kind: "issue" }, "title-contains", "x", "bot")).toThrow(/title-contains/);
+  });
+});

@@ -100,6 +100,12 @@ export interface AutomataGitConfig {
   releaseFlow?: ReleaseFlow;
 }
 
+/** Settings of `automata conductor`. */
+export interface AutomataConductorConfig {
+  /** Issue and pull request numbers the conductor watches. */
+  watch?: number[];
+}
+
 export interface AutomataConfig {
   remoteType?: RemoteType;
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
@@ -110,6 +116,7 @@ export interface AutomataConfig {
   prompts?: AutomataPrompts;
   doWork?: AutomataDoWorkConfig;
   git?: AutomataGitConfig;
+  conductor?: AutomataConductorConfig;
 }
 
 export const DEFAULT_CLAUDE_SYSTEM_PROMPT =
