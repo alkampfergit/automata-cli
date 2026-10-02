@@ -52,6 +52,13 @@ export function runConductor(): number {
   const problem = conductorIdentityProblemFor(login, agentUser, allowedUsers);
   if (problem !== null) return fail(problem);
 
+  // Hand-edited JSON: apply the same rule `do-work` does (a positive safe integer).
+  const rawStale: unknown = config.doWork?.lockStaleMinutes;
+  if (rawStale !== undefined && rawStale !== null) {
+    if (typeof rawStale !== "number" || !Number.isSafeInteger(rawStale) || rawStale < 1) {
+      return fail(`doWork.lockStaleMinutes must be a positive integer, got ${JSON.stringify(rawStale)}.`);
+    }
+  }
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
   if (!lock.ok) {
