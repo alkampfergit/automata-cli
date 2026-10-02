@@ -1009,12 +1009,12 @@ describe("getWatchTarget and applyDiscovery", () => {
     mockSpawnSync.mockReturnValue(ok(""));
     const { applyDiscovery } = await import("../../src/github/ghWorkService.js");
     const t = { number: 7, state: "open" as const, title: "x" };
-    applyDiscovery({ ...t, kind: "issue" }, "label", "automata", "bot");
-    applyDiscovery({ ...t, kind: "pr" }, "assignee", "", "bot");
+    applyDiscovery({ ...t, kind: "issue" }, "label", "automata");
+    applyDiscovery({ ...t, kind: "pr" }, "assignee", "carol");
     expect(calls().map((c) => c.args)).toEqual([
       ["issue", "edit", "7", "--add-label", "automata"],
-      ["pr", "edit", "7", "--add-assignee", "bot"],
+      ["pr", "edit", "7", "--add-assignee", "carol"],
     ]);
-    expect(() => applyDiscovery({ ...t, kind: "issue" }, "title-contains", "x", "bot")).toThrow(/title-contains/);
+    expect(() => applyDiscovery({ ...t, kind: "issue" }, "title-contains", "x")).toThrow(/title-contains/);
   });
 });

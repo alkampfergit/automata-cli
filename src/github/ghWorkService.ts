@@ -718,7 +718,6 @@ export function applyDiscovery(
   target: WatchTarget,
   technique: IssueDiscoveryTechnique,
   value: string,
-  agentUser: string,
 ): void {
   const edit = target.kind === "pr" ? "pr" : "issue";
   let flag: string;
@@ -730,7 +729,7 @@ export function applyDiscovery(
       break;
     case "assignee":
       flag = "--add-assignee";
-      arg = agentUser;
+      arg = value;
       break;
     default:
       throw new Error(
