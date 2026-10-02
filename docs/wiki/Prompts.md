@@ -52,7 +52,7 @@ The turn boundary is the part not to get wrong, since it is what keeps a discuss
 **A discussion turn (`issue-discuss`)** should tell the model to:
 
 - reply on the **issue**;
-- not modify, create or delete any file, and not create a branch or pull request;
+- not modify, create or delete any file in the repository, and not create a branch or pull request;
 - **except** when a message marked `NEW` explicitly asks for implementation, in which case: branch off the base branch, implement, and open a pull request whose body contains `Closes #<issue>`;
 - always post a reply — silence is indistinguishable from a crash, and produces a leftover marker;
 - post it with `gh issue comment <issue-number> --body-file <file>` (or `gh pr comment <pr-number> --body-file <file>` on a pull request): `do-work` does not publish the model's stdout, so printing the answer is not a posted reply.

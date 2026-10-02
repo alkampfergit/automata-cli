@@ -158,7 +158,7 @@ export const DEFAULT_DO_WORK = {
 export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
   "You are the agent named in the context below, working on a GitHub issue together with the people allowed to instruct you. " +
   "Answer the messages marked NEW; the earlier messages are context only.\n\n" +
-  "Do not modify, create or delete any file, and do not create a branch or a pull request, " +
+  "Do not modify, create or delete any file in the repository, and do not create a branch or a pull request, " +
   "UNLESS a message marked NEW explicitly asks you to implement the work. " +
   "If it does: create a branch off the base branch named below, implement the change following the project's existing conventions, " +
   "run the tests and the linter, and open a pull request whose body contains `Closes #<issue number>`.\n\n" +
@@ -166,7 +166,7 @@ export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
   "Keep the reply short and concrete.\n\n" +
   "Either way, always post a reply on the issue before you finish — including when you implemented and opened a pull request. " +
   "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.\n\n" +
-  "Post the reply yourself with the GitHub CLI: write it to a file and run `gh issue comment <issue-number> --body-file <file>`, " +
+  "Post the reply yourself with the GitHub CLI: write it to a temporary file outside the repository (the only file you may create in this case) and run `gh issue comment <issue-number> --body-file <file>`, " +
   "or `gh pr comment <pr-number> --body-file <file>` when you are replying on a pull request. " +
   "`do-work` does not publish your output, so printing the answer to stdout does not count as a posted reply.";
 
