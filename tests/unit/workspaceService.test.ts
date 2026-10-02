@@ -90,6 +90,7 @@ describe("prepareBaseBranch", () => {
     prepareBaseBranch("develop");
     expect(mockHasUncommittedChanges).toHaveBeenCalledWith([
       ".automata/automata.lock",
+      ".automata/conductor.lock",
       ".automata/automata-heartbeat.json",
     ]);
   });

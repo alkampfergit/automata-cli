@@ -17,6 +17,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   SonarCloud check. The state mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
 - The default `do-work` build and orphan prompts tell the agent to resolve the review threads it fixed, so Copilot
   threads no longer stay open after a fix.
+- `automata conductor`, the skeleton of the conductor role (epic #114): it loads the `do-work` configuration, exits 1
+  unless `gh` is authenticated as a user listed in `allowedUsers` who is not `agentUser`, and takes its own run lock
+  (`.automata/conductor.lock`) so it runs next to `do-work`. See `docs/conductor.md`
 
 ### Changed
 
