@@ -50,3 +50,20 @@ Azure DevOps mode through `azdo pr comments` (✅ above; see [git.md](git.md#azu
   never pollutes parsed output. `git get-pr-info` and `git finish-feature` run it before the first `azdo` call and stop
   with its message on failure; a success is remembered for the process. They also fail early when `remoteType` is `azdo`
   but `origin` is a GitHub URL. An `origin` that matches no known form is tolerated.
+
+## Write adapter (issue #93)
+
+`src/remote/writeService.ts` defines `RemoteWriteService` and `selectWriteService(config)` (via `selectBackend`; an
+absent `remoteType` is GitHub). The Azure DevOps implementation is `src/remote/azdoWriteService.ts`; no command calls
+it yet, the Phase C children do. Every call passes `--no-update-check`; callers run `assertAzdoReady()` first.
+
+| operation | azdo call | notes |
+|---|---|---|
+| PR of the branch | `pr status --json` (current) or `pr list --branch --status active --json` | `assignees` is always `[]` |
+| rewrite PR description | `pr update --pr-number N --description-file -` | stdin; refused above 4000 characters (azdo-cli's own limit) |
+| link PR ↔ work item | append `AB#<id>` to the description (once, word-boundary), then `pr work-items link <id> --pr-number N` | an "already linked" error is success; the PR is found via `pr status`, then `pr list --status active --top 200` because azdo-cli cannot show a PR by id |
+| request review | `pr reviewers add <reviewer> --pr-number N` | the reviewer is required: there is no Copilot equivalent |
+| comment on a work item | `comments add <id> <text> --markdown --json` | **the text is argv**: 0.20.0 has no file/stdin form. No shell is involved so quoting is safe; a body over 30000 characters is refused, not truncated |
+| comment on a PR | `pr comment-add --pr-number N --file -` | stdin |
+| assign a work item | `assign <id> <name>` | display name or email |
+| claim the PR | **no-op** | Azure DevOps PRs have no assignee. Adding the agent as reviewer was rejected: it asks the agent to vote on its own work |
