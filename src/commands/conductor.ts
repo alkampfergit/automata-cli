@@ -14,6 +14,7 @@ import {
   getWatchTarget,
   type WatchTarget,
 } from "../github/ghWorkService.js";
+import { isWatchClosed } from "../conductor/replyDecision.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH } from "../run/runLock.js";
@@ -51,7 +52,7 @@ export function pruneWatchList(config: AutomataConfig): void {
   for (const id of watch) {
     try {
       const target = getWatchTarget(id);
-      if (target.state === "closed") {
+      if (isWatchClosed(target.state)) {
         process.stdout.write(
           `Conductor: dropped ${target.kind === "pr" ? "PR" : "issue"} #${String(id)} from the watch list (closed).\n`,
         );
