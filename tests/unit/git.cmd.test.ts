@@ -156,12 +156,15 @@ describe("gitService.getPrComments", () => {
     vi.resetModules();
   });
 
-  it("returns unsupported when remoteType is azdo", async () => {
+  it("delegates to the azdo service when remoteType is azdo", async () => {
     vi.doMock("../../src/config/configStore.js", () => ({
       readConfig: () => ({ remoteType: "azdo" }),
     }));
+    vi.doMock("../../src/remote/azdoPrerequisites.js", () => ({ assertAzdoReady: () => undefined }));
+    vi.doMock("../../src/config/azdoService.js", () => ({ getPrComments: () => null }));
+    mockSpawnSync.mockReturnValue({ stdout: "https://dev.azure.com/o/p/_git/r\n", stderr: "", status: 0 });
     const { getPrComments } = await import("../../src/git/gitService.js");
-    expect(getPrComments("my-branch")).toBe("unsupported");
+    expect(getPrComments("my-branch")).toBeNull();
   });
 
   it("returns array of PrComments for unresolved threads", async () => {

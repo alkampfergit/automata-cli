@@ -194,7 +194,7 @@ When one or more checks fail, a trailing `FailedChecks:` section is printed afte
 
 ## `automata git get-pr-comments`
 
-List open (unresolved) review thread comments on the pull request for the current branch. **GitHub only** — not supported in Azure DevOps mode (see [azdo-gap.md](azdo-gap.md)).
+List open (unresolved) review thread comments on the pull request for the current branch. Works with both GitHub and Azure DevOps remotes.
 
 ```bash
 automata git get-pr-comments           # human-readable output
@@ -248,12 +248,28 @@ No open comments.
 
 `line` is `null` for file-level comments (not anchored to a specific line). Returns `[]` when there are no unresolved threads.
 
+### Azure DevOps mode
+
+With `remoteType: "azdo"` the command finds the open PR of the current branch with
+`azdo pr list --branch <branch> --status active --json`, then reads its threads with
+`azdo pr comments --pr-number <id> --exclude-resolved --code-related-only --exclude-system --json` and prints them in
+the same shape as above.
+
+- A thread is **unresolved** when its status is `active` or `pending`; `fixed`, `wontFix`, `closed` and `byDesign`
+  threads are skipped.
+- **General threads** (not anchored to a file) are left out, because GitHub review threads are always file-anchored.
+  Azure DevOps system comments (branch updates, votes, build events) are left out too.
+- One entry per thread: its first non-system comment, as in GitHub mode. `path` is the file path azdo reports
+  (with a leading `/`); `line` is the right-hand line, or the left-hand one, or `null`.
+- `author` is the Azure DevOps **display name** (azdo-cli 0.20.0 exposes no unique login), or `Unknown` when it is
+  missing. It is for display only and must not be used for authorization.
+
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success (including when there are no open comments) |
-| `1` | Error: no PR found, `gh` not installed/authenticated, or Azure DevOps remote type |
+| `1` | Error: no PR found, or `gh` / `azdo` not installed/authenticated |
 
 ---
 

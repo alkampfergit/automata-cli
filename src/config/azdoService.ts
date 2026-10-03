@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { PrCheck, PrInfo } from "../git/gitService.js";
+import type { PrCheck, PrComment, PrInfo } from "../git/gitService.js";
 
 interface AzdoPullRequest {
   id: number;
@@ -30,6 +30,21 @@ interface AzdoRun {
   state: string;
   result: string | null;
 }
+
+interface AzdoCommentThread {
+  id: number;
+  status: string;
+  threadContext: string | null;
+  line: number | null;
+  comments: { author: string | null; content: string; publishedAt: string | null; commentType: string | null }[];
+}
+
+interface AzdoCommentsOutput {
+  threads: AzdoCommentThread[];
+}
+
+/** azdo reports a thread that nobody has resolved as `active`; `pending` is the same state for a new thread. */
+const UNRESOLVED_THREAD_STATUSES = new Set(["active", "pending"]);
 
 function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(cmd, args, { encoding: "utf8" });
@@ -151,4 +166,37 @@ export function getPrInfo(branch?: string): PrInfo | null {
     throw new Error(`Azure DevOps could not retrieve the checks of PR #${pr.id}: ${pr.checksError}`);
   }
   return toPrInfo(pr, (pr.checks ?? []).map(toPrCheck));
+}
+
+/**
+ * Unresolved, file-anchored review threads of the open pull request of `branch`, one comment per thread (the first
+ * non-system one, as in GitHub mode). General threads are left out because GitHub review threads are always anchored
+ * to a file. The author is a display name: azdo 0.20.0 exposes no unique login.
+ */
+export function getPrComments(branch: string): PrComment[] | null {
+  const listed = runJson<AzdoPrStatusOutput>(
+    ["pr", "list", "--branch", branch, "--status", "active"],
+    "Failed to list Azure DevOps pull requests. Is `azdo` installed and authenticated?",
+  );
+  const pr = listed.pullRequests[0];
+  if (pr === undefined) return null;
+
+  const output = runJson<AzdoCommentsOutput>(
+    ["pr", "comments", "--pr-number", String(pr.id), "--exclude-resolved", "--code-related-only", "--exclude-system"],
+    "Failed to read the Azure DevOps pull request threads.",
+  );
+  const comments: PrComment[] = [];
+  for (const thread of output.threads) {
+    if (!UNRESOLVED_THREAD_STATUSES.has(thread.status) || thread.threadContext === null) continue;
+    const first = thread.comments.find((c) => c.commentType !== "system");
+    if (first === undefined) continue;
+    comments.push({
+      author: first.author ?? "Unknown",
+      body: first.content,
+      path: thread.threadContext,
+      line: thread.line,
+      createdAt: first.publishedAt ?? "",
+    });
+  }
+  return comments;
 }
