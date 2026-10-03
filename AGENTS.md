@@ -32,6 +32,10 @@ A command-line interface tool built with TypeScript and commander.js.
 - The README command table must link to the relevant `docs/<group>.md` page.
 - The `docs/<group>.md` page is the authoritative reference for that command group: options, output format, symbols/legends, exit codes, and examples.
 
+## Language Convention
+
+- Write all text in this repository in accordance with ASD-STE100 Simplified Technical English. This includes documentation, comments, prompts, and user-facing messages.
+
 ## Active Technologies
 - TypeScript 5.x (strict mode), Node.js LTS + commander.js (existing), ink (new), react (peer dep for ink), @inkjs/ui (optional list selector) (001-config-wizard)
 - Local file system — `.automata/config.json` (001-config-wizard)
