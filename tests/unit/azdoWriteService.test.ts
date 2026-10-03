@@ -115,6 +115,12 @@ describe("linkPrToIssue", () => {
       .mockReturnValueOnce(prs({ id: 7, url: "u", description: "AB#42" }))
       .mockReturnValueOnce({ stdout: "", stderr: "denied", status: 1 });
     expect(() => svc.linkPrToIssue(7, 42)).toThrow("denied");
+
+    mockSpawnSync.mockReset();
+    mockSpawnSync
+      .mockReturnValueOnce(prs({ id: 7, url: "u", description: "AB#42" }))
+      .mockReturnValueOnce({ stdout: "", stderr: "Build already completed", status: 1 });
+    expect(() => svc.linkPrToIssue(7, 42)).toThrow("already completed");
   });
 });
 

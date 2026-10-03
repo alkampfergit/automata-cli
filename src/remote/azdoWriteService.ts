@@ -80,7 +80,7 @@ function linkPrToIssue(prNumber: number, issueNumber: number): void {
     );
   } catch (error) {
     // Linking twice is the same end state.
-    if (!/already/i.test(error instanceof Error ? error.message : "")) throw error;
+    if (!/already\s+(linked|associated)|link\s+already\s+exists/i.test(error instanceof Error ? error.message : "")) throw error;
   }
 }
 
