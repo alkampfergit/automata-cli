@@ -64,7 +64,7 @@ export function pruneWatchList(config: AutomataConfig): void {
   if (dropped.length > 0) updateWatch((current) => current.filter((id) => !dropped.includes(id)));
 }
 
-/** Config shared by `add`: GitHub mode and a discovery setting that can be applied. */
+/** Config shared by `add` and `list`: GitHub mode and a discovery setting that can be applied. */
 function loadGitHubConfig(): AutomataConfig | number {
   const config = readRawConfig();
   if (!isExplicitGitHub(config)) {
@@ -92,11 +92,12 @@ export function runWatchAdd(rawId: string): number {
   try {
     const target = getWatchTarget(id);
     if (target.state === "closed") return fail(`${describe(target)} is closed; nothing to watch.`);
-    applyDiscovery(target, technique, value);
+    // Resolve the linked PRs first: a failure here must leave GitHub untouched.
     const followed =
       target.kind === "issue"
         ? (getOpenPrLinkMap().byIssue.get(id) ?? []).map((pr) => pr.number)
         : [];
+    applyDiscovery(target, technique, value);
     updateWatch((current) => withWatched(current, id, ...followed));
     process.stdout.write(`Watching ${describe(target)}.\n`);
     for (const pr of followed) process.stdout.write(`Also following linked PR #${String(pr)}.\n`);
@@ -117,7 +118,9 @@ export function runWatchRemove(rawId: string): number {
 }
 
 export function runWatchList(): number {
-  const watch = normalizeWatch(readRawConfig().conductor?.watch);
+  const config = loadGitHubConfig();
+  if (typeof config === "number") return config;
+  const watch = normalizeWatch(config.conductor?.watch);
   if (watch.length === 0) {
     process.stdout.write("The watch list is empty.\n");
     return 0;

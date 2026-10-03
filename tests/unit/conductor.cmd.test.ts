@@ -164,6 +164,17 @@ describe("conductor watch list", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
+  it("add resolves linked PRs before applying discovery, so a lookup failure changes nothing", async () => {
+    mockTarget.mockReturnValue(issue(9));
+    mockLinks.mockImplementation(() => {
+      throw new Error("graphql down");
+    });
+    expect(await call("runWatchAdd", "9")).toBe(1);
+    expect(stderr).toMatch(/graphql down/);
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
   it("add requires a discovery technique", async () => {
     mockRawConfig.mockReturnValue(CONFIG);
     expect(await call("runWatchAdd", "9")).toBe(1);
@@ -203,6 +214,13 @@ describe("conductor watch list", () => {
     runWatchList();
     expect(stdout).toMatch(/issue #1 \(open\): T1/);
     expect(stdout).toMatch(/#2: unavailable \(boom\)/);
+  });
+
+  it("list exits 1 for an Azure DevOps remote without querying GitHub", async () => {
+    mockRawConfig.mockReturnValue({ ...CONFIG, remoteType: "azdo", conductor: { watch: [1] } });
+    const { runWatchList } = await import("../../src/commands/conductor.js");
+    expect(runWatchList()).toBe(1);
+    expect(mockTarget).not.toHaveBeenCalled();
   });
 
   it("the tick drops closed items, logs each, and keeps unreadable ones", async () => {
