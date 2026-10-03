@@ -141,12 +141,6 @@ const executeFixCommentsCmd = addAiOptions(
       process.stderr.write(`Error: ${result.message}\n`);
       process.exit(1);
     }
-    if (result.kind === "unsupported") {
-      process.stderr.write(
-        `Error: ${azdoUnsupportedMessage("fix-comments")}\n`,
-      );
-      process.exit(1);
-    }
     process.stderr.write(`Error: No pull request found for branch: ${result.branch}\n`);
     process.exit(1);
   }

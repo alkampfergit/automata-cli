@@ -36,9 +36,8 @@ Everything else short-circuits when `remoteType` is `azdo`. The epic tracked in 
 | PRs → closing issues, bulk | GraphQL `closingIssuesReferences` | none | ❌ |
 
 Commands blocked by a ❌ row (`implement-next`, `do-work`, `execute-prompt check-issue`) stay unavailable in
-Azure DevOps mode until their child issue lands. `execute-prompt fix-comments` and `git get-pr-comments` are a
-different case: the capability exists (`azdo pr comments --json --exclude-resolved`, ✅ above) but is not wired
-into automata yet.
+Azure DevOps mode until their child issue lands. `execute-prompt fix-comments` and `git get-pr-comments` work in
+Azure DevOps mode through `azdo pr comments` (✅ above; see [git.md](git.md#azure-devops-mode-1)).
 
 ## Foundation (issue #90)
 

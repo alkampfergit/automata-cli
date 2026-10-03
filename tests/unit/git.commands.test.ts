@@ -988,16 +988,24 @@ describe("git get-pr-comments command", () => {
     expect(out.exitCode).toBe(1);
   });
 
-  it("exits 1 with unsupported message when remoteType is azdo", async () => {
+  it("lists the unresolved Azure DevOps threads when remoteType is azdo", async () => {
     mockReadConfig.mockReturnValue({ remoteType: "azdo" });
-    mockSpawnSync.mockReturnValueOnce(ok("feature/my-branch\n"));
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n"));
+    vi.doMock("../../src/config/azdoService.js", () => ({
+      getPrComments: () => [
+        { author: "Alice Rossi", body: "Rename this.", path: "/src/a.ts", line: 12, createdAt: "2026-09-30T10:00:00Z" },
+      ],
+    }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
-    await expect(gitCommand.parseAsync(["node", "git", "get-pr-comments"])).rejects.toThrow("process.exit(1)");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
 
-    expect(out.stderr).toContain("not supported for Azure DevOps");
-    expect(out.stderr).toContain("docs/azdo-gap.md");
-    expect(out.exitCode).toBe(1);
+    vi.doUnmock("../../src/config/azdoService.js");
+
+    expect(out.stdout).toContain("[Alice Rossi] on /src/a.ts:12");
+    expect(out.stdout).toContain("Rename this.");
   });
 
   it("strips ANSI escape sequences from comment bodies before output", async () => {

@@ -1273,17 +1273,17 @@ function getPrCommentsGh(branch: string): PrComment[] | null {
     });
 }
 
-export function getPrComments(branch: string): PrComment[] | null | "unsupported" {
+export function getPrComments(branch: string): PrComment[] | null {
   const config = readConfig();
   if (selectBackend(config) === "azdo") {
-    return "unsupported";
+    assertAzdoRemote();
+    return azdoService.getPrComments(branch);
   }
   return getPrCommentsGh(branch);
 }
 
 export type PrCommentsResult =
   | { ok: true; branch: string; comments: PrComment[] }
-  | { ok: false; kind: "unsupported" }
   | { ok: false; kind: "no-pr"; branch: string }
   | { ok: false; kind: "error"; message: string };
 
@@ -1294,13 +1294,12 @@ export function resolveCurrentBranchComments(): PrCommentsResult {
   } catch (err) {
     return { ok: false, kind: "error", message: (err as Error).message };
   }
-  let raw: PrComment[] | null | "unsupported";
+  let raw: PrComment[] | null;
   try {
     raw = getPrComments(branch);
   } catch (err) {
     return { ok: false, kind: "error", message: (err as Error).message };
   }
-  if (raw === "unsupported") return { ok: false, kind: "unsupported" };
   if (raw === null) return { ok: false, kind: "no-pr", branch };
   return { ok: true, branch, comments: raw };
 }

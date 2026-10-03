@@ -175,3 +175,49 @@ describe("azdoService.mapCheckState", () => {
     expect(mapCheckState(state)).toEqual({ status, conclusion });
   });
 });
+
+describe("azdoService.getPrComments", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("returns null when the branch has no active pull request", async () => {
+    mockSpawnSync.mockReturnValue(makeOutput([]));
+    const { getPrComments } = await import("../../src/config/azdoService.js");
+    expect(getPrComments("feature/x")).toBeNull();
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps active and pending file threads, skipping resolved, system and general ones", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(makeOutput([{ id: 42, title: "My PR", status: "active", url: "u" }]))
+      .mockReturnValueOnce({ stdout: fixture("pr-comments.json"), stderr: "", status: 0 });
+    const { getPrComments } = await import("../../src/config/azdoService.js");
+    expect(getPrComments("feature/x")).toEqual([
+      { author: "Alice Rossi", body: "Rename this.", path: "/src/a.ts", line: 12, createdAt: "2026-09-30T10:00:00Z" },
+      { author: "Unknown", body: "Whole file is unclear.", path: "/src/b.ts", line: null, createdAt: "" },
+    ]);
+  });
+
+  it("asks azdo for unresolved, code-related, non-system threads of the listed pull request", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(makeOutput([{ id: 42, title: "My PR", status: "active", url: "u" }]))
+      .mockReturnValueOnce({ stdout: JSON.stringify({ threads: [] }), stderr: "", status: 0 });
+    const { getPrComments } = await import("../../src/config/azdoService.js");
+    expect(getPrComments("feature/x")).toEqual([]);
+    const args = mockSpawnSync.mock.calls[1]?.[1] as string[];
+    expect(args).toEqual(expect.arrayContaining(["pr", "comments", "--pr-number", "42", "--exclude-resolved", "--code-related-only", "--exclude-system", "--json"]));
+  });
+
+  it("throws the azdo error when reading threads fails", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(makeOutput([{ id: 42, title: "My PR", status: "active", url: "u" }]))
+      .mockReturnValueOnce({ stdout: "", stderr: "boom", status: 1 });
+    const { getPrComments } = await import("../../src/config/azdoService.js");
+    expect(() => getPrComments("feature/x")).toThrow("boom");
+  });
+});

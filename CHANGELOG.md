@@ -12,6 +12,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- In Azure DevOps mode, `git get-pr-comments` (and `--json`) and `execute-prompt fix-comments` list the unresolved
+  (`active` or `pending`) file-anchored review threads of the PR, in the same output shape and with the same exit
+  codes as GitHub mode. General threads and system comments are left out; the author is a display name. See
+  [docs/git.md](docs/git.md#azure-devops-mode-1).
 - In Azure DevOps mode, `git get-pr-info` (and `--json`) lists the PR's checks with the same symbols and exit codes
   as GitHub mode, fails when Azure DevOps cannot retrieve the checks, and runs the SonarCloud enrichment for a
   SonarCloud check. The state mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
