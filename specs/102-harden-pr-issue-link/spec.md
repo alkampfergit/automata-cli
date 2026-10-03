@@ -15,6 +15,6 @@ then left, or a reference dropped during a `pr-work` turn, stayed unlinked and t
 - FR-5: Any `gh` failure stays a warning; the turn outcome is unchanged (except the existing "opened a PR counts as answered").
 
 ## Assumptions
-- [AUTO] Discovering unknown branches: chose "new local branches since before the run" because it needs no remote query and cannot reach a pre-existing (release) branch.
+- [AUTO] Discovering unknown branches: chose "new local branches since before the run" because it needs no remote query and does not discover additional pre-existing branches; the end branch is always a candidate, so a pre-existing release branch left checked out can still be reached.
 - [AUTO] Several PRs on one head: chose the one aimed at the base branch, else refuse to guess when ambiguous.
 - [AUTO] `pr-orphan` is out of scope: it has no issue to link to.

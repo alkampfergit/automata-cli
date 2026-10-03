@@ -21,4 +21,4 @@
 
 ## Notes
 
-- `pr-orphan` turns have no issue and are unchanged. A model that opens a PR from a branch that pre-existed the turn is not discovered.
+- `pr-orphan` turns have no issue and are unchanged. A PR from a pre-existing branch is discovered only when the turn ends on that branch; otherwise it is not.

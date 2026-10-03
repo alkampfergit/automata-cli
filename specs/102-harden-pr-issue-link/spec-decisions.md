@@ -9,5 +9,5 @@
 ## Planning Decisions
 
 - **Lookup by head**: `gh pr list --head`. **Rationale**: independent of checkout, shows all bases. **Alternatives considered**: `gh pr view <branch>`, `getCurrentBranchPr`.
-- **Branch discovery**: end branch plus branches new since a pre-run snapshot, minus base. **Rationale**: no network, cannot reach a release PR. **Alternatives considered**: author/assignee search, branch-name pattern.
+- **Branch discovery**: end branch plus branches new since a pre-run snapshot, minus base. **Rationale**: no network; new-branch discovery cannot reach a pre-existing branch, but the end branch is always a candidate, so a pre-existing release branch left checked out can be reached (known limitation). **Alternatives considered**: author/assignee search, branch-name pattern.
 - **One reference check**: shared `hasClosingRef`. **Rationale**: the two checks disagreed. **Alternatives considered**: leave both.

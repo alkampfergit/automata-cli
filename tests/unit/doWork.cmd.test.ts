@@ -1169,10 +1169,20 @@ describe("do-work build turn", () => {
 
   it("restores a closing reference the model removed from the body on a build turn", async () => {
     mockGetOpenPrsByHead.mockReturnValue([
-      { number: 7, url: "u", body: "reworded, no reference", assignees: ["alice"], baseRefName: "develop" },
+      { number: 57, url: "u", body: "reworded, no reference", assignees: ["alice"], baseRefName: "develop" },
     ]);
     await runDoWork();
-    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(7, 42);
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(57, 42);
+  });
+
+  it("links the pull request being worked on, not another on the same head", async () => {
+    mockGetOpenPrsByHead.mockReturnValue([
+      { number: 7, url: "u", body: "", assignees: [], baseRefName: "develop" },
+      { number: 57, url: "u", body: "", assignees: [], baseRefName: "main" },
+    ]);
+    await runDoWork();
+    expect(mockAddClosesRefToPr).toHaveBeenCalledTimes(1);
+    expect(mockAddClosesRefToPr).toHaveBeenCalledWith(57, 42);
   });
 
   it("leaves a build turn's body alone while the reference is still there", async () => {
@@ -1303,6 +1313,14 @@ describe("do-work link repair", () => {
   it("never links a branch that already existed before the turn", async () => {
     mockGetCurrentBranch.mockReturnValue("develop");
     mockListLocalBranches.mockReturnValue(["develop", "release/1.0"]);
+    await runDoWork();
+    expect(mockGetOpenPrsByHead).not.toHaveBeenCalled();
+    expect(mockAddClosesRefToPr).not.toHaveBeenCalled();
+  });
+
+  it("considers only the end branch when the pre-run branch list is unavailable", async () => {
+    mockGetCurrentBranch.mockReturnValue("develop");
+    mockListLocalBranches.mockReturnValueOnce([]).mockReturnValue(["develop", "release/1.0"]);
     await runDoWork();
     expect(mockGetOpenPrsByHead).not.toHaveBeenCalled();
     expect(mockAddClosesRefToPr).not.toHaveBeenCalled();

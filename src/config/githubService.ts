@@ -227,7 +227,7 @@ export interface HeadPr {
 export function getOpenPrsByHead(branch: string): HeadPr[] {
   const { stdout, stderr, status } = run("gh", [
     "pr", "list", "--head", branch, "--state", "open", "--limit", "10",
-    "--json", "number,url,body,assignees,baseRefName",
+    "--json", "number,url,body,assignees,baseRefName,isCrossRepository",
   ]);
   if (status !== 0) {
     throw new Error(stderr.trim() || `Failed to list pull requests for branch ${branch}.`);
@@ -237,9 +237,11 @@ export function getOpenPrsByHead(branch: string): HeadPr[] {
     url: string;
     body?: string;
     baseRefName?: string;
+    isCrossRepository?: boolean;
     assignees?: { login?: string }[];
   }[];
-  return raw.map((pr) => ({
+  // `--head` matches the branch name only; a fork PR of the same name is not ours.
+  return raw.filter((pr) => pr.isCrossRepository !== true).map((pr) => ({
     number: pr.number,
     url: pr.url,
     body: pr.body ?? "",

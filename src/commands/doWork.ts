@@ -1390,9 +1390,15 @@ async function invokeExecutor(
 function linkCandidateBranches(
   item: WorkItem,
   baseBranch: string,
-  branchesBefore: ReadonlySet<string>,
+  branchesBefore: ReadonlySet<string> | null,
 ): string[] {
   if (item.turn !== "issue-discuss") return [item.branch];
+  // No trustworthy snapshot: every branch would look new, so only the branch the
+  // turn ended on is considered.
+  if (branchesBefore === null) {
+    const end = getCurrentBranch();
+    return end === baseBranch ? [] : [end];
+  }
   const candidates = new Set<string>([getCurrentBranch(), ...listLocalBranches().filter((b) => !branchesBefore.has(b))]);
   candidates.delete(baseBranch);
   return [...candidates];
@@ -1414,7 +1420,7 @@ function repairIssueLink(
   item: WorkItem,
   baseBranch: string,
   agentUser: string,
-  branchesBefore: ReadonlySet<string>,
+  branchesBefore: ReadonlySet<string> | null,
 ): boolean {
   const issue = item.issue;
   if (issue === null) return false;
@@ -1427,7 +1433,11 @@ function repairIssueLink(
 
     let pr: HeadPr | null = null;
     for (const branch of branches) {
-      pr = pickHeadPr(getOpenPrsByHead(branch), baseBranch);
+      const onHead = getOpenPrsByHead(branch);
+      // A pr-work turn names its pull request; a shared head may carry others.
+      pr = item.turn === "pr-work" && item.pr
+        ? (onHead.find((p) => p.number === item.pr?.number) ?? null)
+        : pickHeadPr(onHead, baseBranch);
       if (pr) break;
     }
     if (!pr) {
@@ -1638,7 +1648,10 @@ async function processItem(
 
   // Taken before the run so the link repair can tell a branch the model created
   // from one that was already there.
-  const branchesBefore = new Set(listLocalBranches());
+  // A repository always has a branch, so an empty list means Git failed: leave
+  // the snapshot unset rather than treat every branch as new.
+  const localBefore = listLocalBranches();
+  const branchesBefore = localBefore.length > 0 ? new Set(localBefore) : null;
 
   const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
@@ -1771,7 +1784,7 @@ function adjustOutcome(
   item: WorkItem,
   settings: Settings,
   buriedByNote: number,
-  branchesBefore: ReadonlySet<string>,
+  branchesBefore: ReadonlySet<string> | null,
 ): Reconciled {
   let outcome = reconciled;
   if (buriedByNote > 0 && outcome.outcome === "answered") {

@@ -317,6 +317,19 @@ describe("githubService.getOpenPrsByHead", () => {
     expect(prs).toEqual([{ number: 7, url: "u", body: "", baseRefName: "develop", assignees: ["bot"] }]);
   });
 
+  it("drops pull requests from forks", async () => {
+    mockSpawnSync.mockReturnValueOnce({
+      stdout: JSON.stringify([
+        { number: 1, url: "u", body: "", baseRefName: "develop", isCrossRepository: true, assignees: [] },
+        { number: 2, url: "u", body: "", baseRefName: "develop", isCrossRepository: false, assignees: [] },
+      ]),
+      stderr: "",
+      status: 0,
+    });
+    const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
+    expect(getOpenPrsByHead("feature/x").map((p) => p.number)).toEqual([2]);
+  });
+
   it("returns an empty list when there is none", async () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "[]", stderr: "", status: 0 });
     const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
