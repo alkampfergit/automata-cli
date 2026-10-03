@@ -35,10 +35,8 @@ export interface RemoteWriteService {
 const githubWriteService: RemoteWriteService = {
   getCurrentBranchPr: ghGetCurrentBranchPr,
   updatePrDescription(prNumber, body) {
-    const result = spawnSync("gh", ["pr", "edit", String(prNumber), "--body-file", "-"], {
-      encoding: "utf8",
-      input: body,
-    });
+    // Resolving `gh` through PATH is the point of the "on PATH" prerequisite.
+    const result = spawnSync("gh", ["pr", "edit", String(prNumber), "--body-file", "-"], { encoding: "utf8", input: body }); // NOSONAR
     if (result.error || result.status !== 0) {
       throw new Error(
         (result.stderr ?? "").trim() || result.error?.message || `Failed to update PR #${String(prNumber)} body.`,
