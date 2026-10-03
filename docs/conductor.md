@@ -35,6 +35,22 @@ At the start of each tick, after the lock is taken, every closed issue and close
 the list, and each removal is logged on stdout (`Conductor: dropped issue #114 from the watch list (closed).`). An item
 that cannot be looked up (network or `gh` error) stays on the list, with a warning on stderr.
 
+## Reply rule
+
+The decision of whether a watched item needs a conductor reply is a pure function (`decideConductorReply`,
+`src/conductor/replyDecision.ts`); the tick does not act on it yet. An issue and its linked pull request are decided
+separately, and the item needs a reply when either does. A conversation needs a reply when the newest message from
+`agentUser` has no later message from an allowed user (the roles of [`do-work`](do-work.md)'s rule, swapped):
+
+| Outcome | When |
+|---------|------|
+| reply | `agentUser` wrote and no allowed user wrote after it. Review-thread comments count on a pull request, and an issue description written by `agentUser` counts as its message. |
+| skip, `answered` | An allowed user wrote after the newest `agentUser` message. |
+| skip, `no-agent-message` | `agentUser` never wrote there. |
+| skip, `closed` | The issue is closed or the pull request closed or merged — the rule the tick-start prune uses. |
+
+Other accounts are ignored. Timestamps compare strictly, so an answer in the same second as the message does not count.
+
 ## Configuration
 
 It reads the same `.automata/config.json` as `do-work`, but needs only `allowedUsers` and `agentUser` (see
