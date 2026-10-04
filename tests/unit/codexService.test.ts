@@ -222,4 +222,12 @@ describe("buildCodexArgs readOnly", () => {
     const { buildCodexArgs } = await import("../../src/codex/codexService.js");
     expect(buildCodexArgs("p", { readOnly: true, yolo: true })).toEqual(["exec", "--sandbox", "read-only", "p"]);
   });
+
+  it("keeps readOnly through invokeCodexCode even with yolo", async () => {
+    const { invokeCodexCode } = await import("../../src/codex/codexService.js");
+    invokeCodexCode("p", { readOnly: true, yolo: true });
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toContain("read-only");
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
 });

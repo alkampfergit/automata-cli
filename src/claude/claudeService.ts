@@ -4,33 +4,49 @@ import { truncate, handleSpawnError, handleExitCode, resolveCommand } from "../c
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
 import type { RunSink } from "../run/runTranscript.js";
 
+/** The one issue or pull request a read-only run may comment on. */
+export interface ReadOnlyReplyTarget {
+  kind: "issue" | "pr";
+  number: number;
+}
+
 /**
  * What a read-only Claude run may use: reading, searching and the `gh`/`git`
- * calls that look at a thread or post a comment. Everything else is denied —
- * `dontAsk` turns an unlisted tool into a refusal instead of a prompt nobody
- * can answer. The body of a reply goes in through `--body-file -` (stdin)
- * because writing a file is not allowed.
+ * calls that look at a thread. Everything else is denied — `dontAsk` turns an
+ * unlisted tool into a refusal instead of a prompt nobody can answer.
+ *
+ * Posting is allowed for the reply target only. The thread is untrusted input,
+ * so a prompt is not an authorization boundary: the permission names the exact
+ * number. The body goes in through `--body-file -` (stdin) because writing a
+ * file is not allowed.
+ *
+ * `git log`, `git diff` and `git show` are left out on purpose: each accepts
+ * `--output=<path>` and so can write a file. `gh pr diff` covers the diff.
  */
-export const CLAUDE_READ_ONLY_TOOLS = [
-  "Read",
-  "Grep",
-  "Glob",
-  "Bash(gh issue view:*)",
-  "Bash(gh issue comment:*)",
-  "Bash(gh pr view:*)",
-  "Bash(gh pr diff:*)",
-  "Bash(gh pr checks:*)",
-  "Bash(gh pr comment:*)",
-  "Bash(git log:*)",
-  "Bash(git diff:*)",
-  "Bash(git show:*)",
-  "Bash(git status:*)",
-];
+export function claudeReadOnlyTools(replyTo?: ReadOnlyReplyTarget): string[] {
+  const tools = [
+    "Read",
+    "Grep",
+    "Glob",
+    "Bash(gh issue view:*)",
+    "Bash(gh pr view:*)",
+    "Bash(gh pr diff:*)",
+    "Bash(gh pr checks:*)",
+    "Bash(git status:*)",
+  ];
+  if (replyTo) {
+    const command = replyTo.kind === "pr" ? "pr" : "issue";
+    tools.push(`Bash(gh ${command} comment ${String(replyTo.number)} --body-file -:*)`);
+  }
+  return tools;
+}
 
 export interface InvokeClaudeOptions {
   yolo?: boolean;
   /** Deny every tool that changes a file. Wins over `yolo`. */
   readOnly?: boolean;
+  /** With `readOnly`: the only issue or pull request the run may comment on. */
+  replyTo?: ReadOnlyReplyTarget;
   verbose?: boolean;
   model?: string;
   /**
@@ -71,7 +87,7 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
       "--permission-mode",
       "dontAsk",
       "--allowed-tools",
-      CLAUDE_READ_ONLY_TOOLS.join(","),
+      claudeReadOnlyTools(options.replyTo).join(","),
       "--disallowed-tools",
       "Edit,Write,NotebookEdit",
     );
@@ -102,13 +118,14 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
     const args = buildClaudeArgs(prompt, {
       yolo: true,
       readOnly: options.readOnly,
+      replyTo: options.replyTo,
       model: options.model,
       effort: options.effort,
       verbose: true,
@@ -167,33 +184,23 @@ export function runClaude(
 
 export function invokeClaudeCode(prompt: string, options: InvokeClaudeOptions = {}): void | Promise<void> {
   if (options.verbose) {
-    return invokeClaudeCodeVerbose(prompt, options.yolo ?? false, options.model, options.effort);
+    return invokeClaudeCodeVerbose(prompt, options);
   }
-  invokeClaudeCodeSync(prompt, options.yolo ?? false, options.model, options.effort);
+  invokeClaudeCodeSync(prompt, options);
 }
 
-function invokeClaudeCodeSync(
-  prompt: string,
-  yolo: boolean,
-  model: string | undefined,
-  effort: string | undefined,
-): void {
+function invokeClaudeCodeSync(prompt: string, options: InvokeClaudeOptions): void {
   const claudeBin = resolveCommand("claude");
-  const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: false });
+  const args = buildClaudeArgs(prompt, { ...options, verbose: false });
   const result = spawnSync(claudeBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "claude");
   handleExitCode(result.status, "Claude Code");
 }
 
-function invokeClaudeCodeVerbose(
-  prompt: string,
-  yolo: boolean,
-  model: string | undefined,
-  effort: string | undefined,
-): Promise<void> {
+function invokeClaudeCodeVerbose(prompt: string, options: InvokeClaudeOptions): Promise<void> {
   return new Promise<void>((resolve) => {
     const claudeBin = resolveCommand("claude");
-    const args = buildClaudeArgs(prompt, { yolo, model, effort, verbose: true });
+    const args = buildClaudeArgs(prompt, { ...options, verbose: true });
 
     const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "inherit"] });
     const rl = createInterface({ input: child.stdout });

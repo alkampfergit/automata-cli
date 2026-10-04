@@ -34,7 +34,7 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `conductor.prompts.issue` and `conductor.prompts.pr` configure the instructions for the conductor on a watched issue
   and a watched pull request (inline text or a `.md` file in `.automata/`, built-in defaults), set with
   `automata config set conductor-prompt <issue|pr> <value>` or the wizard's `Prompts` menu. The thread assembly that
-  uses them (issue, pull requests, review threads, CI status) is not wired into the tick yet. See `docs/conductor.md`
+  uses them (issue, pull requests, review threads, CI status) feeds each conductor tick. See `docs/conductor.md`
 - `automata conductor` now answers each watched item whose newest message is the agent's: it runs Claude or Codex
   read-only and the model posts the reply as a comment with `gh ... --body-file -`. A run that posted nothing is
   detected and makes the tick exit 1. New keys `conductor.executor`, `conductor.models` and `conductor.effort`, set with
