@@ -127,8 +127,8 @@ function readTargetMessages(target: ReplyTarget) {
 }
 
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
-function runModel(prompt: string, execution: ConductorExecution): Promise<void> {
-  const options = { model: execution.model, effort: execution.effort, readOnly: true };
+function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget): Promise<void> {
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, replyTo };
   return execution.executor === "codex" ? runCodex(prompt, options) : runClaude(prompt, options);
 }
 
@@ -169,7 +169,7 @@ async function conductItem(
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
-    run: () => runModel(prompt, execution),
+    run: () => runModel(prompt, execution, replyTo),
   });
   switch (outcome.kind) {
     case "posted":

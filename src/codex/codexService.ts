@@ -47,17 +47,12 @@ export function invokeCodexCode(prompt: string, options: InvokeCodexOptions = {}
   if (options.verbose) {
     process.stderr.write("Warning: --verbose is not supported for Codex and will be ignored.\n");
   }
-  invokeCodexCodeSync(prompt, options.yolo ?? false, options.model, options.effort);
+  invokeCodexCodeSync(prompt, options);
 }
 
-function invokeCodexCodeSync(
-  prompt: string,
-  yolo: boolean,
-  model: string | undefined,
-  effort: string | undefined,
-): void {
+function invokeCodexCodeSync(prompt: string, options: InvokeCodexOptions): void {
   const codexBin = resolveCommand("codex");
-  const args = buildCodexArgs(prompt, { yolo, model, effort });
+  const args = buildCodexArgs(prompt, options);
   const result = spawnSync(codexBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "codex");
   handleExitCode(result.status, "Codex");
