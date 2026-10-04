@@ -525,6 +525,35 @@ describe("getReviewThreads pagination", () => {
   });
 });
 
+describe("getPrChecks", () => {
+  it("maps check runs and commit statuses to one shape", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json({
+        statusCheckRollup: [
+          { name: "build", status: "COMPLETED", conclusion: "FAILURE" },
+          { name: "lint", status: "IN_PROGRESS", conclusion: "" },
+          { context: "sonar", state: "SUCCESS" },
+          { context: "deploy", state: "PENDING" },
+        ],
+      }),
+    );
+    const { getPrChecks } = await import("../../src/github/ghWorkService.js");
+    expect(getPrChecks(57)).toEqual([
+      { name: "build", status: "COMPLETED", conclusion: "FAILURE" },
+      { name: "lint", status: "IN_PROGRESS", conclusion: "" },
+      { name: "sonar", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "deploy", status: "PENDING", conclusion: null },
+    ]);
+    expect(calls()[0].args).toEqual(["pr", "view", "57", "--json", "statusCheckRollup"]);
+  });
+
+  it("returns an empty list when the pull request has no checks", async () => {
+    mockSpawnSync.mockReturnValueOnce(json({ statusCheckRollup: null }));
+    const { getPrChecks } = await import("../../src/github/ghWorkService.js");
+    expect(getPrChecks(57)).toEqual([]);
+  });
+});
+
 describe("getPrSurface", () => {
   const prView = {
     number: 57,

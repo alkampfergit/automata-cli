@@ -376,6 +376,22 @@ describe("automata config set do-work-*", () => {
     expect(readConfigFile().doWork).toEqual({ prompts: { prOrphan: "orphan.md" } });
   });
 
+  it("sets the conductor issue and pr prompts without touching the watch list", () => {
+    run(["config", "set", "conductor-prompt", "issue", "c-issue.md"]);
+    const output = run(["config", "set", "conductor-prompt", "pr", "Read the PR"]);
+    expect(output.trim()).toBe("conductor pr prompt set.");
+    expect(readConfigFile().conductor).toEqual({ prompts: { issue: "c-issue.md", pr: "Read the PR" } });
+  });
+
+  it("rejects an unknown conductor prompt kind and an empty conductor prompt", () => {
+    expect(runExpectingFailure(["config", "set", "conductor-prompt", "epic", "x.md"])).toMatch(
+      /invalid kind "epic"/,
+    );
+    expect(runExpectingFailure(["config", "set", "conductor-prompt", "pr", "  "])).toMatch(
+      /requires a non-empty value/,
+    );
+  });
+
   it("rejects an unknown turn kind", () => {
     const errorOutput = runExpectingFailure(["config", "set", "do-work-prompt", "implement", "x.md"]);
     expect(errorOutput).toMatch(/invalid turn kind "implement"/);

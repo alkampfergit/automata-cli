@@ -12,7 +12,7 @@ Launch the interactive configuration wizard. Use arrow keys to move between menu
 |---|---|
 | Remote / Mode | `remoteType` |
 | Implement-Next | `issueDiscoveryTechnique`, `issueDiscoveryValue`, `claudeSystemPrompt` |
-| Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue` |
+| Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue`, `doWork.prompts.*`, `conductor.prompts.*` |
 | Issue Watch | `allowedUsers`, `agentUser` |
 
 ```bash
@@ -275,8 +275,32 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 ## `conductor`
 
 ```json
-{ "conductor": { "watch": [114, 120] } }
+{
+  "conductor": {
+    "watch": [114, 120],
+    "prompts": {
+      "issue": "conductor-issue.md",
+      "pr": "conductor-pr.md"
+    }
+  }
+}
 ```
 
-`watch` is the list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it
-with `conductor add|remove|list` rather than by hand; entries that are not positive integers are ignored.
+| Key | Default | Meaning |
+|---|---|---|
+| `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
+| `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
+| `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
+
+`conductor.prompts.*` follow the same rules as `doWork.prompts.*` (see [The turn prompts](#the-turn-prompts)): inline
+text, or a plain `.md` filename resolved inside `.automata/`. An unresolvable file reference is an error, not a fall
+back to the default.
+
+```bash
+automata config set conductor-prompt issue conductor-issue.md
+automata config set conductor-prompt pr "Read the checks first."
+```
+
+`conductor-prompt` takes the kind (`issue` or `pr`) followed by prompt text or a `.md` filename. The wizard has the
+same two screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`); they save to `.automata/conductor-issue.md`
+and `.automata/conductor-pr.md`.

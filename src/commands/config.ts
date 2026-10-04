@@ -294,6 +294,30 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);
   });
 
+const CONDUCTOR_PROMPT_KINDS = ["issue", "pr"] as const;
+
+const configSetConductorPrompt = new Command("conductor-prompt")
+  .description("Set the instructions for the conductor on a watched issue or pull request (prompt text or a .md filename)")
+  .argument("<kind>", `Kind of watched item: ${CONDUCTOR_PROMPT_KINDS.join(", ")}`)
+  .argument("<value>", "Prompt text, or a plain .md filename inside .automata/")
+  .action((kind: string, value: string) => {
+    if (!(CONDUCTOR_PROMPT_KINDS as readonly string[]).includes(kind)) {
+      process.stderr.write(
+        `Error: invalid kind "${kind}". Must be one of: ${CONDUCTOR_PROMPT_KINDS.join(", ")}\n`,
+      );
+      process.exit(1);
+    }
+    const prompt = value.trim();
+    if (prompt.length === 0) {
+      process.stderr.write("Error: conductor-prompt requires a non-empty value.\n");
+      process.exit(1);
+    }
+    const current = readRawConfig();
+    const prompts = { ...current.conductor?.prompts, [kind]: prompt };
+    writeConfig({ ...current, conductor: { ...current.conductor, prompts } });
+    process.stdout.write(`conductor ${kind} prompt set.\n`);
+  });
+
 const configSetGitTrunkBranch = new Command("git-trunk-branch")
   .description("Pin the branch `publish-release` releases to, instead of detecting it")
   .argument("<value>", "Branch name (unset = detect it from the remote)")
@@ -340,6 +364,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkDumpOnBlock)
   .addCommand(configSetDoWorkPostRunLog)
   .addCommand(configSetDoWorkPrompt)
+  .addCommand(configSetConductorPrompt)
   .addCommand(configSetGitTrunkBranch)
   .addCommand(configSetGitReleaseFlow);
 

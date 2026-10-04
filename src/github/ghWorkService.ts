@@ -54,6 +54,15 @@ export interface PrSurface {
   threads: ReviewThread[];
 }
 
+/** One CI check of a pull request, as `gh` reports it. */
+export interface CiCheck {
+  name: string;
+  /** `COMPLETED`, `IN_PROGRESS`, `QUEUED` or `PENDING`. */
+  status: string;
+  /** Null until the check completes. */
+  conclusion: string | null;
+}
+
 /** Identifies a posted marker comment so it can be updated or deleted later. */
 export interface MarkerRef {
   commentId: string;
@@ -642,6 +651,30 @@ export function getPrSurface(prNumber: number): PrSurface {
     messages,
     threads,
   };
+}
+
+/**
+ * The CI checks of a pull request: check runs and commit statuses alike.
+ *
+ * A commit status has a `state` instead of `status`/`conclusion`, and no
+ * `status` at all, so `PENDING` is the only state that maps to "not finished".
+ */
+export function getPrChecks(prNumber: number): CiCheck[] {
+  const raw = ghJson<{
+    statusCheckRollup?:
+      | { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string }[]
+      | null;
+  }>(
+    ["pr", "view", String(prNumber), "--json", "statusCheckRollup"],
+    `read the checks of pull request #${String(prNumber)}`,
+  );
+  return (raw.statusCheckRollup ?? []).map((check) => {
+    const name = check.name ?? check.context ?? "unnamed check";
+    if (check.status !== undefined) return { name, status: check.status, conclusion: check.conclusion ?? null };
+    const state = check.state ?? "";
+    const pending = state === "PENDING" || state === "EXPECTED";
+    return { name, status: pending ? "PENDING" : "COMPLETED", conclusion: pending || state === "" ? null : state };
+  });
 }
 
 /**

@@ -14,6 +14,8 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT: "default do-work discuss prompt",
   DEFAULT_DO_WORK_PR_WORK_PROMPT: "default do-work pr prompt",
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
+  DEFAULT_CONDUCTOR_ISSUE_PROMPT: "default conductor issue prompt",
+  DEFAULT_CONDUCTOR_PR_PROMPT: "default conductor pr prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -802,6 +804,23 @@ describe("ConfigWizard — Do Work prompts", () => {
     );
     expect(writeConfig).toHaveBeenCalledWith({
       doWork: { prompts: { prOrphan: "do-work-pr-orphan.md" } },
+    });
+  });
+
+  it("writes the conductor issue and pull request prompt files and stores the filenames", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    const { stdin } = render(<ConfigWizard />);
+    await navigateToPromptsEntry(stdin, 6);
+    stdin.write(ENTER);
+    await tick();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("conductor-issue.md"),
+      "default conductor issue prompt",
+      "utf8",
+    );
+    expect(writeConfig).toHaveBeenCalledWith({
+      conductor: { prompts: { issue: "conductor-issue.md" } },
     });
   });
 
