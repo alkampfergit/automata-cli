@@ -4,17 +4,45 @@ import {
   readConfig,
   readRawConfig,
   writeConfig,
+  DEFAULT_CONDUCTOR_ISSUE_PROMPT,
+  DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
 } from "../config/configStore.js";
 import {
   applyDiscovery,
   getAuthenticatedLogin,
+  getIssueSurface,
   getOpenPrLinkMap,
+  getPrChecks,
+  getPrSurface,
+  getRepoSlug,
   getWatchTarget,
   type WatchTarget,
 } from "../github/ghWorkService.js";
-import { isWatchClosed } from "../conductor/replyDecision.js";
+import type { Participants } from "../github/conversation.js";
+import {
+  decideConductorReply,
+  isWatchClosed,
+  issueConversation,
+  prConversation,
+  type Conversation,
+} from "../conductor/replyDecision.js";
+import {
+  composeConductorPrompt,
+  type ConductorThread,
+  type ReplyTarget,
+  type ThreadPr,
+} from "../conductor/thread.js";
+import {
+  conductorExecutionProblem,
+  describeConductorExecution,
+  resolveConductorExecution,
+  type ConductorExecution,
+} from "../conductor/execution.js";
+import { conductReply } from "../conductor/reply.js";
+import { runClaude } from "../claude/claudeService.js";
+import { runCodex } from "../codex/codexService.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH } from "../run/runLock.js";
@@ -46,7 +74,7 @@ function describe(target: WatchTarget): string {
  * logging each removal. An id that cannot be looked up stays: a network error
  * must not empty the list.
  */
-export function pruneWatchList(config: AutomataConfig): void {
+export function pruneWatchList(config: AutomataConfig): number[] {
   const watch = normalizeWatch(config.conductor?.watch);
   const dropped: number[] = [];
   for (const id of watch) {
@@ -63,6 +91,103 @@ export function pruneWatchList(config: AutomataConfig): void {
     }
   }
   if (dropped.length > 0) updateWatch((current) => current.filter((id) => !dropped.includes(id)));
+  return watch.filter((id) => !dropped.includes(id));
+}
+
+/** One watched item read into a thread, with the conversations the reply rule decides. */
+interface WatchedItem {
+  thread: ConductorThread;
+  conversations: Conversation[];
+}
+
+function readPr(number: number): ThreadPr {
+  return { surface: getPrSurface(number), checks: getPrChecks(number) };
+}
+
+/** A watched issue brings its open linked pull requests; a watched pull request stands alone. */
+function readWatchedItem(id: number): WatchedItem {
+  const target = getWatchTarget(id);
+  if (target.kind === "pr") {
+    const pr = readPr(id);
+    return { thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)] };
+  }
+  const issue = getIssueSurface(id);
+  const prs = (getOpenPrLinkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
+  return {
+    thread: { kind: "issue", issue, prs },
+    conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface))],
+  };
+}
+
+/** The current messages of the conversation a reply goes on. */
+function readTargetMessages(target: ReplyTarget) {
+  return target.kind === "issue"
+    ? issueConversation(getIssueSurface(target.number)).messages
+    : prConversation(getPrSurface(target.number)).messages;
+}
+
+/** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
+function runModel(prompt: string, execution: ConductorExecution): Promise<void> {
+  const options = { model: execution.model, effort: execution.effort, readOnly: true };
+  return execution.executor === "codex" ? runCodex(prompt, options) : runClaude(prompt, options);
+}
+
+type ItemResult = "replied" | "idle" | "failed";
+
+async function conductItem(
+  id: number,
+  config: AutomataConfig,
+  login: string,
+  participants: Participants,
+  execution: ConductorExecution,
+): Promise<ItemResult> {
+  const label = `#${String(id)}`;
+  let item: WatchedItem;
+  try {
+    item = readWatchedItem(id);
+  } catch (err) {
+    // As in the prune: a network error is not the run's failure, and the next tick reads it again.
+    process.stderr.write(`Warning: could not read ${label}, skipping it this tick: ${(err as Error).message}\n`);
+    return "idle";
+  }
+  const { thread, conversations } = item;
+  const verdict = decideConductorReply(conversations, participants);
+  const owed = verdict.decisions.find((decision) => decision.kind === "reply");
+  if (owed === undefined) {
+    process.stdout.write(`Conductor: ${label} needs no reply.\n`);
+    return "idle";
+  }
+  const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
+  const frame =
+    thread.kind === "issue"
+      ? (config.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT)
+      : (config.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT);
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo });
+  const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
+
+  process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  const outcome = await conductReply({
+    login,
+    read: () => readTargetMessages(replyTo),
+    run: () => runModel(prompt, execution),
+  });
+  switch (outcome.kind) {
+    case "posted":
+      process.stdout.write(`Conductor: posted a reply on ${where}.\n`);
+      if (outcome.runError !== null) {
+        process.stderr.write(`Warning: the run reported "${outcome.runError}" but the reply is posted.\n`);
+      }
+      return "replied";
+    case "posted-nothing":
+      process.stderr.write(`Error: the run for ${label} finished but posted no comment on ${where}.\n`);
+      return "failed";
+    case "run-failed":
+      process.stderr.write(`Error: the run for ${label} failed and posted no comment on ${where}: ${outcome.error}\n`);
+      return "failed";
+    case "unverified":
+      process.stderr.write(`Error: could not tell whether ${label} got a reply: ${outcome.error}\n`);
+      return "failed";
+  }
 }
 
 /** Config shared by `add` and `list`: GitHub mode and a discovery setting that can be applied. */
@@ -144,10 +269,11 @@ function exitWith(code: number): void {
  * One conductor tick. Returns the exit code rather than exiting, so the lock is
  * always released on the way out.
  *
- * Only the pre-flight exists so far: configuration, the identity check and the
- * lock. The conductor's actual work is added by the later issues of the epic.
+ * Pre-flight (configuration, identity, lock), prune the watch list, then answer
+ * each watched item whose newest message is the agent's: the model runs read-only
+ * and posts the reply itself. The tick exits 1 when a run failed or posted nothing.
  */
-export function runConductor(): number {
+export async function runConductor(): Promise<number> {
   let config;
   try {
     config = readConfig();
@@ -189,6 +315,9 @@ export function runConductor(): number {
       return fail(`doWork.lockStaleMinutes must be a positive integer, got ${JSON.stringify(rawStale)}.`);
     }
   }
+  const executionProblem = conductorExecutionProblem(config.conductor);
+  if (executionProblem !== null) return fail(executionProblem);
+  const execution = resolveConductorExecution(config.conductor);
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
   if (!lock.ok) {
@@ -209,8 +338,18 @@ export function runConductor(): number {
 
   try {
     process.stdout.write(`Conductor: running as ${login ?? ""}.\n`);
-    pruneWatchList(config);
-    return 0;
+    const watch = pruneWatchList(config);
+    const participants: Participants = { allowedUsers, agentUser };
+    let failed = 0;
+    for (const id of watch) {
+      try {
+        if ((await conductItem(id, config, login ?? "", participants, execution)) === "failed") failed++;
+      } catch (err) {
+        process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+        failed++;
+      }
+    }
+    return failed > 0 ? 1 : 0;
   } finally {
     lock.handle.release();
   }
@@ -220,8 +359,8 @@ export const conductorCommand = new Command("conductor")
   .description(
     "Run one conductor tick as an allowed (human) account: verify the identity, take the conductor's own run lock, then act",
   )
-  .action(() => {
-    exitWith(runConductor());
+  .action(async () => {
+    exitWith(await runConductor());
   });
 
 conductorCommand

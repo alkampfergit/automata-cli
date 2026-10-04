@@ -9,6 +9,11 @@ const mockWrite = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockLinks = vi.fn();
+const mockIssueSurface = vi.fn();
+const mockPrSurface = vi.fn();
+const mockChecks = vi.fn();
+const mockRunClaude = vi.fn();
+const mockRunCodex = vi.fn();
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
@@ -24,11 +29,28 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   getOpenPrLinkMap: () => mockLinks(),
+  getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
+  getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
+  getPrChecks: (...a: unknown[]) => mockChecks(...a),
+  getRepoSlug: () => ({ owner: "acme", repo: "widget" }),
+}));
+vi.mock("../../src/claude/claudeService.js", () => ({
+  runClaude: (...a: unknown[]) => mockRunClaude(...a),
+}));
+vi.mock("../../src/codex/codexService.js", () => ({
+  runCodex: (...a: unknown[]) => mockRunCodex(...a),
 }));
 vi.mock("../../src/run/runLock.js", () => ({
   CONDUCTOR_LOCK_RELATIVE_PATH: ".automata/conductor.lock",
   acquireConductorLock: (...a: unknown[]) => mockAcquire(...a),
 }));
+
+function text(author: string, createdAt: string, body: string) {
+  return { kind: "issue-comment", author, body, createdAt };
+}
+function issueSurface(n: number, messages: unknown[]) {
+  return { issue: { number: n, title: `T${String(n)}`, body: "", url: `https://gh/issues/${String(n)}` }, state: "OPEN", assignees: [], labels: [], messages };
+}
 
 const CONFIG = { remoteType: "gh", allowedUsers: ["alice"], agentUser: "bot" };
 
@@ -45,6 +67,8 @@ beforeEach(() => {
   mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "automata" });
   mockLinks.mockReturnValue({ byIssue: new Map() });
   mockAcquire.mockReturnValue({ ok: true, handle: { release: mockRelease } });
+  mockIssueSurface.mockImplementation((n: number) => issueSurface(n, [text("alice", "t1", "hi")]));
+  mockChecks.mockReturnValue([]);
 });
 
 afterEach(() => {
@@ -238,5 +262,77 @@ describe("conductor watch list", () => {
     expect(stdout).toMatch(/dropped PR #2/);
     expect(stderr).toMatch(/keeping it watched/);
     expect(written().conductor.watch).toEqual([3, 4]);
+  });
+});
+
+describe("conductor tick replies", () => {
+  const watching = (extra: object = {}) => {
+    const config = { ...CONFIG, conductor: { watch: [7], ...extra } };
+    mockReadConfig.mockReturnValue(config);
+    mockRawConfig.mockReturnValue(config);
+    mockTarget.mockReturnValue(issue(7));
+  };
+  /** The agent spoke last; after the run the conductor's account has commented. */
+  function agentSpokeLast(postsReply: boolean) {
+    let reads = 0;
+    mockIssueSurface.mockImplementation(() => {
+      const base = [text("alice", "2026-10-01T09:00:00Z", "go"), text("bot", "2026-10-01T10:00:00Z", "question?")];
+      // reads 1 (decision) and 2 (before) see no reply; the third (after) may.
+      const reply = postsReply && reads >= 2 ? [text("alice", "2026-10-01T11:00:00Z", "answer")] : [];
+      reads++;
+      return issueSurface(7, [...base, ...reply]);
+    });
+  }
+
+  it("runs claude read-only on a watched issue the agent spoke last on, and reports the post", async () => {
+    watching({ models: { claude: "opus" }, effort: { claude: "high" } });
+    agentSpokeLast(true);
+    mockRunClaude.mockResolvedValue(undefined);
+    expect(await run()).toBe(0);
+    const [prompt, options] = mockRunClaude.mock.calls[0] as [string, Record<string, unknown>];
+    expect(options).toMatchObject({ readOnly: true, model: "opus", effort: "high" });
+    expect(prompt).toContain("gh issue comment 7 --body-file -");
+    expect(stdout).toMatch(/posted a reply on issue #7/);
+    expect(mockRunCodex).not.toHaveBeenCalled();
+  });
+
+  it("uses codex when conductor.executor says so", async () => {
+    watching({ executor: "codex", models: { codex: "gpt-x" } });
+    agentSpokeLast(true);
+    mockRunCodex.mockResolvedValue(undefined);
+    expect(await run()).toBe(0);
+    expect(mockRunCodex.mock.calls[0][1]).toMatchObject({ readOnly: true, model: "gpt-x" });
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("exits 1 and says so when the run posted nothing", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockResolvedValue(undefined);
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/posted no comment on issue #7/);
+    expect(mockRelease).toHaveBeenCalledOnce();
+  });
+
+  it("exits 1 when the run fails without posting", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockRejectedValue(new Error("exit 2"));
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/failed and posted no comment.*exit 2/);
+  });
+
+  it("does not run the model when an allowed user answered last", async () => {
+    watching();
+    expect(await run()).toBe(0);
+    expect(stdout).toMatch(/#7 needs no reply/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("exits 1 before taking the lock when the executor setting is unusable", async () => {
+    watching({ executor: "gpt" });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/conductor\.executor/);
+    expect(mockAcquire).not.toHaveBeenCalled();
   });
 });

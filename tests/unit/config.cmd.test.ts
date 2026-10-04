@@ -392,6 +392,25 @@ describe("automata config set do-work-*", () => {
     );
   });
 
+  it("sets the conductor executor, model and effort per executor", () => {
+    run(["config", "set", "conductor-executor", "codex"]);
+    run(["config", "set", "conductor-model", "codex", "gpt-x"]);
+    run(["config", "set", "conductor-model", "claude", "opus"]);
+    run(["config", "set", "conductor-effort", "claude", " high "]);
+    expect(readConfigFile().conductor).toEqual({
+      executor: "codex",
+      models: { codex: "gpt-x", claude: "opus" },
+      effort: { claude: "high" },
+    });
+  });
+
+  it("rejects an unknown conductor executor and empty conductor model or effort", () => {
+    expect(runExpectingFailure(["config", "set", "conductor-executor", "gpt"])).toMatch(/invalid executor "gpt"/);
+    expect(runExpectingFailure(["config", "set", "conductor-model", "claude", " "])).toMatch(/non-empty/);
+    expect(runExpectingFailure(["config", "set", "conductor-effort", "claude", " "])).toMatch(/non-empty/);
+    expect(runExpectingFailure(["config", "set", "conductor-model", "gpt", "x"])).toMatch(/invalid executor/);
+  });
+
   it("rejects an unknown turn kind", () => {
     const errorOutput = runExpectingFailure(["config", "set", "do-work-prompt", "implement", "x.md"]);
     expect(errorOutput).toMatch(/invalid turn kind "implement"/);

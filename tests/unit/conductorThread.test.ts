@@ -56,6 +56,27 @@ function compose(thread: ConductorThread): string {
   return composeConductorPrompt({ thread, repo, participants, frame: "FRAME  \n" });
 }
 
+describe("composeConductorPrompt — posting instruction", () => {
+  it("tells the model how to post on the issue, after the thread, whatever the frame says", () => {
+    const text = compose({ kind: "issue", issue, prs: [] });
+    expect(text).toContain("gh issue comment 7 --body-file -");
+    expect(text).toMatch(/What you print is discarded/);
+    expect(text.indexOf("gh issue comment")).toBeGreaterThan(text.indexOf("Only the messages above exist"));
+  });
+
+  it("names the pull request when the reply belongs there", () => {
+    const text = composeConductorPrompt({
+      thread: { kind: "issue", issue, prs: [{ surface: pr, checks }] },
+      repo,
+      participants,
+      frame: "F",
+      replyTo: { kind: "pr", number: 9 },
+    });
+    expect(text).toContain("gh pr comment 9 --body-file -");
+    expect(text).not.toContain("gh issue comment");
+  });
+});
+
 describe("composeConductorPrompt — issue thread", () => {
   const text = compose({ kind: "issue", issue, prs: [{ surface: pr, checks }] });
 

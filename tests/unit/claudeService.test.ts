@@ -234,3 +234,18 @@ describe("claudeService.invokeClaudeCode (verbose mode)", () => {
     expect(args).toEqual(["--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "-p", "hello"]);
   });
 });
+
+describe("buildClaudeArgs readOnly", () => {
+  it("allows only reading and gh/git lookups and comments, and never skips permissions", async () => {
+    const { buildClaudeArgs, CLAUDE_READ_ONLY_TOOLS } = await import("../../src/claude/claudeService.js");
+    const args = buildClaudeArgs("p", { readOnly: true, yolo: true, model: "m" });
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args.slice(0, 2)).toEqual(["--permission-mode", "dontAsk"]);
+    expect(args[args.indexOf("--allowed-tools") + 1]).toBe(CLAUDE_READ_ONLY_TOOLS.join(","));
+    expect(args[args.indexOf("--disallowed-tools") + 1]).toBe("Edit,Write,NotebookEdit");
+    expect(CLAUDE_READ_ONLY_TOOLS).toContain("Bash(gh issue comment:*)");
+    expect(CLAUDE_READ_ONLY_TOOLS).toContain("Bash(gh pr comment:*)");
+    expect(CLAUDE_READ_ONLY_TOOLS.some((tool) => /merge|push|api|Write|Edit/.test(tool))).toBe(false);
+    expect(args.slice(-2)).toEqual(["-p", "p"]);
+  });
+});
