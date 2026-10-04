@@ -52,6 +52,8 @@ export interface PrSurface {
   /** Conversation comments and non-empty review bodies. */
   messages: RawMessage[];
   threads: ReviewThread[];
+  /** The pull request description and its author; not part of `messages`, so it never counts as a turn. */
+  description?: { author: string; body: string };
 }
 
 /** One CI check of a pull request, as `gh` reports it. */
@@ -650,6 +652,7 @@ export function getPrSurface(prNumber: number): PrSurface {
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
     threads,
+    description: { author: login(raw.author), body: raw.body },
   };
 }
 

@@ -64,6 +64,14 @@ export function renderChecks(checks: CiCheck[]): string {
     .join("\n");
 }
 
+/** The pull request description, only when an allowed account wrote it and it says something. */
+function descriptionLines(description: ThreadPr["surface"]["description"], participants: Participants): string[] {
+  if (description === undefined || description.body.trim().length === 0) return [""];
+  const [kept] = visible([{ kind: "issue-body", author: description.author, body: description.body, createdAt: "" }], participants);
+  if (kept === undefined) return [""];
+  return ["", `Pull request description (by ${kept.author}):`, "", kept.body, ""];
+}
+
 function prSection(pr: ThreadPr, participants: Participants): string[] {
   const { surface, checks } = pr;
   const number = String(surface.pr.number);
@@ -72,7 +80,7 @@ function prSection(pr: ThreadPr, participants: Participants): string[] {
     `Pull request #${number}: ${surface.pr.title}`,
     `Pull request URL: ${surface.pr.url}`,
     `State: ${surface.pr.state}${surface.pr.isDraft ? " (draft)" : ""} · Branch: ${surface.pr.headRefName} into ${surface.pr.baseRefName}`,
-    "",
+    ...descriptionLines(surface.description, participants),
     `Conversation on pull request #${number} (authorized accounts and you only, oldest first):`,
     "",
     renderMessages(surface.messages, participants),
@@ -91,7 +99,7 @@ function prSection(pr: ThreadPr, participants: Participants): string[] {
 export function composeConductorPrompt(input: ConductorPromptInput): string {
   const { thread, repo, participants, frame } = input;
   const lines = [
-    frame.trimEnd(),
+    frame,
     "",
     "--- Thread assembled by automata ---",
     `Repository: ${repo.owner}/${repo.repo}`,

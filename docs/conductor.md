@@ -63,6 +63,7 @@ follows it under `--- Thread assembled by automata ---`:
   threads with their file, line and URL, and the CI status — one line per check, with its conclusion, or its status
   while it still runs.
 
+The pull request description is included when an allowed account wrote it.
 Only messages from `allowedUsers` and `agentUser` appear, oldest first; other accounts are withheld, as in
 [`do-work`](do-work.md). A resolved review thread is left out. No message is marked as new: the conductor reads the
 whole thread.
