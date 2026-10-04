@@ -111,6 +111,12 @@ export interface AutomataConductorConfig {
   /** Issue and pull request numbers the conductor watches. */
   watch?: number[];
   prompts?: ConductorPrompts;
+  /** The CLI the conductor runs. Unset means Claude. */
+  executor?: Executor;
+  /** Model per executor, as `doWork.models`. */
+  models?: DoWorkModels;
+  /** Reasoning effort per executor, as `doWork.effort`. */
+  effort?: DoWorkEffort;
 }
 
 export interface AutomataConfig {

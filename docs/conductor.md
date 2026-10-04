@@ -1,8 +1,9 @@
 # `automata conductor`
 
 One tick of the conductor role, meant to be fired from cron like [`do-work`](do-work.md). It is part of the conductor
-epic (#114). A tick does the pre-flight — configuration, identity and lock — prunes the [watch list](#watch-list) and
-exits 0. The rest of the work is added by later issues.
+epic (#114). A tick does the pre-flight — configuration, identity and lock — prunes the [watch list](#watch-list), and
+for each watched item whose newest message is the agent's runs a model [read-only](#running-the-model) that posts the
+reply as a comment. Comment only: the conductor never approves or merges.
 
 ```bash
 automata conductor              # one tick
@@ -38,7 +39,7 @@ that cannot be looked up (network or `gh` error) stays on the list, with a warni
 ## Reply rule
 
 The decision of whether a watched item needs a conductor reply is a pure function (`decideConductorReply`,
-`src/conductor/replyDecision.ts`); the tick does not act on it yet. An issue and its linked pull request are decided
+`src/conductor/replyDecision.ts`); the tick acts on it (see [Running the model](#running-the-model)). An issue and its linked pull request are decided
 separately, and the item needs a reply when either does. A conversation needs a reply when the newest message from
 `agentUser` has no later message from an allowed user (the roles of [`do-work`](do-work.md)'s rule, swapped):
 
@@ -54,7 +55,7 @@ Other accounts are ignored. Timestamps compare strictly, so an answer in the sam
 ## The thread and its prompts
 
 For a watched item the conductor builds one thread for the model (`composeConductorPrompt`,
-`src/conductor/thread.ts`; the tick does not call it yet). The configured prompt comes first, verbatim, and the thread
+`src/conductor/thread.ts`). The configured prompt comes first, verbatim, and the thread
 follows it under `--- Thread assembled by automata ---`:
 
 - For a watched **issue**: the issue and its conversation, then every linked pull request.
@@ -78,6 +79,46 @@ The prompt depends on the kind of the watched item:
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
 [config.md](config.md#conductor). Without a key, a built-in default applies. Both defaults ask the model to write the
 next message to the agent, and forbid file changes, merging, closing and pushing.
+
+After the thread, automata appends the posting instruction itself, so a configured prompt cannot lose it: post one
+comment with `gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input,
+because what the model prints is discarded.
+
+## Running the model
+
+For each item left on the watch list, the tick reads the thread and applies the reply rule. When a conversation needs a
+reply, it runs the model once for the first such conversation (the issue, then its pull requests); the others are
+handled on a later tick, once this one is answered. A tick logs `Conductor: #7 needs no reply.` for the rest.
+
+| Setting | Meaning |
+|---------|---------|
+| `conductor.executor` | `claude` (default) or `codex` |
+| `conductor.models.<executor>` | Model passed to that executor |
+| `conductor.effort.<executor>` | Reasoning effort passed to that executor, unchanged |
+
+They are keyed per executor like `doWork.models`; see [config.md](config.md#conductor). An unusable value exits 1 before
+the lock is taken.
+
+The run is **read-only**:
+
+- Claude runs with `--permission-mode dontAsk`, may only read and search, look at a thread with `gh issue view`,
+  `gh pr view`, `gh pr diff` and `gh pr checks`, use `git log`, `git diff`, `git show` and `git status`, and post with
+  `gh issue comment` or `gh pr comment`. `Edit`, `Write` and `NotebookEdit` are denied.
+- Codex runs with `--sandbox read-only`. That sandbox can block the network; if it does, `gh` cannot post and the tick
+  reports a run that posted nothing. Use `claude` for the conductor until that is changed.
+
+After the run the tick reads the conversation again. A reply counts as posted only when the account `gh` runs as has a
+comment that was not there before. Otherwise the tick writes an error on stderr and exits 1:
+
+| Message | Meaning |
+|---------|---------|
+| `finished but posted no comment on <surface>` | The run succeeded and posted nothing; its output is discarded, so nothing is recovered. |
+| `failed and posted no comment on <surface>` | The run failed and nothing was posted. |
+| `could not tell whether … got a reply` | The conversation could not be read before or after the run. |
+
+A run that fails after it posted counts as posted, with a warning. An item that cannot be read is skipped with a warning
+and does not change the exit code. Nothing stops a later tick from running again on an item whose run posted nothing;
+that is the job of the loop-safety issue (#122).
 
 ## Configuration
 
@@ -105,5 +146,5 @@ The conductor takes its own lock, `.automata/conductor.lock`, so it runs next to
 | Code | Meaning |
 |------|---------|
 | 0 | Tick completed, or another conductor holds the lock (nothing done) |
-| 1 | Configuration unusable, or the identity check failed |
+| 1 | Configuration unusable, the identity check failed, or a model run failed or posted no reply |
 | 2 | The conductor lock looks alive but outlived the stale window — probably a reused pid; the message names the file to remove |

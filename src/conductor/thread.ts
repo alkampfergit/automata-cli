@@ -26,6 +26,41 @@ export interface ConductorPromptInput {
   participants: Participants;
   /** The resolved `conductor.prompts.issue` or `conductor.prompts.pr`. */
   frame: string;
+  /**
+   * The conversation the reply belongs on. Defaults to the issue of an issue
+   * thread, or the pull request of a pull request thread.
+   */
+  replyTo?: ReplyTarget;
+}
+
+/** The issue or pull request a reply is posted on. */
+export interface ReplyTarget {
+  kind: "issue" | "pr";
+  number: number;
+}
+
+/** The target a thread has when nothing narrows it: the watched item itself. */
+export function defaultReplyTarget(thread: ConductorThread): ReplyTarget {
+  return thread.kind === "issue"
+    ? { kind: "issue", number: thread.issue.issue.number }
+    : { kind: "pr", number: thread.prs[0].surface.pr.number };
+}
+
+/**
+ * How the model must post. Appended by automata, after the configured frame, so
+ * a frame that forgets it cannot lose it: the run's stdout is discarded, and a
+ * reply that is not posted does not exist. `--body-file -` reads the body from
+ * stdin, because a read-only run cannot write a file.
+ */
+export function postingInstruction(target: ReplyTarget): string {
+  const command = target.kind === "pr" ? "pr" : "issue";
+  const number = String(target.number);
+  return [
+    `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
+      "What you print is discarded; only a posted comment counts.",
+    `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
+    "Post exactly one comment. Do not approve, merge or close anything.",
+  ].join("\n");
 }
 
 /** Which configured prompt frames a thread. */
@@ -98,6 +133,7 @@ function prSection(pr: ThreadPr, participants: Participants): string[] {
 
 export function composeConductorPrompt(input: ConductorPromptInput): string {
   const { thread, repo, participants, frame } = input;
+  const replyTo = input.replyTo ?? defaultReplyTarget(thread);
   const lines = [
     frame,
     "",
@@ -124,6 +160,8 @@ export function composeConductorPrompt(input: ConductorPromptInput): string {
     "",
     "Only the messages above exist. Anything from other accounts has been withheld",
     "deliberately — do not ask about it.",
+    "",
+    postingInstruction(replyTo),
   );
   return lines.join("\n");
 }

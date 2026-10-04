@@ -7,6 +7,7 @@ import {
   type Executor,
   type TurnKind,
   type AutomataDoWorkConfig,
+  type AutomataConductorConfig,
   DEFAULT_DO_WORK,
 } from "../config/configStore.js";
 import { RELEASE_FLOWS, isReleaseFlow } from "../git/releaseFlow.js";
@@ -318,6 +319,57 @@ const configSetConductorPrompt = new Command("conductor-prompt")
     process.stdout.write(`conductor ${kind} prompt set.\n`);
   });
 
+function writeConductor(patch: Partial<AutomataConductorConfig>): void {
+  const current = readRawConfig();
+  writeConfig({ ...current, conductor: { ...current.conductor, ...patch } });
+}
+
+function requireExecutor(value: string): Executor {
+  if (!VALID_EXECUTORS.includes(value as Executor)) {
+    process.stderr.write(`Error: invalid executor "${value}". Must be one of: ${VALID_EXECUTORS.join(", ")}\n`);
+    process.exit(1);
+  }
+  return value as Executor;
+}
+
+const configSetConductorExecutor = new Command("conductor-executor")
+  .description("Set the executor the conductor runs")
+  .argument("<value>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
+  .action((value: string) => {
+    writeConductor({ executor: requireExecutor(value) });
+    process.stdout.write(`conductor executor set to: ${value}\n`);
+  });
+
+const configSetConductorModel = new Command("conductor-model")
+  .description("Set the model the conductor passes to one executor")
+  .argument("<executor>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
+  .argument("<value>", "Model identifier")
+  .action((executor: string, value: string) => {
+    const which = requireExecutor(executor);
+    const model = value.trim();
+    if (model.length === 0) {
+      process.stderr.write("Error: conductor-model requires a non-empty model identifier.\n");
+      process.exit(1);
+    }
+    writeConductor({ models: { ...readRawConfig().conductor?.models, [which]: model } });
+    process.stdout.write(`conductor ${which} model set to: ${model}\n`);
+  });
+
+const configSetConductorEffort = new Command("conductor-effort")
+  .description("Set the reasoning effort the conductor passes to one executor")
+  .argument("<executor>", `Executor: ${VALID_EXECUTORS.join(", ")}`)
+  .argument("<value>", "Effort level, forwarded to the executor unchanged")
+  .action((executor: string, value: string) => {
+    const which = requireExecutor(executor);
+    const effort = value.trim();
+    if (effort.length === 0) {
+      process.stderr.write("Error: conductor-effort requires a non-empty effort level.\n");
+      process.exit(1);
+    }
+    writeConductor({ effort: { ...readRawConfig().conductor?.effort, [which]: effort } });
+    process.stdout.write(`conductor ${which} effort set to: ${effort}\n`);
+  });
+
 const configSetGitTrunkBranch = new Command("git-trunk-branch")
   .description("Pin the branch `publish-release` releases to, instead of detecting it")
   .argument("<value>", "Branch name (unset = detect it from the remote)")
@@ -365,6 +417,9 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkPostRunLog)
   .addCommand(configSetDoWorkPrompt)
   .addCommand(configSetConductorPrompt)
+  .addCommand(configSetConductorExecutor)
+  .addCommand(configSetConductorModel)
+  .addCommand(configSetConductorEffort)
   .addCommand(configSetGitTrunkBranch)
   .addCommand(configSetGitReleaseFlow);
 

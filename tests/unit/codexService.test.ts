@@ -216,3 +216,10 @@ describe("codexService.invokeCodexCode (--verbose flag)", () => {
     expect(args).not.toContain("--verbose");
   });
 });
+
+describe("buildCodexArgs readOnly", () => {
+  it("uses the read-only sandbox and never the bypass flag, even with yolo", async () => {
+    const { buildCodexArgs } = await import("../../src/codex/codexService.js");
+    expect(buildCodexArgs("p", { readOnly: true, yolo: true })).toEqual(["exec", "--sandbox", "read-only", "p"]);
+  });
+});

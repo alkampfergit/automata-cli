@@ -5,6 +5,8 @@ import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeCodexOptions {
   yolo?: boolean;
+  /** Run in Codex's read-only sandbox. Wins over `yolo`. */
+  readOnly?: boolean;
   verbose?: boolean;
   model?: string;
   /** Reasoning effort, forwarded verbatim. See `InvokeClaudeOptions.effort`. */
@@ -29,7 +31,8 @@ function toTomlBasicString(value: string): string {
 /** The argv `invokeCodexCode` will spawn. See `buildClaudeArgs` for why. */
 export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {}): string[] {
   const args: string[] = ["exec"];
-  if (options.yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (options.readOnly) args.push("--sandbox", "read-only");
+  else if (options.yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (options.model) args.push("--model", options.model);
   // Codex has no effort flag: it reads `model_reasoning_effort` from its TOML
   // config, and `-c` is the documented per-invocation override. The value is
@@ -70,11 +73,16 @@ function invokeCodexCodeSync(
  */
 export function runCodex(
   prompt: string,
-  options: { model?: string; effort?: string; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; readOnly?: boolean; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
-    const args = buildCodexArgs(prompt, { yolo: true, model: options.model, effort: options.effort });
+    const args = buildCodexArgs(prompt, {
+      yolo: true,
+      readOnly: options.readOnly,
+      model: options.model,
+      effort: options.effort,
+    });
     const sink = options.sink;
     const child = spawn(codexBin, args, { stdio: ["inherit", "pipe", "pipe"] });
     trackChild(child);

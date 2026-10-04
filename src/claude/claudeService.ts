@@ -4,8 +4,33 @@ import { truncate, handleSpawnError, handleExitCode, resolveCommand } from "../c
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
 import type { RunSink } from "../run/runTranscript.js";
 
+/**
+ * What a read-only Claude run may use: reading, searching and the `gh`/`git`
+ * calls that look at a thread or post a comment. Everything else is denied —
+ * `dontAsk` turns an unlisted tool into a refusal instead of a prompt nobody
+ * can answer. The body of a reply goes in through `--body-file -` (stdin)
+ * because writing a file is not allowed.
+ */
+export const CLAUDE_READ_ONLY_TOOLS = [
+  "Read",
+  "Grep",
+  "Glob",
+  "Bash(gh issue view:*)",
+  "Bash(gh issue comment:*)",
+  "Bash(gh pr view:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh pr checks:*)",
+  "Bash(gh pr comment:*)",
+  "Bash(git log:*)",
+  "Bash(git diff:*)",
+  "Bash(git show:*)",
+  "Bash(git status:*)",
+];
+
 export interface InvokeClaudeOptions {
   yolo?: boolean;
+  /** Deny every tool that changes a file. Wins over `yolo`. */
+  readOnly?: boolean;
   verbose?: boolean;
   model?: string;
   /**
@@ -41,7 +66,18 @@ export function resolveModelOption(opts: { opus?: boolean; sonnet?: boolean; hai
  */
 export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {}): string[] {
   const args: string[] = [];
-  if (options.yolo) args.push("--dangerously-skip-permissions");
+  if (options.readOnly) {
+    args.push(
+      "--permission-mode",
+      "dontAsk",
+      "--allowed-tools",
+      CLAUDE_READ_ONLY_TOOLS.join(","),
+      "--disallowed-tools",
+      "Edit,Write,NotebookEdit",
+    );
+  } else if (options.yolo) {
+    args.push("--dangerously-skip-permissions");
+  }
   if (options.model) args.push("--model", options.model);
   // Truthiness, not `!== undefined`: an empty level must emit nothing rather
   // than a bare `--effort` that would swallow the next argument.
@@ -66,12 +102,13 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
     const args = buildClaudeArgs(prompt, {
       yolo: true,
+      readOnly: options.readOnly,
       model: options.model,
       effort: options.effort,
       verbose: true,
