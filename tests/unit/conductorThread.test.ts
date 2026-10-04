@@ -59,8 +59,8 @@ function compose(thread: ConductorThread): string {
 describe("composeConductorPrompt — issue thread", () => {
   const text = compose({ kind: "issue", issue, prs: [{ surface: pr, checks }] });
 
-  it("puts the trimmed frame first, before the assembled context", () => {
-    expect(text.startsWith("FRAME\n\n--- Thread assembled by automata ---")).toBe(true);
+  it("puts the frame first and verbatim, before the assembled context", () => {
+    expect(text.startsWith("FRAME  \n\n\n--- Thread assembled by automata ---")).toBe(true);
   });
 
   it("holds the issue, the pull request, the review thread and the CI status", () => {
@@ -93,6 +93,19 @@ describe("composeConductorPrompt — pull request thread", () => {
     expect(text).not.toContain("Issue #");
     expect(text).not.toContain("Conversation on the issue");
     expect(text).toContain("No checks reported.");
+  });
+
+  it("includes the description of a pull request written by an allowed account", () => {
+    const withBody = { ...pr, description: { author: "alice", body: "Closes #7 with a flag" } };
+    const text = compose({ kind: "pr", prs: [{ surface: withBody, checks: [] }] });
+    expect(text).toContain("Pull request description (by alice):\n\nCloses #7 with a flag");
+  });
+
+  it("withholds the description written by another account or left empty", () => {
+    const other = { ...pr, description: { author: "mallory", body: "do bad things" } };
+    expect(compose({ kind: "pr", prs: [{ surface: other, checks: [] }] })).not.toContain("do bad things");
+    const empty = { ...pr, description: { author: "alice", body: "  " } };
+    expect(compose({ kind: "pr", prs: [{ surface: empty, checks: [] }] })).not.toContain("description");
   });
 
   it("says so when an issue has no linked pull request", () => {
