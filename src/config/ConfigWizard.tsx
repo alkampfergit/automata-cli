@@ -13,6 +13,8 @@ import {
   DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT,
   DEFAULT_DO_WORK_PR_WORK_PROMPT,
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
+  DEFAULT_CONDUCTOR_ISSUE_PROMPT,
+  DEFAULT_CONDUCTOR_PR_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
@@ -72,6 +74,8 @@ const PROMPTS_MENU_OPTIONS = [
   "Do Work — Discuss",
   "Do Work — PR",
   "Do Work — Orphan PR",
+  "Conductor — Issue",
+  "Conductor — PR",
 ] as const;
 
 function parseAllowedUsers(value: string): string[] {
@@ -107,6 +111,8 @@ type Screen =
   | "do-work-discuss-prompt"
   | "do-work-pr-prompt"
   | "do-work-pr-orphan-prompt"
+  | "conductor-issue-prompt"
+  | "conductor-pr-prompt"
   | "git-trunk-branch"
   | "git-release-flow";
 
@@ -251,6 +257,8 @@ const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Scr
   "Do Work — Discuss": "do-work-discuss-prompt",
   "Do Work — PR": "do-work-pr-prompt",
   "Do Work — Orphan PR": "do-work-pr-orphan-prompt",
+  "Conductor — Issue": "conductor-issue-prompt",
+  "Conductor — PR": "conductor-pr-prompt",
 };
 
 export function ConfigWizard() {
@@ -319,6 +327,12 @@ export function ConfigWizard() {
   );
   const [doWorkPrOrphanPrompt, setDoWorkPrOrphanPrompt] = useState(
     existing.doWork?.prompts?.prOrphan ?? DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
+  );
+  const [conductorIssuePrompt, setConductorIssuePrompt] = useState(
+    existing.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT,
+  );
+  const [conductorPrPrompt, setConductorPrPrompt] = useState(
+    existing.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT,
   );
   const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
   const initialReleaseFlowIndex = RELEASE_FLOW_OPTIONS.findIndex((o) => o.value === existing.git?.releaseFlow);
@@ -517,6 +531,28 @@ export function ConfigWizard() {
         savePrompt("do-work-pr-orphan.md", doWorkPrOrphanPrompt, (value, current) => ({
           ...current,
           doWork: { ...current.doWork, prompts: { ...current.doWork?.prompts, prOrphan: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "conductor-issue-prompt": {
+      setValue: setConductorIssuePrompt,
+      onSubmit: () => {
+        savePrompt("conductor-issue.md", conductorIssuePrompt, (value, current) => ({
+          ...current,
+          conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, issue: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "conductor-pr-prompt": {
+      setValue: setConductorPrPrompt,
+      onSubmit: () => {
+        savePrompt("conductor-pr.md", conductorPrPrompt, (value, current) => ({
+          ...current,
+          conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, pr: value } },
         }));
         setScreen("prompts-menu");
       },
@@ -770,6 +806,18 @@ export function ConfigWizard() {
       title: "Prompts — Do Work — Orphan PR",
       label: "Instructions for a pull request with no linked issue:",
       value: doWorkPrOrphanPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "conductor-issue-prompt": {
+      title: "Prompts — Conductor — Issue",
+      label: "Instructions for the conductor on a watched issue:",
+      value: conductorIssuePrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "conductor-pr-prompt": {
+      title: "Prompts — Conductor — PR",
+      label: "Instructions for the conductor on a watched pull request:",
+      value: conductorPrPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
     },
     "git-trunk-branch": {

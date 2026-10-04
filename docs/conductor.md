@@ -51,6 +51,33 @@ separately, and the item needs a reply when either does. A conversation needs a 
 
 Other accounts are ignored. Timestamps compare strictly, so an answer in the same second as the message does not count.
 
+## The thread and its prompts
+
+For a watched item the conductor builds one thread for the model (`composeConductorPrompt`,
+`src/conductor/thread.ts`; the tick does not call it yet). The configured prompt comes first, verbatim, and the thread
+follows it under `--- Thread assembled by automata ---`:
+
+- For a watched **issue**: the issue and its conversation, then every linked pull request.
+- For a watched **pull request**: that pull request only.
+- Per pull request: state, branch and base, the conversation (comments and review bodies), the unresolved review
+  threads with their file, line and URL, and the CI status — one line per check, with its conclusion, or its status
+  while it still runs.
+
+Only messages from `allowedUsers` and `agentUser` appear, oldest first; other accounts are withheld, as in
+[`do-work`](do-work.md). A resolved review thread is left out. No message is marked as new: the conductor reads the
+whole thread.
+
+The prompt depends on the kind of the watched item:
+
+| Key | Used for |
+|-----|----------|
+| `conductor.prompts.issue` | A watched issue (and its linked pull requests) |
+| `conductor.prompts.pr` | A watched pull request |
+
+Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
+[config.md](config.md#conductor). Without a key, a built-in default applies. Both defaults ask the model to write the
+next message to the agent, and forbid file changes, merging, closing and pushing.
+
 ## Configuration
 
 It reads the same `.automata/config.json` as `do-work`, but needs only `allowedUsers` and `agentUser` (see

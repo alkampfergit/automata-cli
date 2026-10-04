@@ -352,6 +352,31 @@ describe("doWork configuration", () => {
     expect(() => readConfig()).toThrow(/plain filename/);
   });
 
+  it("resolves conductor.prompts file references", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "c-issue.md"), "Read the issue thread");
+    writeFileSync(join(TEST_CWD, ".automata", "c-pr.md"), "Read the pull request");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { watch: [1], prompts: { issue: "c-issue.md", pr: "c-pr.md" } } }),
+    );
+    const { conductor } = readConfig();
+    expect(conductor?.prompts).toEqual({ issue: "Read the issue thread", pr: "Read the pull request" });
+    expect(conductor?.watch).toEqual([1]);
+  });
+
+  it("keeps inline conductor prompts and throws when a conductor prompt file escapes .automata/", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { prompts: { issue: "inline text" } } }),
+    );
+    expect(readConfig().conductor?.prompts?.issue).toBe("inline text");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { prompts: { pr: "../escape.md" } } }),
+    );
+    expect(() => readConfig()).toThrow(/plain filename/);
+  });
+
   it("keeps inline doWork prompts unchanged", () => {
     writeFileSync(
       join(TEST_CWD, ".automata", "config.json"),

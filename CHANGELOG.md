@@ -31,6 +31,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   `add` applies the discovery label (or assigns the `issueDiscoveryValue` login) and follows an issue's linked PR, and each tick drops
   closed issues and closed/merged PRs from the list, logging each removal. See `docs/conductor.md`
 
+- `conductor.prompts.issue` and `conductor.prompts.pr` configure the instructions for the conductor on a watched issue
+  and a watched pull request (inline text or a `.md` file in `.automata/`, built-in defaults), set with
+  `automata config set conductor-prompt <issue|pr> <value>` or the wizard's `Prompts` menu. The thread assembly that
+  uses them (issue, pull requests, review threads, CI status) is not wired into the tick yet. See `docs/conductor.md`
+
 ### Changed
 
 - The default `do-work` issue-discuss prompt now tells the model to post its reply with `gh issue comment` / `gh pr comment`

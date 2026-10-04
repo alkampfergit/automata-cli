@@ -100,10 +100,17 @@ export interface AutomataGitConfig {
   releaseFlow?: ReleaseFlow;
 }
 
+/** Instructions for the conductor, one per kind of watched item. Text or a `.md` filename in `.automata/`. */
+export interface ConductorPrompts {
+  issue?: string;
+  pr?: string;
+}
+
 /** Settings of `automata conductor`. */
 export interface AutomataConductorConfig {
   /** Issue and pull request numbers the conductor watches. */
   watch?: number[];
+  prompts?: ConductorPrompts;
 }
 
 export interface AutomataConfig {
@@ -209,6 +216,30 @@ export const DEFAULT_DO_WORK_PR_ORPHAN_PROMPT =
   "Reply on the pull request with a short summary of what you did and what you recommend, or reply in the review thread " +
   "when your answer belongs to a specific comment. Always post a reply — silence looks like a crash.";
 
+/**
+ * Default instructions for the conductor on a watched issue. The thread that
+ * follows holds the issue, its linked pull requests, their review threads and
+ * the CI status; the conductor stands in for the people allowed to instruct the
+ * agent, so this prompt asks for their next message, not for code.
+ */
+export const DEFAULT_CONDUCTOR_ISSUE_PROMPT =
+  "You are the conductor: you act for the people allowed to instruct the agent named in the context below. " +
+  "The agent spoke last on the thread below, and no allowed user has answered yet.\n\n" +
+  "Read the whole thread — the issue, its pull requests, the unresolved review threads and the CI status. " +
+  "Decide what the agent needs next: an answer to its question, a decision, or a correction. " +
+  "Write the next message to the agent, short and concrete. " +
+  "Do not change any file, do not merge or close anything, and do not push to any branch.";
+
+/** Default instructions for the conductor on a watched pull request. See `DEFAULT_CONDUCTOR_ISSUE_PROMPT`. */
+export const DEFAULT_CONDUCTOR_PR_PROMPT =
+  "You are the conductor: you act for the people allowed to instruct the agent named in the context below. " +
+  "The agent spoke last on the pull request below, and no allowed user has answered yet.\n\n" +
+  "Read the whole thread — the pull request, the unresolved review threads and the CI status. " +
+  "Decide what the agent needs next: an answer to its question, a decision on a review thread, or a correction. " +
+  "A failing check is the agent's work to fix; name it if the agent has not. " +
+  "Write the next message to the agent, short and concrete. " +
+  "Do not change any file, do not merge or close the pull request, and do not push to any branch.";
+
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
 
@@ -290,6 +321,12 @@ export function readConfig(): AutomataConfig {
   }
   if (config.doWork?.prompts?.prOrphan) {
     config.doWork.prompts.prOrphan = resolvePromptRef(config.doWork.prompts.prOrphan, dir);
+  }
+  if (config.conductor?.prompts?.issue) {
+    config.conductor.prompts.issue = resolvePromptRef(config.conductor.prompts.issue, dir);
+  }
+  if (config.conductor?.prompts?.pr) {
+    config.conductor.prompts.pr = resolvePromptRef(config.conductor.prompts.pr, dir);
   }
   return config;
 }
