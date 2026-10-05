@@ -12,15 +12,21 @@ export type ConductorReplyOutcome =
   | { kind: "run-failed"; error: string }
   | { kind: "unverified"; error: string };
 
+/** Only a comment counts as a reply: an edited issue body, a review or a thread comment does not. */
+function isComment(message: RawMessage): boolean {
+  return message.kind === "issue-comment" || message.kind === "pr-comment";
+}
+
 function key(message: RawMessage): string {
   return `${message.createdAt}\u0000${message.body}`;
 }
 
-/** The messages of `login` in `after` that `before` did not have. Case-insensitive on the login. */
+/** The comments of `login` in `after` that `before` did not have. Case-insensitive on the login. */
 export function newMessagesBy(before: RawMessage[], after: RawMessage[], login: string): RawMessage[] {
   const who = login.toLowerCase();
-  const known = new Set(before.filter((m) => m.author.toLowerCase() === who).map(key));
-  return after.filter((m) => m.author.toLowerCase() === who && !known.has(key(m)));
+  const own = (m: RawMessage): boolean => isComment(m) && m.author.toLowerCase() === who;
+  const known = new Set(before.filter(own).map(key));
+  return after.filter((m) => own(m) && !known.has(key(m)));
 }
 
 export interface ConductReplyInput {
