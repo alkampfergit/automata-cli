@@ -92,7 +92,7 @@ handled on a later tick, once this one is answered. A tick logs `Conductor: #7 n
 
 | Setting | Meaning |
 |---------|---------|
-| `conductor.executor` | `claude` (default) or `codex` |
+| `conductor.executor` | `claude` (default). `codex` is refused. |
 | `conductor.models.<executor>` | Model passed to that executor |
 | `conductor.effort.<executor>` | Reasoning effort passed to that executor, unchanged |
 
@@ -107,9 +107,8 @@ The run is **read-only**:
   any other number are denied. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
   a file. `Edit`, `Write` and `NotebookEdit` are denied. The run sets `GH_REPO` to the watched repository, and `gh`
   calls with `--repo` or `-R` are denied, so `gh` cannot reach another repository.
-- Codex runs with `--sandbox read-only` and `GH_REPO` set. Its output is discarded and is not written to stdout. Codex
-  has no command allow-list, so with network access it is not limited to comments on the reply target. That sandbox can block the network; if it does, `gh` cannot post and the tick
-  reports a run that posted nothing. Use `claude` for the conductor until that is changed.
+- Codex is not supported. It has no command allow-list, so it cannot be limited to comments on the reply target.
+  With `conductor.executor` set to `codex` the tick writes an error and exits 1 before the lock is taken.
 
 After the run the tick reads the conversation again. A reply counts as posted only when the account `gh` runs as has a
 comment that was not there before. Otherwise the tick writes an error on stderr and exits 1:

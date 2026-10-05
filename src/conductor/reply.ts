@@ -25,8 +25,15 @@ function key(message: RawMessage): string {
 export function newMessagesBy(before: RawMessage[], after: RawMessage[], login: string): RawMessage[] {
   const who = login.toLowerCase();
   const own = (m: RawMessage): boolean => isComment(m) && m.author.toLowerCase() === who;
-  const known = new Set(before.filter(own).map(key));
-  return after.filter((m) => own(m) && !known.has(key(m)));
+  // Counts, not a set: two identical comments in one second are two comments.
+  const known = new Map<string, number>();
+  for (const m of before.filter(own)) known.set(key(m), (known.get(key(m)) ?? 0) + 1);
+  return after.filter((m) => {
+    if (!own(m)) return false;
+    const left = known.get(key(m)) ?? 0;
+    if (left > 0) known.set(key(m), left - 1);
+    return left === 0;
+  });
 }
 
 export interface ConductReplyInput {

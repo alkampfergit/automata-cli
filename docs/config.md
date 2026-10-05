@@ -294,7 +294,7 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
 | `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
-| `executor` | `claude` | The CLI the conductor runs, read-only: `claude` or `codex`. See [conductor.md](conductor.md#running-the-model). |
+| `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
 

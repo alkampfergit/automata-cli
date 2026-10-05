@@ -42,7 +42,6 @@ import {
 } from "../conductor/execution.js";
 import { conductReply } from "../conductor/reply.js";
 import { runClaude } from "../claude/claudeService.js";
-import { runCodex } from "../codex/codexService.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH } from "../run/runLock.js";
@@ -129,9 +128,7 @@ function readTargetMessages(target: ReplyTarget) {
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
 function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}` };
-  // The model output is discarded: the reply is what the model posts, so it must not reach the cron log.
-  return execution.executor === "codex" ? runCodex(prompt, { ...options, quiet: true }) : runClaude(prompt, options);
+  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}` });
 }
 
 type ItemResult = "replied" | "idle" | "failed";
@@ -319,6 +316,10 @@ function preflight(): Preflight | { problem: string } {
   }
   const executionProblem = conductorExecutionProblem(config.conductor);
   if (executionProblem !== null) return { problem: executionProblem };
+  if (config.conductor?.executor === "codex") {
+    // Codex has no command allow-list: a prompt-injected run could merge, close or comment elsewhere.
+    return { problem: "conductor.executor codex is not supported: Codex cannot be limited to comments on the reply target. Use claude." };
+  }
   return {
     config,
     login: login ?? "",

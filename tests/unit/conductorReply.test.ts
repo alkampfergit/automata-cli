@@ -15,6 +15,11 @@ describe("newMessagesBy", () => {
     expect(newMessagesBy(BEFORE, after, "alice")).toHaveLength(1);
   });
 
+  it("counts an identical comment posted in the same second as new", () => {
+    const after = [...BEFORE, msg("alice", "2026-01-01T00:01:00Z")];
+    expect(newMessagesBy(BEFORE, after, "alice")).toHaveLength(1);
+  });
+
   it("ignores an edited issue body, a review and a thread comment", () => {
     const after = [
       ...BEFORE,
