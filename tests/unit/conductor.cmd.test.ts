@@ -296,12 +296,12 @@ describe("conductor tick replies", () => {
     expect(mockRunCodex).not.toHaveBeenCalled();
   });
 
-  it("uses codex when conductor.executor says so", async () => {
+  it("refuses codex: it cannot be limited to comments on the reply target", async () => {
     watching({ executor: "codex", models: { codex: "gpt-x" } });
     agentSpokeLast(true);
-    mockRunCodex.mockResolvedValue(undefined);
-    expect(await run()).toBe(0);
-    expect(mockRunCodex.mock.calls[0][1]).toMatchObject({ readOnly: true, model: "gpt-x", ghRepo: "acme/widget", quiet: true });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/codex is not supported/);
+    expect(mockRunCodex).not.toHaveBeenCalled();
     expect(mockRunClaude).not.toHaveBeenCalled();
   });
 

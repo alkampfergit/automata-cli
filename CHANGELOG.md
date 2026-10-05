@@ -35,11 +35,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   and a watched pull request (inline text or a `.md` file in `.automata/`, built-in defaults), set with
   `automata config set conductor-prompt <issue|pr> <value>` or the wizard's `Prompts` menu. The thread assembly that
   uses them (issue, pull requests, review threads, CI status) feeds each conductor tick. See `docs/conductor.md`
-- `automata conductor` now answers each watched item whose newest message is the agent's: it runs Claude or Codex
+- `automata conductor` now answers each watched item whose newest message is the agent's: it runs Claude
   read-only and the model posts the reply as a comment with `gh ... --body-file -`. A run that posted nothing is
   detected and makes the tick exit 1. New keys `conductor.executor`, `conductor.models` and `conductor.effort`, set with
   `automata config set conductor-executor|conductor-model|conductor-effort`. No approve and no merge. The Claude run reads
-  only inside the working directory and cannot aim `gh` at another repository; Codex output is not printed. See
+  only inside the working directory and cannot aim `gh` at another repository. `conductor.executor` `codex` is refused. See
   `docs/conductor.md`
 
 ### Changed
