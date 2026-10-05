@@ -128,8 +128,10 @@ function readTargetMessages(target: ReplyTarget) {
 
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
 function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget): Promise<void> {
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, replyTo };
-  return execution.executor === "codex" ? runCodex(prompt, options) : runClaude(prompt, options);
+  const { owner, repo } = getRepoSlug();
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}` };
+  // The model output is discarded: the reply is what the model posts, so it must not reach the cron log.
+  return execution.executor === "codex" ? runCodex(prompt, { ...options, quiet: true }) : runClaude(prompt, options);
 }
 
 type ItemResult = "replied" | "idle" | "failed";
@@ -265,6 +267,66 @@ function exitWith(code: number): void {
   if (code !== 0) process.exit(code);
 }
 
+interface Preflight {
+  config: AutomataConfig;
+  login: string;
+  participants: Participants;
+  execution: ConductorExecution;
+}
+
+/** Everything a tick checks before it takes the lock: the first problem found, or the resolved settings. */
+function preflight(): Preflight | { problem: string } {
+  let config;
+  try {
+    config = readConfig();
+  } catch (err) {
+    return { problem: (err as Error).message };
+  }
+
+  if (!isExplicitGitHub(config)) {
+    return {
+      problem: azdoUnsupportedMessage(
+        "conductor",
+        "It needs the GitHub APIs; set the remote with `automata config set type gh`.",
+      ),
+    };
+  }
+
+  const allowedUsers = (config.allowedUsers ?? []).filter((user) => user.trim().length > 0);
+  if (allowedUsers.length === 0) {
+    return { problem: "No allowed users configured. Run `automata config set allowed-users <user1,user2>`." };
+  }
+  const agentUser = (config.agentUser ?? "").trim();
+  if (agentUser.length === 0) {
+    return { problem: "No agent user configured. Run `automata config set agent-user <login>`." };
+  }
+
+  let login: string | null;
+  try {
+    login = getAuthenticatedLogin();
+  } catch (err) {
+    return { problem: `\`gh\` could not be queried: ${(err as Error).message}` };
+  }
+  const identityProblem = conductorIdentityProblemFor(login, agentUser, allowedUsers);
+  if (identityProblem !== null) return { problem: identityProblem };
+
+  // Hand-edited JSON: apply the same rule `do-work` does (a positive safe integer).
+  const rawStale: unknown = config.doWork?.lockStaleMinutes;
+  if (rawStale !== undefined && rawStale !== null) {
+    if (typeof rawStale !== "number" || !Number.isSafeInteger(rawStale) || rawStale < 1) {
+      return { problem: `doWork.lockStaleMinutes must be a positive integer, got ${JSON.stringify(rawStale)}.` };
+    }
+  }
+  const executionProblem = conductorExecutionProblem(config.conductor);
+  if (executionProblem !== null) return { problem: executionProblem };
+  return {
+    config,
+    login: login ?? "",
+    participants: { allowedUsers, agentUser },
+    execution: resolveConductorExecution(config.conductor),
+  };
+}
+
 /**
  * One conductor tick. Returns the exit code rather than exiting, so the lock is
  * always released on the way out.
@@ -274,50 +336,9 @@ function exitWith(code: number): void {
  * and posts the reply itself. The tick exits 1 when a run failed or posted nothing.
  */
 export async function runConductor(): Promise<number> {
-  let config;
-  try {
-    config = readConfig();
-  } catch (err) {
-    return fail((err as Error).message);
-  }
-
-  if (!isExplicitGitHub(config)) {
-    return fail(
-      azdoUnsupportedMessage(
-        "conductor",
-        "It needs the GitHub APIs; set the remote with `automata config set type gh`.",
-      ),
-    );
-  }
-
-  const allowedUsers = (config.allowedUsers ?? []).filter((user) => user.trim().length > 0);
-  if (allowedUsers.length === 0) {
-    return fail("No allowed users configured. Run `automata config set allowed-users <user1,user2>`.");
-  }
-  const agentUser = (config.agentUser ?? "").trim();
-  if (agentUser.length === 0) {
-    return fail("No agent user configured. Run `automata config set agent-user <login>`.");
-  }
-
-  let login: string | null;
-  try {
-    login = getAuthenticatedLogin();
-  } catch (err) {
-    return fail(`\`gh\` could not be queried: ${(err as Error).message}`);
-  }
-  const problem = conductorIdentityProblemFor(login, agentUser, allowedUsers);
-  if (problem !== null) return fail(problem);
-
-  // Hand-edited JSON: apply the same rule `do-work` does (a positive safe integer).
-  const rawStale: unknown = config.doWork?.lockStaleMinutes;
-  if (rawStale !== undefined && rawStale !== null) {
-    if (typeof rawStale !== "number" || !Number.isSafeInteger(rawStale) || rawStale < 1) {
-      return fail(`doWork.lockStaleMinutes must be a positive integer, got ${JSON.stringify(rawStale)}.`);
-    }
-  }
-  const executionProblem = conductorExecutionProblem(config.conductor);
-  if (executionProblem !== null) return fail(executionProblem);
-  const execution = resolveConductorExecution(config.conductor);
+  const checked = preflight();
+  if ("problem" in checked) return fail(checked.problem);
+  const { config, login, participants, execution } = checked;
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
   if (!lock.ok) {
@@ -337,13 +358,13 @@ export async function runConductor(): Promise<number> {
   }
 
   try {
-    process.stdout.write(`Conductor: running as ${login ?? ""}.\n`);
+    process.stdout.write(`Conductor: running as ${login}.\n`);
     const watch = pruneWatchList(config);
-    const participants: Participants = { allowedUsers, agentUser };
     let failed = 0;
     for (const id of watch) {
       try {
-        if ((await conductItem(id, config, login ?? "", participants, execution)) === "failed") failed++;
+        // One item at a time on purpose: each run reads and writes the same account's conversations.
+        if ((await conductItem(id, config, login, participants, execution)) === "failed") failed++; // NOSONAR
       } catch (err) {
         process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
         failed++;

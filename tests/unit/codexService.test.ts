@@ -231,3 +231,24 @@ describe("buildCodexArgs readOnly", () => {
     expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 });
+
+describe("runCodex quiet", () => {
+  it.each([[true, 0], [false, 1]])("quiet=%s forwards stdout %i time(s) and pins GH_REPO", async (quiet, writes) => {
+    const { EventEmitter } = await import("node:events");
+    const mockSpawn = vi.fn();
+    vi.resetModules();
+    vi.doMock("node:child_process", () => ({ spawn: mockSpawn, spawnSync: vi.fn() }));
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    mockSpawn.mockReturnValue(child);
+    const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const { runCodex } = await import("../../src/codex/codexService.js");
+    const done = runCodex("p", { readOnly: true, quiet, ghRepo: "o/r" });
+    child.stdout.emit("data", Buffer.from("transcript"));
+    child.emit("close", 0, null);
+    await done;
+    expect(write).toHaveBeenCalledTimes(writes);
+    expect((mockSpawn.mock.calls[0][2] as { env: NodeJS.ProcessEnv }).env.GH_REPO).toBe("o/r");
+    write.mockRestore();
+    vi.doUnmock("node:child_process");
+  });
+});

@@ -38,7 +38,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `automata conductor` now answers each watched item whose newest message is the agent's: it runs Claude or Codex
   read-only and the model posts the reply as a comment with `gh ... --body-file -`. A run that posted nothing is
   detected and makes the tick exit 1. New keys `conductor.executor`, `conductor.models` and `conductor.effort`, set with
-  `automata config set conductor-executor|conductor-model|conductor-effort`. No approve and no merge. See
+  `automata config set conductor-executor|conductor-model|conductor-effort`. No approve and no merge. The Claude run reads
+  only inside the working directory and cannot aim `gh` at another repository; Codex output is not printed. See
   `docs/conductor.md`
 
 ### Changed

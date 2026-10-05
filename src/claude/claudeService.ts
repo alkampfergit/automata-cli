@@ -20,14 +20,19 @@ export interface ReadOnlyReplyTarget {
  * number. The body goes in through `--body-file -` (stdin) because writing a
  * file is not allowed.
  *
+ * Reading is limited to the working directory (`./**`), so a prompt-injected run
+ * cannot read credentials elsewhere on the machine. `CLAUDE_READ_ONLY_DENIED`
+ * refuses `--repo`/`-R`, and the run sets `GH_REPO`, so every `gh` call stays on
+ * the watched repository.
+ *
  * `git log`, `git diff` and `git show` are left out on purpose: each accepts
  * `--output=<path>` and so can write a file. `gh pr diff` covers the diff.
  */
 export function claudeReadOnlyTools(replyTo?: ReadOnlyReplyTarget): string[] {
   const tools = [
-    "Read",
-    "Grep",
-    "Glob",
+    "Read(./**)",
+    "Grep(./**)",
+    "Glob(./**)",
     "Bash(gh issue view:*)",
     "Bash(gh pr view:*)",
     "Bash(gh pr diff:*)",
@@ -39,6 +44,20 @@ export function claudeReadOnlyTools(replyTo?: ReadOnlyReplyTarget): string[] {
     tools.push(`Bash(gh ${command} comment ${String(replyTo.number)} --body-file -:*)`);
   }
   return tools;
+}
+
+/** Always denied in a read-only run: file writes, and `gh` calls aimed at another repository. */
+export const CLAUDE_READ_ONLY_DENIED = [
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Bash(gh * --repo*)",
+  "Bash(gh * -R*)",
+];
+
+/** The environment of a read-only run: `gh` defaults to the watched repository. */
+export function readOnlyEnv(ghRepo?: string): NodeJS.ProcessEnv {
+  return ghRepo ? { ...process.env, GH_REPO: ghRepo } : process.env;
 }
 
 export interface InvokeClaudeOptions {
@@ -89,7 +108,7 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
       "--allowed-tools",
       claudeReadOnlyTools(options.replyTo).join(","),
       "--disallowed-tools",
-      "Edit,Write,NotebookEdit",
+      CLAUDE_READ_ONLY_DENIED.join(","),
     );
   } else if (options.yolo) {
     args.push("--dangerously-skip-permissions");
@@ -118,7 +137,7 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
@@ -131,7 +150,10 @@ export function runClaude(
       verbose: true,
     });
     const sink = options.sink;
-    const child = spawn(claudeBin, args, { stdio: ["inherit", "pipe", "pipe"] });
+    const child = spawn(claudeBin, args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+    });
     trackChild(child);
 
     // stderr is piped only so the transcript can see it; it still reaches the terminal.
