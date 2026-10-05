@@ -41,10 +41,12 @@ import {
   type ConductorExecution,
 } from "../conductor/execution.js";
 import { conductReply } from "../conductor/reply.js";
+import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
+import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import { runClaude } from "../claude/claudeService.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
-import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH } from "../run/runLock.js";
+import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock } from "../run/runLock.js";
 
 function fail(message: string): number {
   process.stderr.write(`Error: ${message}\n`);
@@ -131,6 +133,22 @@ function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyT
   return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}` });
 }
 
+/** A dry run: no comment permission, and the model's stdout is the reply, so it is captured. */
+async function runModelForText(prompt: string, execution: ConductorExecution): Promise<string | null> {
+  const { owner, repo } = getRepoSlug();
+  let stdout = "";
+  const sink = {
+    output: (stream: "stdout" | "stderr", text: string) => {
+      if (stream === "stdout") stdout += text;
+    },
+    exited: () => undefined,
+  };
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink };
+  if (execution.executor === "codex") await runCodex(prompt, { ...options, quiet: true });
+  else await runClaude(prompt, options);
+  return extractDryRunReply(execution.executor, stdout);
+}
+
 type ItemResult = "replied" | "idle" | "failed";
 
 async function conductItem(
@@ -139,6 +157,7 @@ async function conductItem(
   login: string,
   participants: Participants,
   execution: ConductorExecution,
+  dryRun = false,
 ): Promise<ItemResult> {
   const label = `#${String(id)}`;
   let item: WatchedItem;
@@ -161,10 +180,19 @@ async function conductItem(
     thread.kind === "issue"
       ? (config.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT)
       : (config.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT);
-  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo });
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
   process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  if (dryRun) {
+    const reply = await runModelForText(prompt, execution);
+    if (reply === null) {
+      process.stderr.write(`Error: the dry run for ${label} produced no reply text.\n`);
+      return "failed";
+    }
+    process.stdout.write(`--- Dry run: reply for ${where} (not posted) ---\n${reply}\n---\n`);
+    return "replied";
+  }
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
@@ -328,6 +356,85 @@ function preflight(): Preflight | { problem: string } {
   };
 }
 
+export interface ConductorOptions {
+  check?: boolean;
+  dryRun?: boolean;
+}
+
+function staleMinutesOf(config: AutomataConfig): number {
+  return config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
+}
+
+/** Read one watched id the way a tick would, without changing anything. */
+function checkWatched(id: number, participants: Participants): WatchedCheck {
+  try {
+    const target = getWatchTarget(id);
+    if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
+    const { conversations } = readWatchedItem(id);
+    return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants).decisions };
+  } catch (err) {
+    return { id, unavailable: (err as Error).message };
+  }
+}
+
+/** `--check`: a read-only report of what a tick would do. No lock, no prune, no comment, no model. */
+function runConductorCheck(): number {
+  const checked = preflight();
+  const generatedAt = new Date();
+  let repo: string | null = null;
+  try {
+    const slug = getRepoSlug();
+    repo = `${slug.owner}/${slug.repo}`;
+  } catch {
+    // the header says "unknown repository"
+  }
+  const report =
+    "problem" in checked
+      ? buildConductorCheck({
+          generatedAt, repo, configProblem: checked.problem, identity: "", execution: "",
+          lock: { kind: "free" }, staleMinutes: DEFAULT_DO_WORK.lockStaleMinutes, watched: [],
+        })
+      : buildConductorCheck({
+          generatedAt, repo, configProblem: null,
+          identity: checked.login,
+          execution: describeConductorExecution(checked.execution),
+          lock: inspectConductorLock(staleMinutesOf(checked.config)),
+          staleMinutes: staleMinutesOf(checked.config),
+          watched: normalizeWatch(checked.config.conductor?.watch).map((id) => checkWatched(id, checked.participants)),
+        });
+  process.stdout.write(report.text);
+  return report.exitCode;
+}
+
+/** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
+async function runConductorDryRun(checked: Preflight): Promise<number> {
+  const { config, login, participants, execution } = checked;
+  const lock = inspectConductorLock(staleMinutesOf(config));
+  if (lock.kind === "held" || lock.kind === "suspect") {
+    process.stderr.write(`Warning: a conductor is running here (pid ${String(lock.owner.pid)}); the dry run does not take the lock.\n`);
+  }
+  process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
+  let failed = 0;
+  for (const id of normalizeWatch(config.conductor?.watch)) {
+    try {
+      if (isWatchClosed(getWatchTarget(id).state)) {
+        process.stdout.write(`Conductor: #${String(id)} is closed; a tick would drop it from the watch list.\n`);
+        continue;
+      }
+    } catch {
+      // As in the prune: an id that cannot be looked up stays, and conductItem reports the read failure.
+    }
+    try {
+      // One item at a time on purpose, as in a real tick.
+      if ((await conductItem(id, config, login, participants, execution, true)) === "failed") failed++; // NOSONAR
+    } catch (err) {
+      process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+      failed++;
+    }
+  }
+  return failed > 0 ? 1 : 0;
+}
+
 /**
  * One conductor tick. Returns the exit code rather than exiting, so the lock is
  * always released on the way out.
@@ -335,10 +442,18 @@ function preflight(): Preflight | { problem: string } {
  * Pre-flight (configuration, identity, lock), prune the watch list, then answer
  * each watched item whose newest message is the agent's: the model runs read-only
  * and posts the reply itself. The tick exits 1 when a run failed or posted nothing.
+ *
+ * `--check` only reports (see `runConductorCheck`). `--dry-run` runs the model for
+ * every owed reply but posts nothing, and changes nothing: no lock, no prune.
  */
-export async function runConductor(): Promise<number> {
+export async function runConductor(options: ConductorOptions = {}): Promise<number> {
+  if (options.check === true && options.dryRun === true) {
+    return fail("--check and --dry-run cannot be used together.");
+  }
+  if (options.check === true) return runConductorCheck();
   const checked = preflight();
   if ("problem" in checked) return fail(checked.problem);
+  if (options.dryRun === true) return runConductorDryRun(checked);
   const { config, login, participants, execution } = checked;
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
@@ -381,8 +496,10 @@ export const conductorCommand = new Command("conductor")
   .description(
     "Run one conductor tick as an allowed (human) account: verify the identity, take the conductor's own run lock, then act",
   )
-  .action(async () => {
-    exitWith(await runConductor());
+  .option("--check", "Report what a tick would do, including pending prunes, and change nothing; exit 1 on a problem")
+  .option("--dry-run", "Run the model for each owed reply and print it instead of posting; no lock, no prune")
+  .action(async (options: ConductorOptions) => {
+    exitWith(await runConductor(options));
   });
 
 conductorCommand

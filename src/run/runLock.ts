@@ -381,6 +381,11 @@ const UNKNOWN_OWNER: LockOwner = {
 };
 
 /** Acquire the conductor's own lock, independent of the `do-work` lock so both can run side by side. */
+/** Classify the conductor's lock without touching it; see `inspectRunLock`. */
+export function inspectConductorLock(staleMinutes: number, now: number = Date.now()): LockStatus {
+  return inspectRunLock(staleMinutes, now, CONDUCTOR_LOCK_FILE);
+}
+
 export function acquireConductorLock(staleMinutes: number): AcquireResult {
   return acquireRunLock("conductor", staleMinutes, CONDUCTOR_LOCK_FILE);
 }
@@ -605,8 +610,12 @@ function heldForMs(owner: LockOwner, now: number): number | null {
  * The judgement itself is `isStale`/`heldTooLong`, the same pair the acquisition
  * path uses, so a report and a tick can never disagree about one lock file.
  */
-export function inspectRunLock(staleMinutes: number, now: number = Date.now()): LockStatus {
-  const path = lockPath();
+export function inspectRunLock(
+  staleMinutes: number,
+  now: number = Date.now(),
+  lockFile: string = LOCK_FILE,
+): LockStatus {
+  const path = lockPath(lockFile);
 
   try {
     statSync(path);
