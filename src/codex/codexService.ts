@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
+import { readOnlyEnv } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeCodexOptions {
@@ -68,7 +69,7 @@ function invokeCodexCodeSync(prompt: string, options: InvokeCodexOptions): void 
  */
 export function runCodex(
   prompt: string,
-  options: { model?: string; effort?: string; readOnly?: boolean; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; readOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
@@ -79,12 +80,16 @@ export function runCodex(
       effort: options.effort,
     });
     const sink = options.sink;
-    const child = spawn(codexBin, args, { stdio: ["inherit", "pipe", "pipe"] });
+    const child = spawn(codexBin, args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+    });
     trackChild(child);
 
-    // Piped only so the transcript can see the output; it still reaches the terminal.
+    // Piped only so the transcript can see the output; it still reaches the terminal
+    // unless the caller discards the model output.
     child.stdout.on("data", (chunk: Buffer) => {
-      process.stdout.write(chunk);
+      if (options.quiet !== true) process.stdout.write(chunk);
       sink?.output("stdout", chunk.toString("utf8"));
     });
     child.stderr.on("data", (chunk: Buffer) => {

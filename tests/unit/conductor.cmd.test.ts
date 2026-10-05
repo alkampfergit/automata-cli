@@ -290,7 +290,7 @@ describe("conductor tick replies", () => {
     mockRunClaude.mockResolvedValue(undefined);
     expect(await run()).toBe(0);
     const [prompt, options] = mockRunClaude.mock.calls[0] as [string, Record<string, unknown>];
-    expect(options).toMatchObject({ readOnly: true, model: "opus", effort: "high" });
+    expect(options).toMatchObject({ readOnly: true, model: "opus", effort: "high", ghRepo: "acme/widget" });
     expect(prompt).toContain("gh issue comment 7 --body-file -");
     expect(stdout).toMatch(/posted a reply on issue #7/);
     expect(mockRunCodex).not.toHaveBeenCalled();
@@ -301,7 +301,7 @@ describe("conductor tick replies", () => {
     agentSpokeLast(true);
     mockRunCodex.mockResolvedValue(undefined);
     expect(await run()).toBe(0);
-    expect(mockRunCodex.mock.calls[0][1]).toMatchObject({ readOnly: true, model: "gpt-x" });
+    expect(mockRunCodex.mock.calls[0][1]).toMatchObject({ readOnly: true, model: "gpt-x", ghRepo: "acme/widget", quiet: true });
     expect(mockRunClaude).not.toHaveBeenCalled();
   });
 

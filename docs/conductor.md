@@ -101,12 +101,14 @@ the lock is taken.
 
 The run is **read-only**:
 
-- Claude runs with `--permission-mode dontAsk`, may only read and search, look at a thread with `gh issue view`,
+- Claude runs with `--permission-mode dontAsk`, may only read and search inside the working directory, look at a thread with `gh issue view`,
   `gh pr view`, `gh pr diff` and `gh pr checks`, use `git status`, and post with
   `gh issue comment <n> --body-file -` or `gh pr comment <n> --body-file -` for the one reply target only. Comments on
   any other number are denied. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
-  a file. `Edit`, `Write` and `NotebookEdit` are denied.
-- Codex runs with `--sandbox read-only`. That sandbox can block the network; if it does, `gh` cannot post and the tick
+  a file. `Edit`, `Write` and `NotebookEdit` are denied. The run sets `GH_REPO` to the watched repository, and `gh`
+  calls with `--repo` or `-R` are denied, so `gh` cannot reach another repository.
+- Codex runs with `--sandbox read-only` and `GH_REPO` set. Its output is discarded and is not written to stdout. Codex
+  has no command allow-list, so with network access it is not limited to comments on the reply target. That sandbox can block the network; if it does, `gh` cannot post and the tick
   reports a run that posted nothing. Use `claude` for the conductor until that is changed.
 
 After the run the tick reads the conversation again. A reply counts as posted only when the account `gh` runs as has a
