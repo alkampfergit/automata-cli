@@ -14,6 +14,21 @@ describe("newMessagesBy", () => {
     const after = [...BEFORE, msg("Alice", "2026-01-01T00:02:00Z"), msg("bot", "2026-01-01T00:03:00Z")];
     expect(newMessagesBy(BEFORE, after, "alice")).toHaveLength(1);
   });
+
+  it("ignores an edited issue body, a review and a thread comment", () => {
+    const after = [
+      ...BEFORE,
+      { ...msg("alice", "2026-01-01T00:02:00Z", "edited"), kind: "issue-body" as const },
+      { ...msg("alice", "2026-01-01T00:03:00Z"), kind: "pr-review" as const },
+      { ...msg("alice", "2026-01-01T00:04:00Z"), kind: "thread-comment" as const },
+    ];
+    expect(newMessagesBy(BEFORE, after, "alice")).toHaveLength(0);
+  });
+
+  it("counts a new pull request comment", () => {
+    const after = [...BEFORE, { ...msg("alice", "2026-01-01T00:02:00Z"), kind: "pr-comment" as const }];
+    expect(newMessagesBy(BEFORE, after, "alice")).toHaveLength(1);
+  });
 });
 
 describe("conductReply", () => {
