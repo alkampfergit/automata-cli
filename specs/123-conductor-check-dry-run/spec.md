@@ -10,7 +10,7 @@ As the operator, I want to see what a conductor tick would do, and what it would
 
 - FR-1: `automata conductor --check` prints a read-only report: configuration and identity, the run lock, the watch list with the entries a tick would drop, and the reply decision per conversation. It exits 0, or 1 when the report has a problem.
 - FR-2: `--check` takes no lock, prunes nothing, posts nothing and starts no model.
-- FR-3: `automata conductor --dry-run` runs the model for each owed reply and prints the reply with its target. It posts nothing and does not change the watch list.
+- FR-3: `automata conductor --dry-run` runs the model for the reply a tick would post for each watched item (the first owed conversation) and prints the reply with its target. The codex executor is refused, because it cannot be kept from posting. It posts nothing and does not change the watch list.
 - FR-4: `--check` with `--dry-run` is a usage error (exit 1).
 - FR-5: `docs/conductor.md` and `CHANGELOG.md` document both options.
 

@@ -409,6 +409,10 @@ function runConductorCheck(): number {
 /** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
 async function runConductorDryRun(checked: Preflight): Promise<number> {
   const { config, login, participants, execution } = checked;
+  // Codex has no command allow-list: its read-only sandbox still has network access, so a model could post.
+  if (execution.executor === "codex") {
+    return fail("--dry-run cannot be used with the codex executor: it cannot stop the model from posting.");
+  }
   const lock = inspectConductorLock(staleMinutesOf(config));
   if (lock.kind === "held" || lock.kind === "suspect") {
     process.stderr.write(`Warning: a conductor is running here (pid ${String(lock.owner.pid)}); the dry run does not take the lock.\n`);
@@ -444,7 +448,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
  * and posts the reply itself. The tick exits 1 when a run failed or posted nothing.
  *
  * `--check` only reports (see `runConductorCheck`). `--dry-run` runs the model for
- * every owed reply but posts nothing, and changes nothing: no lock, no prune.
+ * the reply a tick would post for each watched item, but posts nothing, and changes nothing: no lock, no prune.
  */
 export async function runConductor(options: ConductorOptions = {}): Promise<number> {
   if (options.check === true && options.dryRun === true) {
