@@ -161,3 +161,13 @@ describe("helpers", () => {
     expect(renderChecks([])).toBe("No checks reported.");
   });
 });
+
+describe("dry-run instruction", () => {
+  it("replaces the posting instruction", async () => {
+    const { dryRunInstruction } = await import("../../src/conductor/thread.js");
+    const text = dryRunInstruction({ kind: "pr", number: 9 });
+    expect(text).toMatch(/pull request #9/);
+    expect(text).toMatch(/dry run/);
+    expect(text).not.toMatch(/gh pr comment/);
+  });
+});

@@ -31,6 +31,8 @@ export interface ConductorPromptInput {
    * thread, or the pull request of a pull request thread.
    */
   replyTo?: ReplyTarget;
+  /** `--dry-run`: the prompt asks for the reply as the final message and tells the model nothing can be posted. */
+  dryRun?: boolean;
 }
 
 /** The issue or pull request a reply is posted on. */
@@ -60,6 +62,18 @@ export function postingInstruction(target: ReplyTarget): string {
       "What you print is discarded; only a posted comment counts.",
     `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
     "Post exactly one comment. Do not approve, merge or close anything.",
+  ].join("\n");
+}
+
+/**
+ * The posting instruction of a dry run. The run has no permission to comment, so
+ * the reply is the model's final message — the one thing a dry run captures.
+ */
+export function dryRunInstruction(target: ReplyTarget): string {
+  return [
+    `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
+      "This is a dry run: you cannot post a comment, and you must not try.",
+    "Make the reply, and nothing else, your final message. Do not approve, merge or close anything.",
   ].join("\n");
 }
 
@@ -161,7 +175,7 @@ export function composeConductorPrompt(input: ConductorPromptInput): string {
     "Only the messages above exist. Anything from other accounts has been withheld",
     "deliberately — do not ask about it.",
     "",
-    postingInstruction(replyTo),
+    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo),
   );
   return lines.join("\n");
 }

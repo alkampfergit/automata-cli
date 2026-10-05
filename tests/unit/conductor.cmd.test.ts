@@ -4,6 +4,7 @@ const mockReadConfig = vi.fn();
 const mockLogin = vi.fn();
 const mockAcquire = vi.fn();
 const mockRelease = vi.fn();
+const mockInspect = vi.fn();
 const mockRawConfig = vi.fn();
 const mockWrite = vi.fn();
 const mockTarget = vi.fn();
@@ -43,6 +44,7 @@ vi.mock("../../src/codex/codexService.js", () => ({
 vi.mock("../../src/run/runLock.js", () => ({
   CONDUCTOR_LOCK_RELATIVE_PATH: ".automata/conductor.lock",
   acquireConductorLock: (...a: unknown[]) => mockAcquire(...a),
+  inspectConductorLock: (...a: unknown[]) => mockInspect(...a),
 }));
 
 function text(author: string, createdAt: string, body: string) {
@@ -67,6 +69,7 @@ beforeEach(() => {
   mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "automata" });
   mockLinks.mockReturnValue({ byIssue: new Map() });
   mockAcquire.mockReturnValue({ ok: true, handle: { release: mockRelease } });
+  mockInspect.mockReturnValue({ kind: "free" });
   mockIssueSurface.mockImplementation((n: number) => issueSurface(n, [text("alice", "t1", "hi")]));
   mockChecks.mockReturnValue([]);
 });
@@ -334,5 +337,86 @@ describe("conductor tick replies", () => {
     expect(await run()).toBe(1);
     expect(stderr).toMatch(/conductor\.executor/);
     expect(mockAcquire).not.toHaveBeenCalled();
+  });
+});
+
+describe("conductor --check and --dry-run", () => {
+  const watching = (...ids: number[]) => mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: ids } });
+  // The agent wrote last on #5, so a reply is owed; #6 is answered.
+  const owed = [text("bot", "2026-10-01T00:00:00Z", "question?")];
+  const answered = [text("bot", "2026-10-01T00:00:00Z", "q"), text("alice", "2026-10-02T00:00:00Z", "a")];
+
+  async function runWith(options: { check?: boolean; dryRun?: boolean }): Promise<number> {
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    return runConductor(options);
+  }
+
+  it("refuses both flags together, before reading anything", async () => {
+    expect(await runWith({ check: true, dryRun: true })).toBe(1);
+    expect(stderr).toMatch(/cannot be used together/);
+    expect(mockLogin).not.toHaveBeenCalled();
+  });
+
+  it("--check reports pending prunes and reply decisions, and writes nothing", async () => {
+    watching(5, 6, 7);
+    mockTarget.mockImplementation((n: number) => (n === 7 ? issue(7, "closed") : issue(n)));
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, n === 5 ? owed : answered));
+    expect(await runWith({ check: true })).toBe(0);
+    expect(stdout).toMatch(/issue #7: closed, a tick would drop it/);
+    expect(stdout).toMatch(/reply on issue #5/);
+    expect(stdout).toMatch(/skip issue #6 \(answered\)/);
+    expect(stdout).toMatch(/RESULT: healthy/);
+    expect(mockAcquire).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("--check exits 1 for an unreadable watched item and for a bad identity", async () => {
+    watching(5);
+    mockTarget.mockImplementation(() => {
+      throw new Error("gh down");
+    });
+    expect(await runWith({ check: true })).toBe(1);
+    expect(stdout).toMatch(/#5 could not be read: gh down/);
+    mockLogin.mockReturnValue("carol");
+    stdout = "";
+    expect(await runWith({ check: true })).toBe(1);
+    expect(stdout).toMatch(/not listed in allowedUsers/);
+  });
+
+  it("--check exits 1 for a lock that outlived its window, and not for a live one", async () => {
+    watching();
+    const owner = { pid: 7, host: "h", startedAt: "t", command: "conductor", token: "x" };
+    mockInspect.mockReturnValue({ kind: "held", owner, heldForMs: 1000 });
+    expect(await runWith({ check: true })).toBe(0);
+    mockInspect.mockReturnValue({ kind: "suspect", owner, heldForMs: 1000 });
+    expect(await runWith({ check: true })).toBe(1);
+  });
+
+  it("--dry-run prints the captured reply, posts nothing, takes no lock and prunes nothing", async () => {
+    watching(5, 7);
+    mockTarget.mockImplementation((n: number) => (n === 7 ? issue(7, "closed") : issue(n)));
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
+    mockRunClaude.mockImplementation(async (prompt: string, options: { sink: { output(s: string, t: string): void }; replyTo?: unknown }) => {
+      expect(options.replyTo).toBeUndefined();
+      expect(prompt).toMatch(/This is a dry run/);
+      options.sink.output("stdout", JSON.stringify({ type: "result", result: "Here is my answer." }) + "\n");
+    });
+    expect(await runWith({ dryRun: true })).toBe(0);
+    expect(stdout).toMatch(/Dry run: reply for issue #5 \(not posted\) ---\nHere is my answer\./);
+    expect(stdout).toMatch(/#7 is closed; a tick would drop it/);
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+    expect(mockAcquire).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("--dry-run exits 1 when the model prints no reply, and warns about a live lock", async () => {
+    watching(5);
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
+    mockInspect.mockReturnValue({ kind: "held", owner: { pid: 7, host: "h", startedAt: "t", command: "conductor", token: "x" }, heldForMs: 1 });
+    mockRunClaude.mockResolvedValue(undefined);
+    expect(await runWith({ dryRun: true })).toBe(1);
+    expect(stderr).toMatch(/does not take the lock/);
+    expect(stderr).toMatch(/produced no reply text/);
   });
 });

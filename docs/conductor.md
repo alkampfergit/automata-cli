@@ -7,6 +7,8 @@ reply as a comment. Comment only: the conductor never approves or merges.
 
 ```bash
 automata conductor              # one tick
+automata conductor --check      # report what a tick would do; change nothing
+automata conductor --dry-run    # write the replies, but do not post them
 automata conductor add <id>     # watch an issue or pull request
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
@@ -122,6 +124,65 @@ comment that was not there before. Otherwise the tick writes an error on stderr 
 A run that fails after it posted counts as posted, with a warning. An item that cannot be read is skipped with a warning
 and does not change the exit code. Nothing stops a later tick from running again on an item whose run posted nothing;
 that is the job of the loop-safety issue (#122).
+
+## `--check` and `--dry-run`
+
+Both options leave the repository, the watch list and GitHub unchanged. Use only one of them: `--check --dry-run` is a
+usage error (exit 1). The pattern is that of [`do-work --check`](do-work.md).
+
+### `--check`
+
+A read-only report of what a tick would do now. It does not take the lock, prune, comment or start a model. It has
+four sections, a `Problems` list when there are findings, and a `RESULT` line:
+
+| Section | Content |
+|---------|---------|
+| Configuration | The `gh` account and the executor with its model and effort. An unusable configuration or identity is the only content shown; it is a problem. |
+| Run lock | `free`, `held` (a conductor is running; a tick would do nothing), `stale` (the next tick takes it over), `suspect` or `unreadable`. |
+| Watch list | One line per watched id. A closed issue or a closed or merged pull request is marked as one a tick would drop (a pending prune). An id that cannot be read is marked unavailable. |
+| Replies a tick would write | For each open item, the [reply rule](#reply-rule) decision per conversation: `reply on …` or `skip … (<reason>)`. |
+
+Problems, and exit code 1: an unusable configuration or identity, a `suspect` or `unreadable` lock, and a watched id that
+cannot be read. A live lock, a pending prune and an owed reply are information, not problems. The check reads GitHub
+through `gh` only, so it needs no `--no-fetch`.
+
+```text
+automata conductor --check — acme/widget — 2026-10-05T13:00:00.000Z
+
+Configuration
+  running as alice
+  executor: claude · model opus
+
+Run lock
+  no conductor is running in this checkout
+
+Watch list (2)
+  issue #5: open
+  PR #7: closed, a tick would drop it from the watch list
+
+Replies a tick would write
+  reply on issue #5: bot's message at 2026-10-01T00:00:00Z has no answer from an allowed user
+
+RESULT: healthy
+```
+
+### `--dry-run`
+
+A tick that runs the model for each owed reply and prints the reply instead of posting it:
+
+```text
+--- Dry run: reply for issue #5 (not posted) ---
+<the reply text>
+---
+```
+
+- The run has no permission to comment. The prompt tells the model that this is a dry run and that its final message is
+  the reply; that message is what is printed.
+- The watch list is not changed. A closed item is reported as one a tick would drop, and is not read further.
+- The lock is not taken, because nothing is written. If a conductor holds the lock, a warning goes to stderr and the dry
+  run continues.
+- The identity check and the configuration check apply as for a tick.
+- The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
 
 ## Configuration
 
