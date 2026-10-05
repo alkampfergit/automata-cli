@@ -410,6 +410,13 @@ describe("conductor --check and --dry-run", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
+  it("--dry-run refuses the codex executor and runs no model", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [5], executor: "codex" } });
+    expect(await runWith({ dryRun: true })).toBe(1);
+    expect(stderr).toMatch(/cannot be used with the codex executor/);
+    expect(mockRunCodex).not.toHaveBeenCalled();
+  });
+
   it("--dry-run exits 1 when the model prints no reply, and warns about a live lock", async () => {
     watching(5);
     mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));

@@ -43,8 +43,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   `docs/conductor.md`
 - `automata conductor --check` prints a read-only report of what a tick would do — the configuration, the run lock,
   the watch list with the entries a tick would drop, and the reply decision per conversation — and exits 1 on a
-  problem. `automata conductor --dry-run` runs the model for each owed reply and prints it instead of posting it; it
-  takes no lock and changes no watch list. The two options cannot be combined. See `docs/conductor.md`
+  problem. `automata conductor --dry-run` runs the model for the reply a tick would post for each watched item and prints it instead of
+  posting it (the `codex` executor is refused); it takes no lock and changes no watch list. The two options cannot be combined. See `docs/conductor.md`
 
 ### Changed
 

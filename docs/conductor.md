@@ -168,7 +168,8 @@ RESULT: healthy
 
 ### `--dry-run`
 
-A tick that runs the model for each owed reply and prints the reply instead of posting it:
+A tick that runs the model for the reply a tick would post for each watched item (the first owed conversation of the
+item; `--check` lists all of them) and prints the reply instead of posting it:
 
 ```text
 --- Dry run: reply for issue #5 (not posted) ---
@@ -182,6 +183,8 @@ A tick that runs the model for each owed reply and prints the reply instead of p
 - The lock is not taken, because nothing is written. If a conductor holds the lock, a warning goes to stderr and the dry
   run continues.
 - The identity check and the configuration check apply as for a tick.
+- The `codex` executor is refused (exit 1): its sandbox has no command allow-list and keeps network access, so it
+  cannot guarantee that nothing is posted.
 - The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
 
 ## Configuration
