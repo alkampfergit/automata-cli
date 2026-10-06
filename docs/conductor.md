@@ -51,6 +51,7 @@ separately, and the item needs a reply when either does. A conversation needs a 
 | skip, `answered` | An allowed user wrote after the newest `agentUser` message. |
 | skip, `no-agent-message` | `agentUser` never wrote there. |
 | skip, `closed` | The issue is closed or the pull request closed or merged — the rule the tick-start prune uses. |
+| skip, `limit` or `blocked` | A reply is owed, but the item reached its [reply limit](#loop-safety) or has the `conductor-blocked` label. |
 
 Other accounts are ignored. Timestamps compare strictly, so an answer in the same second as the message does not count.
 
@@ -122,8 +123,33 @@ comment that was not there before. Otherwise the tick writes an error on stderr 
 | `could not tell whether … got a reply` | The conversation could not be read before or after the run. |
 
 A run that fails after it posted counts as posted, with a warning. An item that cannot be read is skipped with a warning
-and does not change the exit code. Nothing stops a later tick from running again on an item whose run posted nothing;
-that is the job of the loop-safety issue (#122).
+and does not change the exit code. Nothing stops a later tick from running again on an item whose run posted nothing,
+except the [loop-safety rules](#loop-safety), which cap the replies.
+
+## Loop safety
+
+Two unattended agents can answer each other for ever, so a tick stops on its own. The rules apply to the watched item
+as a whole (an issue and its linked pull requests together) and turn an owed reply into a skip:
+
+| Rule | Skip reason | Effect |
+|------|-------------|--------|
+| Reply limit | `limit` | The conductor has posted `conductor.maxRepliesPerItem` replies (default 5) on the item. Raise the setting to resume. |
+| Blocked | `blocked` | The watched item has the `conductor-blocked` label. Remove the label to resume. |
+| Closed | `closed` | A closed issue, or a closed or merged pull request, is left alone. |
+
+**Counting.** The count comes from the conversation, so a fresh checkout counts the same as an old one. The posting
+instruction tells the model to end each reply with the line `<!-- automata:conductor -->`; the count is the number of
+comments, on the issue or its pull requests, that carry it. A reply that lacks the marker is not counted.
+
+**Needs a human.** When the model cannot go on without a person, it posts no comment and ends its final message with
+`NEEDS-HUMAN: <reason>`. The tick then adds the `conductor-blocked` label to the watched item (the issue, or the watched
+pull request) and stays silent on the conversation. If the repository has no such label, the tick creates it. The
+model has no permission to edit labels; automata applies the label. If the label cannot be applied, the tick writes an
+error and exits 1. A model run that posted a reply and also printed `NEEDS-HUMAN:` is labelled too.
+
+A tick logs why it left an item alone, for example `Conductor: #7 gets no reply: the item has the conductor-blocked
+label; remove it to resume.` `--check` shows the same skip reasons, and `--dry-run` obeys both rules. A `--dry-run`
+answer of `NEEDS-HUMAN:` is printed and applies no label.
 
 ## `--check` and `--dry-run`
 
@@ -187,12 +213,13 @@ item; `--check` lists all of them) and prints the reply instead of posting it:
   run continues.
 - The identity check and the configuration check apply as for a tick.
 - The `codex` executor is refused (exit 1), as for a tick: it has no command allow-list, so it cannot be limited.
+- The [loop-safety rules](#loop-safety) apply. A reply of `NEEDS-HUMAN: <reason>` is printed as such; no label is applied.
 - The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
 
 ## Configuration
 
 It reads the same `.automata/config.json` as `do-work`, but needs only `allowedUsers` and `agentUser` (see
-[config.md](config.md)). An explicit `remoteType: "azdo"` is rejected, as for `do-work`.
+[config.md](config.md)). `conductor.maxRepliesPerItem` sets the [reply limit](#loop-safety). An explicit `remoteType: "azdo"` is rejected, as for `do-work`.
 
 ## Identity
 

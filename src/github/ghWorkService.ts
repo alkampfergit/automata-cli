@@ -725,12 +725,15 @@ export interface WatchTarget {
   /** `closed` covers a merged pull request too. */
   state: "open" | "closed";
   title: string;
+  /** Label names; a pull request is an issue to the REST API, so both have them. */
+  labels: string[];
 }
 
 interface RawWatchTarget {
   number: number;
   state: string;
   title: string;
+  labels?: ({ name?: string } | string)[];
   pull_request?: unknown;
 }
 
@@ -743,7 +746,30 @@ export function getWatchTarget(id: number): WatchTarget {
     kind: raw.pull_request === undefined ? "issue" : "pr",
     state: raw.state === "closed" ? "closed" : "open",
     title: raw.title,
+    labels: (raw.labels ?? []).map((label) => (typeof label === "string" ? label : (label.name ?? ""))).filter((name) => name.length > 0),
   };
+}
+
+/**
+ * Add a label to an issue or a pull request. A repository that does not have the
+ * label gets it created first: the caller needs the label to exist, because it is
+ * the only record of why the conductor stopped.
+ */
+export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: string, description: string): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  const args = [edit, "edit", String(target.number), "--add-label", name];
+  let result = run("gh", args);
+  if (result.status !== 0 && isMissingLabelError(result.stderr)) {
+    const created = run("gh", ["label", "create", name, "--description", description]);
+    // Two ticks can race to create it; "already exists" is the label we need.
+    if (created.status !== 0 && !/already exists/i.test(created.stderr)) {
+      throw new Error(created.stderr.trim() || `Failed to create the label ${name}.`);
+    }
+    result = run("gh", args);
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to add the label ${name} to #${String(target.number)}.`);
+  }
 }
 
 /**

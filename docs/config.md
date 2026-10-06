@@ -297,6 +297,7 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
+| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
 
 `models` and `effort` are keyed per executor for the reason `doWork.models` is: a value valid for one CLI is not valid for
 the other. The conductor reads only its own keys, never `doWork.executor`.

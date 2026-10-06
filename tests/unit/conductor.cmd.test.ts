@@ -9,6 +9,7 @@ const mockRawConfig = vi.fn();
 const mockWrite = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
+const mockAddLabel = vi.fn();
 const mockLinks = vi.fn();
 const mockIssueSurface = vi.fn();
 const mockPrSurface = vi.fn();
@@ -29,6 +30,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getAuthenticatedLogin: () => mockLogin(),
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
+  addLabel: (...a: unknown[]) => mockAddLabel(...a),
   getOpenPrLinkMap: () => mockLinks(),
   getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
   getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
@@ -147,8 +149,8 @@ describe("conductor", () => {
   });
 });
 
-const issue = (n: number, state = "open") => ({ number: n, kind: "issue", state, title: `T${String(n)}` });
-const pr = (n: number, state = "open") => ({ number: n, kind: "pr", state, title: `P${String(n)}` });
+const issue = (n: number, state = "open") => ({ number: n, kind: "issue", state, title: `T${String(n)}`, labels: [] as string[] });
+const pr = (n: number, state = "open") => ({ number: n, kind: "pr", state, title: `P${String(n)}`, labels: [] as string[] });
 
 describe("conductor watch list", () => {
   async function call(name: "runWatchAdd" | "runWatchRemove", id: string): Promise<number> {
@@ -452,5 +454,105 @@ describe("conductor --check and --dry-run", () => {
     expect(await runWith({ dryRun: true })).toBe(1);
     expect(stderr).toMatch(/does not take the lock/);
     expect(stderr).toMatch(/produced no reply text/);
+  });
+});
+
+describe("conductor loop safety", () => {
+  const watching = (extra: object = {}, labels: string[] = []) => {
+    const config = { ...CONFIG, conductor: { watch: [7], ...extra } };
+    mockReadConfig.mockReturnValue(config);
+    mockRawConfig.mockReturnValue(config);
+    mockTarget.mockReturnValue({ ...issue(7), labels });
+  };
+  const MARK = "<!-- automata:conductor -->";
+  function conversation(replies: number) {
+    const base = [text("alice", "2026-10-01T09:00:00Z", "go")];
+    for (let i = 0; i < replies; i++) base.push(text("alice", `2026-10-02T0${String(i)}:00:00Z`, `r${String(i)}\n${MARK}`));
+    base.push(text("bot", "2026-10-03T10:00:00Z", "question?"));
+    mockIssueSurface.mockImplementation(() => issueSurface(7, base));
+  }
+  function printed(output: string) {
+    return (_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }) => {
+      options.sink?.output("stdout", JSON.stringify({ type: "result", result: output }) + "\n");
+      return Promise.resolve();
+    };
+  }
+
+  it("does not run the model once the item has reached maxRepliesPerItem", async () => {
+    watching({ maxRepliesPerItem: 2 });
+    conversation(2);
+    expect(await run()).toBe(0);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/#7 gets no reply: .*maxRepliesPerItem \(2\)/);
+  });
+
+  it("defaults the limit to 5", async () => {
+    watching();
+    conversation(4);
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+    mockRunClaude.mockClear();
+    conversation(5);
+    expect(await run()).toBe(0);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unusable maxRepliesPerItem before the lock", async () => {
+    watching({ maxRepliesPerItem: 0 });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/maxRepliesPerItem must be a positive integer/);
+    expect(mockAcquire).not.toHaveBeenCalled();
+  });
+
+  it("does not run the model on an item with the conductor-blocked label", async () => {
+    watching({}, ["conductor-blocked"]);
+    conversation(0);
+    expect(await run()).toBe(0);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/conductor-blocked label/);
+  });
+
+  it("labels the item and stays silent when the model says it needs a human", async () => {
+    watching();
+    conversation(0);
+    mockRunClaude.mockImplementation(printed("I cannot decide this.\nNEEDS-HUMAN: the choice is a policy call"));
+    expect(await run()).toBe(0);
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
+    expect(stdout).toMatch(/needs a human \(the choice is a policy call\)/);
+    expect(stderr).not.toMatch(/posted no comment/);
+  });
+
+  it("exits 1 when the label cannot be applied", async () => {
+    watching();
+    conversation(0);
+    mockRunClaude.mockImplementation(printed("NEEDS-HUMAN: stuck"));
+    mockAddLabel.mockImplementation(() => {
+      throw new Error("403");
+    });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/label was not applied: 403/);
+  });
+
+  it("leaves a closed item alone even when the agent spoke last", async () => {
+    watching();
+    mockTarget.mockReturnValue({ ...issue(7, "closed"), labels: [] });
+    conversation(0);
+    expect(await run()).toBe(0);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("a dry run obeys the limit and labels nothing for a needs-a-human answer", async () => {
+    watching({ maxRepliesPerItem: 1 });
+    conversation(1);
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    expect(await runConductor({ dryRun: true })).toBe(0);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    watching();
+    conversation(0);
+    mockRunClaude.mockImplementation(printed("NEEDS-HUMAN: stuck"));
+    expect(await runConductor({ dryRun: true })).toBe(0);
+    expect(mockAddLabel).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/needs a human \(not labelled\): stuck/);
   });
 });

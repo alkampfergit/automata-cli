@@ -117,6 +117,8 @@ export interface AutomataConductorConfig {
   models?: DoWorkModels;
   /** Reasoning effort per executor, as `doWork.effort`. */
   effort?: DoWorkEffort;
+  /** The most replies the conductor posts on one watched item. Unset means 5. */
+  maxRepliesPerItem?: number;
 }
 
 export interface AutomataConfig {
