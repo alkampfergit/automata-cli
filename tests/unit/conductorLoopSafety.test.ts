@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   countConductorReplies,
+  coveredByWatchedIssue,
   maxRepliesProblem,
   parseNeedsHuman,
   resolveMaxReplies,
@@ -101,5 +102,15 @@ describe("instructions", () => {
     const text = dryRunInstruction(target);
     expect(text).toContain("NEEDS-HUMAN:");
     expect(text).not.toContain(REPLY_MARKER);
+  });
+});
+
+describe("coveredByWatchedIssue", () => {
+  const linked = (issue: number): number[] => (issue === 10 ? [11, 12] : []);
+  it("maps a watched pull request to the watched issue that links it", () => {
+    expect([...coveredByWatchedIssue([10, 11, 20], linked)]).toEqual([[11, 10]]);
+  });
+  it("leaves a pull request alone when its issue is not watched", () => {
+    expect(coveredByWatchedIssue([11, 20], linked).size).toBe(0);
   });
 });

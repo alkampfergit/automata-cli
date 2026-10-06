@@ -22,7 +22,7 @@ export interface CheckSection {
 
 /** One watched id as the check read it. */
 export type WatchedCheck =
-  | { id: number; kind: "issue" | "pr"; state: "open" | "closed"; decisions: ConductorDecision[] }
+  | { id: number; kind: "issue" | "pr"; state: "open" | "closed"; decisions: ConductorDecision[]; coveredBy?: number }
   | { id: number; unavailable: string };
 
 export interface ConductorCheckInput {
@@ -100,6 +100,10 @@ export function watchSections(watched: WatchedCheck[]): CheckSection[] {
     const name = label(entry.id, entry.kind);
     if (entry.state === "closed") {
       listLines.push(`${name}: closed, a tick would drop it from the watch list`);
+      continue;
+    }
+    if (entry.coveredBy !== undefined) {
+      listLines.push(`${name}: open, covered by watched issue #${String(entry.coveredBy)}; a tick gives it no separate reply`);
       continue;
     }
     listLines.push(`${name}: open`);

@@ -15,7 +15,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `automata conductor` stops on its own so it is safe to run unattended: `conductor.maxRepliesPerItem` (default 5)
   caps the replies per watched item, a model that prints `NEEDS-HUMAN: <reason>` makes the tick label the item
   `conductor-blocked` and stay silent, and closed or merged items are left alone. `--check` and `--dry-run` show
-  both rules. See [docs/conductor.md](docs/conductor.md#loop-safety)
+  both rules. A pull request linked to a watched issue gets no separate reply. See
+  [docs/conductor.md](docs/conductor.md#loop-safety)
 - In Azure DevOps mode, `git get-pr-comments` (and `--json`) and `execute-prompt fix-comments` list the unresolved
   (`active` or `pending`) file-anchored review threads of the PR, in the same output shape and with the same exit
   codes as GitHub mode. General threads and system comments are left out; the author is a display name. See
