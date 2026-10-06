@@ -179,6 +179,9 @@ item; `--check` lists all of them) and prints the reply instead of posting it:
 
 - The run has no permission to comment. The prompt tells the model that this is a dry run and that its final message is
   the reply; that message is what is printed.
+- A watched issue and its linked pull request can both be on the watch list. A real tick posts its reply, so the
+  next item sees it and does not answer the same conversation again. A dry run posts nothing, so it remembers each
+  conversation it has already answered and prints one reply for it only.
 - The watch list is not changed. A closed item is reported as one a tick would drop, and is not read further.
 - The lock is not taken, because nothing is written. If a conductor holds the lock, a warning goes to stderr and the dry
   run continues.
