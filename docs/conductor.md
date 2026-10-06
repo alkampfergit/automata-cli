@@ -183,8 +183,7 @@ item; `--check` lists all of them) and prints the reply instead of posting it:
 - The lock is not taken, because nothing is written. If a conductor holds the lock, a warning goes to stderr and the dry
   run continues.
 - The identity check and the configuration check apply as for a tick.
-- The `codex` executor is refused (exit 1): its sandbox has no command allow-list and keeps network access, so it
-  cannot guarantee that nothing is posted.
+- The `codex` executor is refused (exit 1), as for a tick: it has no command allow-list, so it cannot be limited.
 - The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
 
 ## Configuration
