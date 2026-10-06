@@ -210,6 +210,29 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
 
 type ItemResult = "replied" | "idle" | "failed";
 
+async function conductDryRunItem(
+  prompt: string,
+  execution: ConductorExecution,
+  label: string,
+  where: string,
+  replyTo: ReplyTarget,
+  dryRun: DryRunContext,
+): Promise<ItemResult> {
+  const reply = await runModelForText(prompt, execution);
+  if (reply === null) {
+    process.stderr.write(`Error: the dry run for ${label} produced no reply text.\n`);
+    return "failed";
+  }
+  const needsHuman = parseNeedsHuman(reply);
+  if (needsHuman !== null) {
+    process.stdout.write(`--- Dry run: ${label} needs a human (not labelled): ${needsHuman} ---\n`);
+    return "idle";
+  }
+  dryRun.answered.add(targetKey(replyTo));
+  process.stdout.write(`--- Dry run: reply for ${where} (not posted) ---\n${reply}\n---\n`);
+  return "replied";
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -250,21 +273,7 @@ async function conductItem(
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
   process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
-  if (dryRun) {
-    const reply = await runModelForText(prompt, execution);
-    if (reply === null) {
-      process.stderr.write(`Error: the dry run for ${label} produced no reply text.\n`);
-      return "failed";
-    }
-    const needsHuman = parseNeedsHuman(reply);
-    if (needsHuman !== null) {
-      process.stdout.write(`--- Dry run: ${label} needs a human (not labelled): ${needsHuman} ---\n`);
-      return "idle";
-    }
-    dryRun.answered.add(targetKey(replyTo));
-    process.stdout.write(`--- Dry run: reply for ${where} (not posted) ---\n${reply}\n---\n`);
-    return "replied";
-  }
+  if (dryRun) return conductDryRunItem(prompt, execution, label, where, replyTo, dryRun);
   const captured = captureStdout();
   const outcome = await conductReply({
     login,
@@ -533,6 +542,19 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   return failed > 0 ? 1 : 0;
 }
 
+function reportHeldLock(held: { pid: number; host: string; startedAt: string }, suspect: boolean, staleMinutes: number): number {
+  process.stdout.write(
+    `Another conductor is already running here (pid ${String(held.pid)} on ${held.host}, ` +
+      `started ${held.startedAt}). Doing nothing.\n`,
+  );
+  if (!suspect) return 0;
+  process.stderr.write(
+    `Warning: that lock has been held longer than ${String(staleMinutes)} minutes. If no tick is really ` +
+      `running, its process id was probably reused; remove ${CONDUCTOR_LOCK_RELATIVE_PATH} once you have confirmed that.\n`,
+  );
+  return 2;
+}
+
 /**
  * One conductor tick. Returns the exit code rather than exiting, so the lock is
  * always released on the way out.
@@ -555,21 +577,7 @@ export async function runConductor(options: ConductorOptions = {}): Promise<numb
   const { config, login, participants, execution } = checked;
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
-  if (!lock.ok) {
-    const held = lock.heldBy;
-    process.stdout.write(
-      `Another conductor is already running here (pid ${String(held.pid)} on ${held.host}, ` +
-        `started ${held.startedAt}). Doing nothing.\n`,
-    );
-    if (lock.suspect) {
-      process.stderr.write(
-        `Warning: that lock has been held longer than ${String(staleMinutes)} minutes. If no tick is really ` +
-          `running, its process id was probably reused; remove ${CONDUCTOR_LOCK_RELATIVE_PATH} once you have confirmed that.\n`,
-      );
-      return 2;
-    }
-    return 0;
-  }
+  if (!lock.ok) return reportHeldLock(lock.heldBy, lock.suspect, staleMinutes);
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
