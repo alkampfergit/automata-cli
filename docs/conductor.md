@@ -147,6 +147,14 @@ pull request) and stays silent on the conversation. If the repository has no suc
 model has no permission to edit labels; automata applies the label. If the label cannot be applied, the tick writes an
 error and exits 1. A model run that posted a reply and also printed `NEEDS-HUMAN:` is labelled too.
 
+**Overlapping entries.** `watch add` on an issue also follows its linked pull requests, and the issue's conversation
+already includes them. A tick, `--check` and `--dry-run` give such a pull request no separate reply while its issue
+stays on the watch list, so the limit and the label of the issue cannot be bypassed.
+
+**Several checkouts.** The run lock is local to one checkout. The limit is checked before the model runs, so two
+checkouts that run at the same time can both post and pass the limit by a small amount. The next tick on any checkout
+counts the replies on GitHub and stops. Run the conductor from one checkout for each repository when the limit must be exact.
+
 A tick logs why it left an item alone, for example `Conductor: #7 gets no reply: the item has the conductor-blocked
 label; remove it to resume.` `--check` shows the same skip reasons, and `--dry-run` obeys both rules. A `--dry-run`
 answer of `NEEDS-HUMAN:` is printed and applies no label.

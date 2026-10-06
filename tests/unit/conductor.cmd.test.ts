@@ -435,7 +435,7 @@ describe("conductor --check and --dry-run", () => {
     expect(await runWith({ dryRun: true })).toBe(0);
     expect(mockRunClaude).toHaveBeenCalledOnce();
     expect(stdout.match(/Dry run: reply for/g)).toHaveLength(1);
-    expect(stdout).toMatch(/#50 needs no reply/);
+    expect(stdout).toMatch(/#50 is covered by watched issue #5/);
     expect(mockLinks).toHaveBeenCalledOnce();
   });
 
