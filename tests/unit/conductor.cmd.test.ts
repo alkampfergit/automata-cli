@@ -410,10 +410,10 @@ describe("conductor --check and --dry-run", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
-  it("--dry-run refuses the codex executor and runs no model", async () => {
+  it("--dry-run refuses the codex executor, as a tick does, and runs no model", async () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [5], executor: "codex" } });
     expect(await runWith({ dryRun: true })).toBe(1);
-    expect(stderr).toMatch(/cannot be used with the codex executor/);
+    expect(stderr).toMatch(/codex is not supported/);
     expect(mockRunCodex).not.toHaveBeenCalled();
   });
 

@@ -144,8 +144,7 @@ async function runModelForText(prompt: string, execution: ConductorExecution): P
     exited: () => undefined,
   };
   const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink };
-  if (execution.executor === "codex") await runCodex(prompt, { ...options, quiet: true });
-  else await runClaude(prompt, options);
+  await runClaude(prompt, options);
   return extractDryRunReply(execution.executor, stdout);
 }
 
@@ -409,10 +408,6 @@ function runConductorCheck(): number {
 /** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
 async function runConductorDryRun(checked: Preflight): Promise<number> {
   const { config, login, participants, execution } = checked;
-  // Codex has no command allow-list: its read-only sandbox still has network access, so a model could post.
-  if (execution.executor === "codex") {
-    return fail("--dry-run cannot be used with the codex executor: it cannot stop the model from posting.");
-  }
   const lock = inspectConductorLock(staleMinutesOf(config));
   if (lock.kind === "held" || lock.kind === "suspect") {
     process.stderr.write(`Warning: a conductor is running here (pid ${String(lock.owner.pid)}); the dry run does not take the lock.\n`);
