@@ -271,3 +271,74 @@ describe("githubService.addCopilotReviewer", () => {
     expect(() => addCopilotReviewer(7)).toThrow("unknown reviewer");
   });
 });
+
+describe("githubService.hasClosingRef", () => {
+  it.each([
+    ["Closes #42", true],
+    ["closes #42.", true],
+    ["Fixes #42", true],
+    ["Resolved: #42", true],
+    ["Closes #420", false],
+    ["Closes #4", false],
+    ["see #42", false],
+    ["", false],
+  ])("%j -> %s", async (body, expected) => {
+    const { hasClosingRef } = await import("../../src/config/githubService.js");
+    expect(hasClosingRef(body, 42)).toBe(expected);
+  });
+
+  it("appends Closes #N when the body only mentions a longer number", async () => {
+    mockSpawnSync.mockReset();
+    mockSpawnSync.mockReturnValueOnce({ stdout: "Closes #420", stderr: "", status: 0 });
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "", status: 0 });
+    const { addClosesRefToPr } = await import("../../src/config/githubService.js");
+    addClosesRefToPr(7, 42);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("githubService.getOpenPrsByHead", () => {
+  beforeEach(() => {
+    mockSpawnSync.mockReset();
+  });
+
+  it("queries open pull requests by --head and flattens assignees", async () => {
+    mockSpawnSync.mockReturnValueOnce({
+      stdout: JSON.stringify([
+        { number: 7, url: "u", body: null, baseRefName: "develop", assignees: [{ login: "bot" }] },
+      ]),
+      stderr: "",
+      status: 0,
+    });
+    const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
+    const prs = getOpenPrsByHead("feature/x");
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).toEqual(expect.arrayContaining(["pr", "list", "--head", "feature/x", "--state", "open"]));
+    expect(prs).toEqual([{ number: 7, url: "u", body: "", baseRefName: "develop", assignees: ["bot"] }]);
+  });
+
+  it("drops pull requests from forks", async () => {
+    mockSpawnSync.mockReturnValueOnce({
+      stdout: JSON.stringify([
+        { number: 1, url: "u", body: "", baseRefName: "develop", isCrossRepository: true, assignees: [] },
+        { number: 2, url: "u", body: "", baseRefName: "develop", isCrossRepository: false, assignees: [] },
+      ]),
+      stderr: "",
+      status: 0,
+    });
+    const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
+    expect(getOpenPrsByHead("feature/x").map((p) => p.number)).toEqual([2]);
+  });
+
+  it("returns an empty list when there is none", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "[]", stderr: "", status: 0 });
+    const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
+    expect(getOpenPrsByHead("x")).toEqual([]);
+  });
+
+  it("throws on a gh failure so the caller can warn", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "HTTP 500", status: 1 });
+    const { getOpenPrsByHead } = await import("../../src/config/githubService.js");
+    expect(() => getOpenPrsByHead("x")).toThrow("HTTP 500");
+  });
+});

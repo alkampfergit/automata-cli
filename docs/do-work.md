@@ -682,7 +682,12 @@ one-line behaviour that existed before, and `blocked` is `null` in the JSON.
 
 The pull-request link is GitHub's own closing reference, so opening a pull request that closes the issue is what moves an issue from discussion into implementation. No intent classification and no extra model call is involved.
 
-Because that link is the state machine, `do-work` repairs it after a discussion turn: if the branch now has a pull request without a closing reference to the issue, one is added. Repair applies **only** to a branch the turn moved onto. If the model merely replied, the tick is still on the base branch — where the "current branch's pull request" would be the base branch's own (a release pull request into `main`, say), and appending a closing reference to that would make an unrelated merge close the issue.
+Because that link is the state machine, `do-work` repairs it after every turn that has an issue (`issue-discuss` and `pr-work`; a `pr-orphan` turn has none): if the pull request has no closing reference (`Closes`, `Fixes` or `Resolves` `#N`, matched on the whole number) to the issue, one is added. The pull request is found by **head branch** (`gh pr list --head`), never by what is checked out:
+
+- after a `pr-work` turn, the head branch of the pull request being worked on — this restores a reference the model dropped while rewording the body;
+- after an `issue-discuss` turn, the branch the turn ended on plus every local branch that did not exist before it ran, so a pull request opened from a branch the model then switched away from is still linked.
+
+The base branch is never a candidate, and neither is a branch that already existed before the turn — except the branch the turn ends on, which is always examined even if it pre-existed (a model that leaves a release branch checked out can still have its pull request linked). If the pre-run branch list cannot be read, only the end branch is examined. After a `pr-work` turn only the pull request being worked on is touched, never another pull request on the same head. Pull requests from forks are ignored. If the model merely replied, nothing new exists — and the base branch's own pull request (a release pull request into `main`, say) must not get a closing reference, or its merge would close the issue. When a head branch has several open pull requests, the one aimed at the base branch is chosen; with none aimed at it and more than one candidate the link is not guessed. A `gh` failure is a warning, not a failed turn.
 
 ---
 

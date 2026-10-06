@@ -198,6 +198,59 @@ export function getCurrentBranchPr(
 }
 
 /**
+ * Whether a pull request body already carries a GitHub closing reference to the
+ * issue. Word boundary: `Closes #42` must not match `Closes #420`.
+ */
+export function hasClosingRef(body: string, issueNumber: number): boolean {
+  const ref = new RegExp(
+    String.raw`\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?\s+#` + String(issueNumber) + String.raw`\b`,
+    "i",
+  );
+  return ref.test(body);
+}
+
+/** An open pull request as found by its head branch. */
+export interface HeadPr {
+  number: number;
+  url: string;
+  body: string;
+  assignees: string[];
+  baseRefName: string;
+}
+
+/**
+ * The open pull requests whose head is `branch`, whatever is checked out.
+ *
+ * A branch can head several open pull requests (a hotfix into `main` and into
+ * `develop`), hence a list. Empty when there is none.
+ */
+export function getOpenPrsByHead(branch: string): HeadPr[] {
+  const { stdout, stderr, status } = run("gh", [
+    "pr", "list", "--head", branch, "--state", "open", "--limit", "10",
+    "--json", "number,url,body,assignees,baseRefName,isCrossRepository",
+  ]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to list pull requests for branch ${branch}.`);
+  }
+  const raw = JSON.parse(stdout || "[]") as {
+    number: number;
+    url: string;
+    body?: string;
+    baseRefName?: string;
+    isCrossRepository?: boolean;
+    assignees?: { login?: string }[];
+  }[];
+  // `--head` matches the branch name only; a fork PR of the same name is not ours.
+  return raw.filter((pr) => pr.isCrossRepository !== true).map((pr) => ({
+    number: pr.number,
+    url: pr.url,
+    body: pr.body ?? "",
+    baseRefName: pr.baseRefName ?? "",
+    assignees: (pr.assignees ?? []).map((a) => a.login ?? "").filter((name) => name.length > 0),
+  }));
+}
+
+/**
  * Append `Closes #N` to the PR body if not already present.
  */
 export function addClosesRefToPr(prNumber: number, issueNumber: number): void {
@@ -209,7 +262,7 @@ export function addClosesRefToPr(prNumber: number, issueNumber: number): void {
   }
   const currentBody = stdout.trimEnd();
   const closesRef = `Closes #${issueNumber}`;
-  if (currentBody.includes(closesRef)) {
+  if (hasClosingRef(currentBody, issueNumber)) {
     return; // already present
   }
   const newBody = currentBody + `\n\n${closesRef}`;

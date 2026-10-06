@@ -73,6 +73,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 - `do-work` writes its operation logs to `automata-<uid>/` under the system temp directory when the parent of the working
   directory is not writable (e.g. `/workspaces` in a devcontainer), so `do-work --check` no longer exits 1 for it
+- `do-work` link repair looks the pull request up by head branch instead of the current checkout, so it works wherever
+  the model left the working tree: it now also finds the pull request of a branch the turn created and then switched
+  away from, and re-checks the `Closes #N` reference after a `pr-work` turn. Alternate closing keywords
+  (`Fixes`, `Resolves`) count, and `Closes #420` no longer counts as a reference to `#42`
 
 ### Changed
 
