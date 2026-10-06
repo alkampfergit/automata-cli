@@ -41,7 +41,7 @@ export function countConductorReplies(messages: RawMessage[]): number {
 /** The model's reason when its final message ends with a `NEEDS-HUMAN:` line, else null. */
 export function parseNeedsHuman(output: string): string | null {
   const lines = output.trim().split("\n");
-  const last = lines[lines.length - 1]?.trim() ?? "";
+  const last = lines.at(-1)?.trim() ?? "";
   if (!last.startsWith(NEEDS_HUMAN_PREFIX)) return null;
   const reason = last.slice(NEEDS_HUMAN_PREFIX.length).trim();
   return reason.length > 0 ? reason : "no reason given";
