@@ -14,6 +14,7 @@ import {
   getAuthenticatedLogin,
   getIssueSurface,
   getOpenPrLinkMap,
+  type OpenPrLinkMap,
   getPrChecks,
   getPrSurface,
   getRepoSlug,
@@ -95,6 +96,12 @@ export function pruneWatchList(config: AutomataConfig): number[] {
   return watch.filter((id) => !dropped.includes(id));
 }
 
+/** The open pull request link map, read on first use. It paginates every open PR, so a report reads it once. */
+function onceLinkMap(): () => OpenPrLinkMap {
+  let map: OpenPrLinkMap | null = null;
+  return () => (map ??= getOpenPrLinkMap());
+}
+
 /** One watched item read into a thread, with the conversations the reply rule decides. */
 interface WatchedItem {
   thread: ConductorThread;
@@ -106,14 +113,14 @@ function readPr(number: number): ThreadPr {
 }
 
 /** A watched issue brings its open linked pull requests; a watched pull request stands alone. */
-function readWatchedItem(id: number): WatchedItem {
+function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLinkMap): WatchedItem {
   const target = getWatchTarget(id);
   if (target.kind === "pr") {
     const pr = readPr(id);
     return { thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)] };
   }
   const issue = getIssueSurface(id);
-  const prs = (getOpenPrLinkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
+  const prs = (linkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
   return {
     thread: { kind: "issue", issue, prs },
     conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface))],
@@ -148,6 +155,16 @@ async function runModelForText(prompt: string, execution: ConductorExecution): P
   return extractDryRunReply(execution.executor, stdout);
 }
 
+/** What one dry run shares across its items: the link map, and the conversations it has already answered. */
+interface DryRunContext {
+  linkMap: () => OpenPrLinkMap;
+  answered: Set<string>;
+}
+
+function targetKey(target: ReplyTarget): string {
+  return `${target.kind}#${String(target.number)}`;
+}
+
 type ItemResult = "replied" | "idle" | "failed";
 
 async function conductItem(
@@ -156,12 +173,12 @@ async function conductItem(
   login: string,
   participants: Participants,
   execution: ConductorExecution,
-  dryRun = false,
+  dryRun?: DryRunContext,
 ): Promise<ItemResult> {
   const label = `#${String(id)}`;
   let item: WatchedItem;
   try {
-    item = readWatchedItem(id);
+    item = readWatchedItem(id, dryRun?.linkMap);
   } catch (err) {
     // As in the prune: a network error is not the run's failure, and the next tick reads it again.
     process.stderr.write(`Warning: could not read ${label}, skipping it this tick: ${(err as Error).message}\n`);
@@ -169,7 +186,10 @@ async function conductItem(
   }
   const { thread, conversations } = item;
   const verdict = decideConductorReply(conversations, participants);
-  const owed = verdict.decisions.find((decision) => decision.kind === "reply");
+  // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
+  const owed = verdict.decisions.find(
+    (decision) => decision.kind === "reply" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
+  );
   if (owed === undefined) {
     process.stdout.write(`Conductor: ${label} needs no reply.\n`);
     return "idle";
@@ -179,7 +199,7 @@ async function conductItem(
     thread.kind === "issue"
       ? (config.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT)
       : (config.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT);
-  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun });
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
   process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
@@ -189,6 +209,7 @@ async function conductItem(
       process.stderr.write(`Error: the dry run for ${label} produced no reply text.\n`);
       return "failed";
     }
+    dryRun.answered.add(targetKey(replyTo));
     process.stdout.write(`--- Dry run: reply for ${where} (not posted) ---\n${reply}\n---\n`);
     return "replied";
   }
@@ -365,11 +386,11 @@ function staleMinutesOf(config: AutomataConfig): number {
 }
 
 /** Read one watched id the way a tick would, without changing anything. */
-function checkWatched(id: number, participants: Participants): WatchedCheck {
+function checkWatched(id: number, participants: Participants, linkMap: () => OpenPrLinkMap): WatchedCheck {
   try {
     const target = getWatchTarget(id);
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
-    const { conversations } = readWatchedItem(id);
+    const { conversations } = readWatchedItem(id, linkMap);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };
@@ -387,6 +408,7 @@ function runConductorCheck(): number {
   } catch {
     // the header says "unknown repository"
   }
+  const linkMap = onceLinkMap();
   const report =
     "problem" in checked
       ? buildConductorCheck({
@@ -399,7 +421,7 @@ function runConductorCheck(): number {
           execution: describeConductorExecution(checked.execution),
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
-          watched: normalizeWatch(checked.config.conductor?.watch).map((id) => checkWatched(id, checked.participants)),
+          watched: normalizeWatch(checked.config.conductor?.watch).map((id) => checkWatched(id, checked.participants, linkMap)),
         });
   process.stdout.write(report.text);
   return report.exitCode;
@@ -414,6 +436,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   }
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   let failed = 0;
+  const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   for (const id of normalizeWatch(config.conductor?.watch)) {
     try {
       if (isWatchClosed(getWatchTarget(id).state)) {
@@ -425,7 +448,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     }
     try {
       // One item at a time on purpose, as in a real tick.
-      if ((await conductItem(id, config, login, participants, execution, true)) === "failed") failed++; // NOSONAR
+      if ((await conductItem(id, config, login, participants, execution, context)) === "failed") failed++; // NOSONAR
     } catch (err) {
       process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
       failed++;

@@ -410,6 +410,33 @@ describe("conductor --check and --dry-run", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
+  it("--check reads the open pull request link map once for the whole report", async () => {
+    watching(5, 6);
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, answered));
+    expect(await runWith({ check: true })).toBe(0);
+    expect(mockLinks).toHaveBeenCalledOnce();
+  });
+
+  it("--dry-run answers a conversation once when an issue and its linked PR are both watched", async () => {
+    watching(5, 50);
+    mockTarget.mockImplementation((n: number) => (n === 50 ? pr(50) : issue(n)));
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, answered));
+    mockPrSurface.mockImplementation((n: number) => ({
+      pr: { number: n, title: "P", body: "", url: "u", state: "OPEN", headRefName: "b", baseRefName: "develop" },
+      messages: owed,
+      threads: [],
+    }));
+    mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+      options.sink.output("stdout", JSON.stringify({ type: "result", result: "Answer." }) + "\n");
+    });
+    expect(await runWith({ dryRun: true })).toBe(0);
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+    expect(stdout.match(/Dry run: reply for/g)).toHaveLength(1);
+    expect(stdout).toMatch(/#50 needs no reply/);
+    expect(mockLinks).toHaveBeenCalledOnce();
+  });
+
   it("--dry-run refuses the codex executor, as a tick does, and runs no model", async () => {
     mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [5], executor: "codex" } });
     expect(await runWith({ dryRun: true })).toBe(1);
