@@ -1,6 +1,7 @@
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
 import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
+import { BLOCKED_LABEL, countConductorReplies, type LoopState } from "./loopSafety.js";
 
 /**
  * Pure rule for the conductor: does a watched item need a reply from an allowed
@@ -22,7 +23,9 @@ export interface Conversation {
 export type ConductorSkipReason =
   | "closed"
   | "no-agent-message"
-  | "answered";
+  | "answered"
+  | "blocked"
+  | "limit";
 
 export type ConductorDecision =
   | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string }
@@ -118,8 +121,45 @@ export interface ConductorVerdict {
   decisions: ConductorDecision[];
 }
 
-/** An issue and its linked pull request(s), or a lone pull request: each is decided on its own. */
-export function decideConductorReply(conversations: Conversation[], p: Participants): ConductorVerdict {
-  const decisions = conversations.map((conversation) => decideConversation(conversation, p));
+/**
+ * An issue and its linked pull request(s), or a lone pull request: each is decided on its own.
+ *
+ * Loop safety applies to the item as a whole and only turns an owed reply into a
+ * skip: a blocked item, or one that has reached its limit of conductor replies.
+ */
+export function decideConductorReply(
+  conversations: Conversation[],
+  p: Participants,
+  loop?: LoopState,
+): ConductorVerdict {
+  const decided = conversations.map((conversation) => decideConversation(conversation, p));
+  const stop = loop === undefined ? null : loopStop(loop);
+  const decisions = decided.map((decision): ConductorDecision =>
+    decision.kind === "reply" && stop !== null
+      ? { kind: "skip", surface: decision.surface, reason: stop.reason, detail: stop.detail }
+      : decision,
+  );
   return { needsReply: decisions.some((decision) => decision.kind === "reply"), decisions };
+}
+
+function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: string } | null {
+  if (loop.blocked) {
+    return { reason: "blocked", detail: `the item has the ${BLOCKED_LABEL} label; remove it to resume` };
+  }
+  if (loop.replies >= loop.maxReplies) {
+    return {
+      reason: "limit",
+      detail: `the conductor already replied ${String(loop.replies)} times; the limit is conductor.maxRepliesPerItem (${String(loop.maxReplies)})`,
+    };
+  }
+  return null;
+}
+
+/** The loop-safety state of an item from its conversations, its labels and the configured limit. */
+export function loopStateOf(conversations: Conversation[], labels: string[], maxReplies: number): LoopState {
+  return {
+    blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
+    replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
+    maxReplies,
+  };
 }

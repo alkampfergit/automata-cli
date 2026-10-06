@@ -19,6 +19,7 @@ import {
   getPrSurface,
   getRepoSlug,
   getWatchTarget,
+  addLabel,
   type WatchTarget,
 } from "../github/ghWorkService.js";
 import type { Participants } from "../github/conversation.js";
@@ -26,6 +27,7 @@ import {
   decideConductorReply,
   isWatchClosed,
   issueConversation,
+  loopStateOf,
   prConversation,
   type Conversation,
 } from "../conductor/replyDecision.js";
@@ -42,9 +44,17 @@ import {
   type ConductorExecution,
 } from "../conductor/execution.js";
 import { conductReply } from "../conductor/reply.js";
+import {
+  BLOCKED_LABEL,
+  maxRepliesProblem,
+  parseNeedsHuman,
+  resolveMaxReplies,
+} from "../conductor/loopSafety.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
+import type { LoopState } from "../conductor/loopSafety.js";
 import { runClaude } from "../claude/claudeService.js";
+import type { RunSink } from "../run/runTranscript.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock } from "../run/runLock.js";
@@ -104,8 +114,11 @@ function onceLinkMap(): () => OpenPrLinkMap {
 
 /** One watched item read into a thread, with the conversations the reply rule decides. */
 interface WatchedItem {
+  target: WatchTarget;
   thread: ConductorThread;
   conversations: Conversation[];
+  /** The label names of the watched item itself, for the loop-safety rules. */
+  labels: string[];
 }
 
 function readPr(number: number): ThreadPr {
@@ -117,13 +130,15 @@ function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLin
   const target = getWatchTarget(id);
   if (target.kind === "pr") {
     const pr = readPr(id);
-    return { thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)] };
+    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)], labels: target.labels };
   }
   const issue = getIssueSurface(id);
   const prs = (linkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
   return {
+    target,
     thread: { kind: "issue", issue, prs },
     conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface))],
+    labels: target.labels,
   };
 }
 
@@ -135,24 +150,30 @@ function readTargetMessages(target: ReplyTarget) {
 }
 
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
-function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget): Promise<void> {
+function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}` });
+  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink });
+}
+
+/** A sink that keeps what the run printed on stdout. */
+function captureStdout(): { sink: RunSink; text: () => string } {
+  let stdout = "";
+  const sink: RunSink = {
+    output: (stream, text) => {
+      if (stream === "stdout") stdout += text;
+    },
+    exited: () => undefined,
+  };
+  return { sink, text: () => stdout };
 }
 
 /** A dry run: no comment permission, and the model's stdout is the reply, so it is captured. */
 async function runModelForText(prompt: string, execution: ConductorExecution): Promise<string | null> {
   const { owner, repo } = getRepoSlug();
-  let stdout = "";
-  const sink = {
-    output: (stream: "stdout" | "stderr", text: string) => {
-      if (stream === "stdout") stdout += text;
-    },
-    exited: () => undefined,
-  };
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink };
+  const captured = captureStdout();
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink };
   await runClaude(prompt, options);
-  return extractDryRunReply(execution.executor, stdout);
+  return extractDryRunReply(execution.executor, captured.text());
 }
 
 /** What one dry run shares across its items: the link map, and the conversations it has already answered. */
@@ -163,6 +184,18 @@ interface DryRunContext {
 
 function targetKey(target: ReplyTarget): string {
   return `${target.kind}#${String(target.number)}`;
+}
+
+/** The model needs a person: label the watched item and say nothing on the conversation. */
+function blockItem(item: WatchedItem, label: string, reason: string): ItemResult {
+  try {
+    addLabel(item.target, BLOCKED_LABEL, "The conductor stopped and needs a person; remove this label to resume");
+  } catch (err) {
+    process.stderr.write(`Error: ${label} needs a human (${reason}) but the ${BLOCKED_LABEL} label was not applied: ${(err as Error).message}\n`);
+    return "failed";
+  }
+  process.stdout.write(`Conductor: ${label} needs a human (${reason}); applied the ${BLOCKED_LABEL} label.\n`);
+  return "idle";
 }
 
 type ItemResult = "replied" | "idle" | "failed";
@@ -185,13 +218,16 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const verdict = decideConductorReply(conversations, participants);
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor));
+  const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
   const owed = verdict.decisions.find(
     (decision) => decision.kind === "reply" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
   if (owed === undefined) {
-    process.stdout.write(`Conductor: ${label} needs no reply.\n`);
+    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && (decision.reason === "blocked" || decision.reason === "limit"));
+    const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
+    process.stdout.write(`${why}\n`);
     return "idle";
   }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
@@ -209,15 +245,25 @@ async function conductItem(
       process.stderr.write(`Error: the dry run for ${label} produced no reply text.\n`);
       return "failed";
     }
+    const needsHuman = parseNeedsHuman(reply);
+    if (needsHuman !== null) {
+      process.stdout.write(`--- Dry run: ${label} needs a human (not labelled): ${needsHuman} ---\n`);
+      return "idle";
+    }
     dryRun.answered.add(targetKey(replyTo));
     process.stdout.write(`--- Dry run: reply for ${where} (not posted) ---\n${reply}\n---\n`);
     return "replied";
   }
+  const captured = captureStdout();
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
-    run: () => runModel(prompt, execution, replyTo),
+    run: () => runModel(prompt, execution, replyTo, captured.sink),
   });
+  const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
+  if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
+    return blockItem(item, label, needsHuman);
+  }
   switch (outcome.kind) {
     case "posted":
       process.stdout.write(`Conductor: posted a reply on ${where}.\n`);
@@ -364,6 +410,8 @@ function preflight(): Preflight | { problem: string } {
   }
   const executionProblem = conductorExecutionProblem(config.conductor);
   if (executionProblem !== null) return { problem: executionProblem };
+  const maxReplies = maxRepliesProblem(config.conductor);
+  if (maxReplies !== null) return { problem: maxReplies };
   if (config.conductor?.executor === "codex") {
     // Codex has no command allow-list: a prompt-injected run could merge, close or comment elsewhere.
     return { problem: "conductor.executor codex is not supported: Codex cannot be limited to comments on the reply target. Use claude." };
@@ -386,12 +434,13 @@ function staleMinutesOf(config: AutomataConfig): number {
 }
 
 /** Read one watched id the way a tick would, without changing anything. */
-function checkWatched(id: number, participants: Participants, linkMap: () => OpenPrLinkMap): WatchedCheck {
+function checkWatched(id: number, participants: Participants, maxReplies: number, linkMap: () => OpenPrLinkMap): WatchedCheck {
   try {
     const target = getWatchTarget(id);
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
-    const { conversations } = readWatchedItem(id, linkMap);
-    return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants).decisions };
+    const { conversations, labels } = readWatchedItem(id, linkMap);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies);
+    return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };
   }
@@ -421,7 +470,7 @@ function runConductorCheck(): number {
           execution: describeConductorExecution(checked.execution),
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
-          watched: normalizeWatch(checked.config.conductor?.watch).map((id) => checkWatched(id, checked.participants, linkMap)),
+          watched: normalizeWatch(checked.config.conductor?.watch).map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), linkMap)),
         });
   process.stdout.write(report.text);
   return report.exitCode;

@@ -1030,14 +1030,14 @@ describe("getWatchTarget and applyDiscovery", () => {
       .mockReturnValueOnce(REMOTE)
       .mockReturnValueOnce(json({ number: 7, state: "closed", title: "x", pull_request: {} }));
     const { getWatchTarget } = await import("../../src/github/ghWorkService.js");
-    expect(getWatchTarget(7)).toEqual({ number: 7, kind: "pr", state: "closed", title: "x" });
+    expect(getWatchTarget(7)).toEqual({ number: 7, kind: "pr", state: "closed", title: "x", labels: [] });
     expect(calls()[1].args).toEqual(["api", "repos/acme/widget/issues/7"]);
   });
 
   it("labels an issue, assigns a pull request, and rejects title-contains", async () => {
     mockSpawnSync.mockReturnValue(ok(""));
     const { applyDiscovery } = await import("../../src/github/ghWorkService.js");
-    const t = { number: 7, state: "open" as const, title: "x" };
+    const t = { number: 7, state: "open" as const, title: "x", labels: [] };
     applyDiscovery({ ...t, kind: "issue" }, "label", "automata");
     applyDiscovery({ ...t, kind: "pr" }, "assignee", "carol");
     expect(calls().map((c) => c.args)).toEqual([
@@ -1045,5 +1045,34 @@ describe("getWatchTarget and applyDiscovery", () => {
       ["pr", "edit", "7", "--add-assignee", "carol"],
     ]);
     expect(() => applyDiscovery({ ...t, kind: "issue" }, "title-contains", "x")).toThrow(/title-contains/);
+  });
+});
+
+describe("addLabel", () => {
+  it("adds the label to an issue or a pull request", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    addLabel({ number: 7, kind: "pr" }, "conductor-blocked", "d");
+    expect(calls().map((c) => c.args)).toEqual([["pr", "edit", "7", "--add-label", "conductor-blocked"]]);
+  });
+
+  it("creates a missing label once, then retries", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "could not add label: 'conductor-blocked' not found", status: 1 })
+      .mockReturnValueOnce(ok(""))
+      .mockReturnValueOnce(ok(""));
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    addLabel({ number: 7, kind: "issue" }, "conductor-blocked", "d");
+    expect(calls().map((c) => c.args.slice(0, 3))).toEqual([
+      ["issue", "edit", "7"],
+      ["label", "create", "conductor-blocked"],
+      ["issue", "edit", "7"],
+    ]);
+  });
+
+  it("throws on any other failure", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403", status: 1 });
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    expect(() => addLabel({ number: 7, kind: "issue" }, "x", "d")).toThrow(/403/);
   });
 });

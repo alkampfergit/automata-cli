@@ -1,4 +1,5 @@
 import { analyzeSurface, formatMessages, type Participants, type RawMessage } from "../github/conversation.js";
+import { NEEDS_HUMAN_PREFIX, REPLY_MARKER } from "./loopSafety.js";
 import type { CiCheck, IssueSurface, PrSurface, ReviewThread } from "../github/ghWorkService.js";
 
 /**
@@ -61,8 +62,18 @@ export function postingInstruction(target: ReplyTarget): string {
     `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
       "What you print is discarded; only a posted comment counts.",
     `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
+    `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`,
     "Post exactly one comment. Do not approve, merge or close anything.",
+    needsHumanInstruction(),
   ].join("\n");
+}
+
+/** How the model says that only a person can go on. It is the same in a live run and a dry run. */
+function needsHumanInstruction(): string {
+  return (
+    "If you cannot go on without a person, post no comment. Make the last line of your final message " +
+    `\`${NEEDS_HUMAN_PREFIX} <one-line reason>\`; automata then labels the item and stays silent.`
+  );
 }
 
 /**
@@ -74,6 +85,7 @@ export function dryRunInstruction(target: ReplyTarget): string {
     `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
       "This is a dry run: you cannot post a comment, and you must not try.",
     "Make the reply, and nothing else, your final message. Do not approve, merge or close anything.",
+    needsHumanInstruction(),
   ].join("\n");
 }
 
