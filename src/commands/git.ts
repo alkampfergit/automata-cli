@@ -23,7 +23,6 @@ import {
   type SonarIssue,
   type SonarSecurityHotspot,
 } from "../git/gitService.js";
-import { azdoUnsupportedMessage } from "../remote/backend.js";
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
 import { describeReleaseFlowSource } from "../git/releaseFlow.js";
@@ -314,14 +313,8 @@ function sanitizeText(text: string): string {
 }
 
 const getPrCommentsCmd = new Command("get-pr-comments")
-  .description("List open (unresolved) review comments on the pull request for the current branch (GitHub only)")
+  .description("List open (unresolved) review comments on the pull request for the current branch")
   .option("--json", "Output as JSON array")
-  .addHelpText(
-    "after",
-    `
-Only GitHub (remoteType: gh) is supported. Azure DevOps is not supported.
-See docs/azdo-gap.md for details.`,
-  )
   .action((options: { json?: boolean }) => {
     let branch: string;
     try {
@@ -336,13 +329,6 @@ See docs/azdo-gap.md for details.`,
       comments = getPrComments(branch);
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
-
-    if (comments === "unsupported") {
-      process.stderr.write(
-        `Error: ${azdoUnsupportedMessage("get-pr-comments")}\n`,
-      );
       process.exit(1);
     }
 

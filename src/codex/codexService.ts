@@ -1,10 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
+import { readOnlyEnv } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeCodexOptions {
   yolo?: boolean;
+  /** Run in Codex's read-only sandbox. Wins over `yolo`. */
+  readOnly?: boolean;
   verbose?: boolean;
   model?: string;
   /** Reasoning effort, forwarded verbatim. See `InvokeClaudeOptions.effort`. */
@@ -29,7 +32,8 @@ function toTomlBasicString(value: string): string {
 /** The argv `invokeCodexCode` will spawn. See `buildClaudeArgs` for why. */
 export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {}): string[] {
   const args: string[] = ["exec"];
-  if (options.yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (options.readOnly) args.push("--sandbox", "read-only");
+  else if (options.yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (options.model) args.push("--model", options.model);
   // Codex has no effort flag: it reads `model_reasoning_effort` from its TOML
   // config, and `-c` is the documented per-invocation override. The value is
@@ -44,17 +48,12 @@ export function invokeCodexCode(prompt: string, options: InvokeCodexOptions = {}
   if (options.verbose) {
     process.stderr.write("Warning: --verbose is not supported for Codex and will be ignored.\n");
   }
-  invokeCodexCodeSync(prompt, options.yolo ?? false, options.model, options.effort);
+  invokeCodexCodeSync(prompt, options);
 }
 
-function invokeCodexCodeSync(
-  prompt: string,
-  yolo: boolean,
-  model: string | undefined,
-  effort: string | undefined,
-): void {
+function invokeCodexCodeSync(prompt: string, options: InvokeCodexOptions): void {
   const codexBin = resolveCommand("codex");
-  const args = buildCodexArgs(prompt, { yolo, model, effort });
+  const args = buildCodexArgs(prompt, options);
   const result = spawnSync(codexBin, args, { encoding: "utf8", stdio: "inherit" });
   handleSpawnError(result.error, "codex");
   handleExitCode(result.status, "Codex");
@@ -70,18 +69,27 @@ function invokeCodexCodeSync(
  */
 export function runCodex(
   prompt: string,
-  options: { model?: string; effort?: string; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; readOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
-    const args = buildCodexArgs(prompt, { yolo: true, model: options.model, effort: options.effort });
+    const args = buildCodexArgs(prompt, {
+      yolo: true,
+      readOnly: options.readOnly,
+      model: options.model,
+      effort: options.effort,
+    });
     const sink = options.sink;
-    const child = spawn(codexBin, args, { stdio: ["inherit", "pipe", "pipe"] });
+    const child = spawn(codexBin, args, {
+      stdio: ["inherit", "pipe", "pipe"],
+      env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+    });
     trackChild(child);
 
-    // Piped only so the transcript can see the output; it still reaches the terminal.
+    // Piped only so the transcript can see the output; it still reaches the terminal
+    // unless the caller discards the model output.
     child.stdout.on("data", (chunk: Buffer) => {
-      process.stdout.write(chunk);
+      if (options.quiet !== true) process.stdout.write(chunk);
       sink?.output("stdout", chunk.toString("utf8"));
     });
     child.stderr.on("data", (chunk: Buffer) => {

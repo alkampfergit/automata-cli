@@ -52,9 +52,10 @@ The turn boundary is the part not to get wrong, since it is what keeps a discuss
 **A discussion turn (`issue-discuss`)** should tell the model to:
 
 - reply on the **issue**;
-- not modify, create or delete any file, and not create a branch or pull request;
+- not modify, create or delete any file in the repository, and not create a branch or pull request;
 - **except** when a message marked `NEW` explicitly asks for implementation, in which case: branch off the base branch, implement, and open a pull request whose body contains `Closes #<issue>`;
-- always post a reply — silence is indistinguishable from a crash, and produces a leftover marker.
+- always post a reply — silence is indistinguishable from a crash, and produces a leftover marker;
+- post it with `gh issue comment <issue-number> --body-file <file>` (or `gh pr comment <pr-number> --body-file <file>` on a pull request): `do-work` does not publish the model's stdout, so printing the answer is not a posted reply.
 
 That last exception is what moves an issue from talking to building. Removing it means the agent will discuss forever and never implement.
 
@@ -65,6 +66,7 @@ That last exception is what moves an issue from talking to building. Removing it
 - commit and **push** to that branch;
 - **not** merge the pull request and **not** push to the base branch;
 - reply on the pull request, or in the review thread when the answer belongs to a specific comment;
+- resolve each review thread it fixed (a reply alone leaves it open) and leave the others open;
 - always post a reply.
 
 **An orphan turn (`pr-orphan`)** — a pull request that closes no issue of this repository — should tell the model the same things as a build turn, plus:
@@ -108,7 +110,9 @@ If it does, use the `speckit-full` skill instead: create a branch off the base
 branch named below, produce the spec and plan, implement, run the tests and the
 linter, and open a pull request whose body contains `Closes #<issue number>`.
 
-Otherwise reply on the issue only, and always post a reply.
+Otherwise reply on the issue only, and always post a reply with
+`gh issue comment <issue-number> --body-file <file>` (`gh pr comment` on a pull
+request). Printing the answer to stdout does not count as a posted reply.
 ```
 
 `.automata/do-work-pr-work.md`

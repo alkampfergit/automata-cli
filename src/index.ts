@@ -6,6 +6,7 @@ import { implementNextCommand } from "./commands/getReady.js";
 import { executeCommand } from "./commands/execute.js";
 import { executePromptCommand } from "./commands/executePrompt.js";
 import { doWorkCommand } from "./commands/doWork.js";
+import { conductorCommand } from "./commands/conductor.js";
 
 const program = new Command();
 
@@ -17,6 +18,7 @@ program.addCommand(implementNextCommand);
 program.addCommand(executeCommand);
 program.addCommand(executePromptCommand);
 program.addCommand(doWorkCommand);
+program.addCommand(conductorCommand);
 program.showHelpAfterError();
 
 program.parse();

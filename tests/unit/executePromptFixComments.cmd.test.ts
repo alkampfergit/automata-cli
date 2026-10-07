@@ -218,18 +218,6 @@ describe("execute-prompt fix-comments command", () => {
     expect(out.exitCode).toBe(1);
   });
 
-  it("exits 1 when get-pr-comments returns unsupported (AzDO)", async () => {
-    mockResolveCurrentBranchComments.mockReturnValue({ ok: false, kind: "unsupported" });
-
-    const { executePromptCommand } = await import("../../src/commands/executePrompt.js");
-    await expect(
-      executePromptCommand.parseAsync(["node", "execute-prompt", "fix-comments", "--with", "claude"]),
-    ).rejects.toThrow("process.exit(1)");
-
-    expect(out.stderr).toContain("not supported");
-    expect(out.exitCode).toBe(1);
-  });
-
   it("exits 1 when no pull request is found for the branch", async () => {
     mockResolveCurrentBranchComments.mockReturnValue({ ok: false, kind: "no-pr", branch: "feature/my-branch" });
 

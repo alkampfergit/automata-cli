@@ -39,6 +39,13 @@ const LOCK_FILE = "automata.lock";
 export const RUN_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${LOCK_FILE}`;
 
 /**
+ * The conductor's own lock, beside `automata.lock` so a conductor tick and a
+ * `do-work` tick exclude only their own kind.
+ */
+const CONDUCTOR_LOCK_FILE = "conductor.lock";
+export const CONDUCTOR_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${CONDUCTOR_LOCK_FILE}`;
+
+/**
  * Every path automata writes inside the checkout for its own bookkeeping.
  *
  * One list rather than one constant per file, because each of these has to be
@@ -51,6 +58,7 @@ export const RUN_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${LOCK_FILE}`;
  */
 export const AUTOMATA_OWN_PATHS: readonly string[] = [
   RUN_LOCK_RELATIVE_PATH,
+  CONDUCTOR_LOCK_RELATIVE_PATH,
   HEARTBEAT_RELATIVE_PATH,
 ];
 
@@ -104,8 +112,8 @@ export type AcquireResult =
    */
   | { ok: false; heldBy: LockOwner; suspect: boolean };
 
-function lockPath(): string {
-  return join(process.cwd(), LOCK_DIR, LOCK_FILE);
+function lockPath(lockFile: string = LOCK_FILE): string {
+  return join(process.cwd(), LOCK_DIR, lockFile);
 }
 
 /**
@@ -342,8 +350,12 @@ function publishLock(path: string, command: string, token: string): boolean {
   }
 }
 
-export function acquireRunLock(command: string, staleMinutes: number): AcquireResult {
-  const path = lockPath();
+export function acquireRunLock(
+  command: string,
+  staleMinutes: number,
+  lockFile: string = LOCK_FILE,
+): AcquireResult {
+  const path = lockPath(lockFile);
   const token = randomUUID();
   mkdirSync(join(process.cwd(), LOCK_DIR), { recursive: true });
 
@@ -367,6 +379,16 @@ const UNKNOWN_OWNER: LockOwner = {
   command: "unknown",
   token: "",
 };
+
+/** Acquire the conductor's own lock, independent of the `do-work` lock so both can run side by side. */
+/** Classify the conductor's lock without touching it; see `inspectRunLock`. */
+export function inspectConductorLock(staleMinutes: number, now: number = Date.now()): LockStatus {
+  return inspectRunLock(staleMinutes, now, CONDUCTOR_LOCK_FILE);
+}
+
+export function acquireConductorLock(staleMinutes: number): AcquireResult {
+  return acquireRunLock("conductor", staleMinutes, CONDUCTOR_LOCK_FILE);
+}
 
 /**
  * Claim the right to replace a stale lock.
@@ -588,8 +610,12 @@ function heldForMs(owner: LockOwner, now: number): number | null {
  * The judgement itself is `isStale`/`heldTooLong`, the same pair the acquisition
  * path uses, so a report and a tick can never disagree about one lock file.
  */
-export function inspectRunLock(staleMinutes: number, now: number = Date.now()): LockStatus {
-  const path = lockPath();
+export function inspectRunLock(
+  staleMinutes: number,
+  now: number = Date.now(),
+  lockFile: string = LOCK_FILE,
+): LockStatus {
+  const path = lockPath(lockFile);
 
   try {
     statSync(path);

@@ -1,0 +1,6 @@
+[
+  { "id": 901, "name": "20260930.3", "state": "inProgress", "result": null, "sourceBranch": "refs/pull/7/merge" },
+  { "id": 900, "name": "20260930.2", "state": "completed", "result": "failed", "sourceBranch": "refs/pull/7/merge" },
+  { "id": 899, "name": "20260930.1", "state": "completed", "result": "succeeded", "sourceBranch": "refs/pull/7/merge" },
+  { "id": 898, "name": null, "state": "completed", "result": "canceled", "sourceBranch": "refs/pull/7/merge" }
+]

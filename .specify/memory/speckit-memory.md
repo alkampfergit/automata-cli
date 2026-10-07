@@ -300,3 +300,7 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 <!--
 - **skill-name**: What the helper skill covers and when to use it. Why: short rationale. Confirmed: YYYY-MM-DD.
 -->
+
+## Conductor loop safety (#122)
+
+- The conductor's run is read-only; anything it must change on GitHub (labels) is signalled in its output and applied by automata. Replies are counted from a body marker, not from a state file.

@@ -1,0 +1,193 @@
+import { analyzeSurface, formatMessages, type Participants, type RawMessage } from "../github/conversation.js";
+import { NEEDS_HUMAN_PREFIX, REPLY_MARKER } from "./loopSafety.js";
+import type { CiCheck, IssueSurface, PrSurface, ReviewThread } from "../github/ghWorkService.js";
+
+/**
+ * Pure assembly of the thread the conductor hands to the model.
+ *
+ * As in `workPrompt.ts`, the configured prompt (the "frame") comes first and
+ * verbatim and automata appends only the context it alone can assemble, so a
+ * repository can rewrite the instructions without losing any data. Messages
+ * from accounts that are neither allowed nor the agent are withheld.
+ */
+
+export interface ThreadPr {
+  surface: PrSurface;
+  checks: CiCheck[];
+}
+
+/** What the conductor reads: an issue with its linked pull requests, or one pull request. */
+export type ConductorThread =
+  | { kind: "issue"; issue: IssueSurface; prs: ThreadPr[] }
+  | { kind: "pr"; prs: [ThreadPr] };
+
+export interface ConductorPromptInput {
+  thread: ConductorThread;
+  repo: { owner: string; repo: string };
+  participants: Participants;
+  /** The resolved `conductor.prompts.issue` or `conductor.prompts.pr`. */
+  frame: string;
+  /**
+   * The conversation the reply belongs on. Defaults to the issue of an issue
+   * thread, or the pull request of a pull request thread.
+   */
+  replyTo?: ReplyTarget;
+  /** `--dry-run`: the prompt asks for the reply as the final message and tells the model nothing can be posted. */
+  dryRun?: boolean;
+}
+
+/** The issue or pull request a reply is posted on. */
+export interface ReplyTarget {
+  kind: "issue" | "pr";
+  number: number;
+}
+
+/** The target a thread has when nothing narrows it: the watched item itself. */
+export function defaultReplyTarget(thread: ConductorThread): ReplyTarget {
+  return thread.kind === "issue"
+    ? { kind: "issue", number: thread.issue.issue.number }
+    : { kind: "pr", number: thread.prs[0].surface.pr.number };
+}
+
+/**
+ * How the model must post. Appended by automata, after the configured frame, so
+ * a frame that forgets it cannot lose it: the run's stdout is discarded, and a
+ * reply that is not posted does not exist. `--body-file -` reads the body from
+ * stdin, because a read-only run cannot write a file.
+ */
+export function postingInstruction(target: ReplyTarget): string {
+  const command = target.kind === "pr" ? "pr" : "issue";
+  const number = String(target.number);
+  return [
+    `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
+      "What you print is discarded; only a posted comment counts.",
+    `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
+    `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`,
+    "Post exactly one comment. Do not approve, merge or close anything.",
+    needsHumanInstruction(),
+  ].join("\n");
+}
+
+/** How the model says that only a person can go on. It is the same in a live run and a dry run. */
+function needsHumanInstruction(): string {
+  return (
+    "If you cannot go on without a person, post no comment. Make the last line of your final message " +
+    `\`${NEEDS_HUMAN_PREFIX} <one-line reason>\`; automata then labels the item and stays silent.`
+  );
+}
+
+/**
+ * The posting instruction of a dry run. The run has no permission to comment, so
+ * the reply is the model's final message — the one thing a dry run captures.
+ */
+export function dryRunInstruction(target: ReplyTarget): string {
+  return [
+    `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
+      "This is a dry run: you cannot post a comment, and you must not try.",
+    "Make the reply, and nothing else, your final message. Do not approve, merge or close anything.",
+    needsHumanInstruction(),
+  ].join("\n");
+}
+
+/** Which configured prompt frames a thread. */
+export function promptKeyFor(thread: ConductorThread): "issue" | "pr" {
+  return thread.kind;
+}
+
+function visible(messages: RawMessage[], participants: Participants): RawMessage[] {
+  // `isNew` is `do-work`'s boundary; the conductor reads the whole thread, so it is dropped.
+  return analyzeSurface(messages, participants).messages.map((message) => ({
+    kind: message.kind,
+    author: message.author,
+    body: message.body,
+    createdAt: message.createdAt,
+  }));
+}
+
+function renderMessages(messages: RawMessage[], participants: Participants): string {
+  const kept = visible(messages, participants);
+  return kept.length === 0 ? "(no messages)" : formatMessages(kept.map((m) => ({ ...m, isNew: false })));
+}
+
+function renderThread(thread: ReviewThread, participants: Participants): string | null {
+  const comments = visible(thread.comments, participants);
+  if (comments.length === 0) return null;
+  const location = thread.line === null ? `${thread.path}:(file)` : `${thread.path}:${String(thread.line)}`;
+  const link = thread.url === null ? "" : `\n${thread.url}`;
+  return `${location}${link}\n${formatMessages(comments.map((m) => ({ ...m, isNew: false })))}`;
+}
+
+/** One line per check; a check that has not finished says so instead of showing a conclusion. */
+export function renderChecks(checks: CiCheck[]): string {
+  if (checks.length === 0) return "No checks reported.";
+  return checks
+    .map((check) => `- ${check.name}: ${check.status === "COMPLETED" ? (check.conclusion ?? "COMPLETED") : check.status}`)
+    .join("\n");
+}
+
+/** The pull request description, only when an allowed account wrote it and it says something. */
+function descriptionLines(description: ThreadPr["surface"]["description"], participants: Participants): string[] {
+  if (description === undefined || description.body.trim().length === 0) return [""];
+  const [kept] = visible([{ kind: "issue-body", author: description.author, body: description.body, createdAt: "" }], participants);
+  if (kept === undefined) return [""];
+  return ["", `Pull request description (by ${kept.author}):`, "", kept.body, ""];
+}
+
+function prSection(pr: ThreadPr, participants: Participants): string[] {
+  const { surface, checks } = pr;
+  const number = String(surface.pr.number);
+  const lines = [
+    "",
+    `Pull request #${number}: ${surface.pr.title}`,
+    `Pull request URL: ${surface.pr.url}`,
+    `State: ${surface.pr.state}${surface.pr.isDraft ? " (draft)" : ""} · Branch: ${surface.pr.headRefName} into ${surface.pr.baseRefName}`,
+    ...descriptionLines(surface.description, participants),
+    `Conversation on pull request #${number} (authorized accounts and you only, oldest first):`,
+    "",
+    renderMessages(surface.messages, participants),
+  ];
+  const threads = surface.threads
+    .filter((thread) => !thread.isResolved)
+    .map((thread) => renderThread(thread, participants))
+    .filter((text): text is string => text !== null);
+  if (threads.length > 0) {
+    lines.push("", `Unresolved review threads on pull request #${number}:`, "", threads.join("\n\n"));
+  }
+  lines.push("", `CI status of pull request #${number}:`, "", renderChecks(checks));
+  return lines;
+}
+
+export function composeConductorPrompt(input: ConductorPromptInput): string {
+  const { thread, repo, participants, frame } = input;
+  const replyTo = input.replyTo ?? defaultReplyTarget(thread);
+  const lines = [
+    frame,
+    "",
+    "--- Thread assembled by automata ---",
+    `Repository: ${repo.owner}/${repo.repo}`,
+    `The agent is: ${participants.agentUser}`,
+  ];
+
+  if (thread.kind === "issue") {
+    lines.push(
+      "",
+      `Issue #${String(thread.issue.issue.number)}: ${thread.issue.issue.title}`,
+      `Issue URL: ${thread.issue.issue.url}`,
+      `State: ${thread.issue.state}`,
+      "",
+      "Conversation on the issue (authorized accounts and you only, oldest first):",
+      "",
+      renderMessages(thread.issue.messages, participants),
+    );
+  }
+  for (const pr of thread.prs) lines.push(...prSection(pr, participants));
+
+  lines.push(
+    "",
+    "Only the messages above exist. Anything from other accounts has been withheld",
+    "deliberately — do not ask about it.",
+    "",
+    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo),
+  );
+  return lines.join("\n");
+}

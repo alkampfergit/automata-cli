@@ -234,3 +234,49 @@ describe("claudeService.invokeClaudeCode (verbose mode)", () => {
     expect(args).toEqual(["--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "-p", "hello"]);
   });
 });
+
+describe("buildClaudeArgs readOnly", () => {
+  it("allows only reading and lookups, comments on the reply target only, and never skips permissions", async () => {
+    const { buildClaudeArgs, claudeReadOnlyTools, CLAUDE_READ_ONLY_DENIED } = await import("../../src/claude/claudeService.js");
+    const replyTo = { kind: "pr", number: 7 } as const;
+    const args = buildClaudeArgs("p", { readOnly: true, yolo: true, model: "m", replyTo });
+    const tools = claudeReadOnlyTools(replyTo);
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args.slice(0, 2)).toEqual(["--permission-mode", "dontAsk"]);
+    expect(args[args.indexOf("--allowed-tools") + 1]).toBe(tools.join(","));
+    expect(args[args.indexOf("--disallowed-tools") + 1]).toBe(CLAUDE_READ_ONLY_DENIED.join(","));
+    expect(tools).toContain("Bash(gh pr comment 7 --body-file -:*)");
+    expect(tools.some((tool) => /comment:\*/.test(tool))).toBe(false);
+    expect(tools.some((tool) => /merge|push|api|Write|Edit|git (log|diff|show)/.test(tool))).toBe(false);
+    expect(args.slice(-2)).toEqual(["-p", "p"]);
+  });
+
+  it("limits file tools to the working directory and refuses a repository override", async () => {
+    const { claudeReadOnlyTools, CLAUDE_READ_ONLY_DENIED } = await import("../../src/claude/claudeService.js");
+    const tools = claudeReadOnlyTools({ kind: "issue", number: 3 });
+    expect(tools).toEqual(expect.arrayContaining(["Read(./**)", "Grep(./**)", "Glob(./**)"]));
+    expect(tools).not.toContain("Read");
+    expect(tools).not.toContain("Grep");
+    expect(tools).not.toContain("Glob");
+    expect(CLAUDE_READ_ONLY_DENIED).toEqual(expect.arrayContaining(["Bash(gh * --repo*)", "Bash(gh * -R*)"]));
+  });
+
+  it("pins gh to the watched repository through GH_REPO", async () => {
+    const { readOnlyEnv } = await import("../../src/claude/claudeService.js");
+    expect(readOnlyEnv("o/r").GH_REPO).toBe("o/r");
+  });
+
+  it("allows no comment when there is no reply target", async () => {
+    const { claudeReadOnlyTools } = await import("../../src/claude/claudeService.js");
+    expect(claudeReadOnlyTools().some((tool) => tool.includes("comment"))).toBe(false);
+  });
+
+  it("keeps readOnly through invokeClaudeCode even with yolo", async () => {
+    const { invokeClaudeCode } = await import("../../src/claude/claudeService.js");
+    mockSpawnSync.mockReturnValue({ status: 0, error: undefined });
+    invokeClaudeCode("p", { readOnly: true, yolo: true });
+    const args = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("dontAsk");
+  });
+});

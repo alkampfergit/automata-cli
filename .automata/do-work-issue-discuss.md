@@ -8,8 +8,8 @@ request into something implementable, not to implement it:
 
 IMPORTANT: use the speckit-full skill to understand the process, that skill is the driver.
 
-Do not modify, create or delete any file, and do not create a branch or a pull
-request, UNLESS a message marked NEW explicitly asks you to implement the work.
+Do not modify, create or delete any file in the repository, and do not create a
+branch or a pull request, UNLESS a message marked NEW explicitly asks you to implement the work.
 
 If it does: create a branch off the base branch named below following GitFlow
 (`feature/NNN-short-name`), write the spec-kit artifacts under `specs/NNN-*/`,
@@ -23,3 +23,10 @@ detail belongs in `docs/`, not the README.
 
 Otherwise reply on the issue only. Keep the reply short and concrete, and always
 post a reply.
+
+Post the reply yourself with the GitHub CLI: write it to a temporary file outside the repository (the only file you may create
+in this case) and run
+`gh issue comment <issue-number> --body-file <file>`, or
+`gh pr comment <pr-number> --body-file <file>` when replying on a pull request.
+`do-work` does not publish your output, so printing the answer to stdout does
+not count as a posted reply.

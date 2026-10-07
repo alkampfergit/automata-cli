@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
+import { acquireConductorLock, acquireRunLock, claimStaleLock, inspectRunLock } from "../../src/run/runLock.js";
 import { heartbeatPath, parseHeartbeat, writeHeartbeat } from "../../src/run/heartbeat.js";
 
 const ORIG_CWD = process.cwd;
@@ -571,5 +571,27 @@ describe("inspectRunLock", () => {
     inspectRunLock(1);
     expect(readFileSync(lockFile(), "utf8")).toBe(before);
     expect(readdirSync(join(TEST_CWD, ".automata"))).toEqual(["automata.lock"]);
+  });
+});
+
+describe("conductor lock", () => {
+  it("is a different file, so a held do-work lock does not turn the conductor away", () => {
+    const doWork = acquireRunLock("do-work", 120);
+    expect(doWork.ok).toBe(true);
+    const conductor = acquireConductorLock(120);
+    expect(conductor.ok).toBe(true);
+    expect(existsSync(join(TEST_CWD, ".automata", "conductor.lock"))).toBe(true);
+    if (conductor.ok) conductor.handle.release();
+    if (doWork.ok) doWork.handle.release();
+  });
+
+  it("turns away a second conductor", () => {
+    const first = acquireConductorLock(120);
+    const second = acquireConductorLock(120);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.heldBy.command).toBe("conductor");
+    if (first.ok) first.handle.release();
+    expect(existsSync(join(TEST_CWD, ".automata", "conductor.lock"))).toBe(false);
   });
 });

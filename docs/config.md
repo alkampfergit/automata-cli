@@ -12,7 +12,7 @@ Launch the interactive configuration wizard. Use arrow keys to move between menu
 |---|---|
 | Remote / Mode | `remoteType` |
 | Implement-Next | `issueDiscoveryTechnique`, `issueDiscoveryValue`, `claudeSystemPrompt` |
-| Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue` |
+| Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue`, `doWork.prompts.*`, `conductor.prompts.*` |
 | Issue Watch | `allowedUsers`, `agentUser` |
 
 ```bash
@@ -271,3 +271,50 @@ origin" as the release flow.
 | Git — Release Flow | `git.releaseFlow` ("Detect from origin" clears it) |
 
 The `Git` entry shows both screens in turn and saves them together when the release flow is confirmed.
+
+## `conductor`
+
+```json
+{
+  "conductor": {
+    "watch": [114, 120],
+    "prompts": {
+      "issue": "conductor-issue.md",
+      "pr": "conductor-pr.md"
+    },
+    "executor": "claude",
+    "models": { "claude": "opus" },
+    "effort": { "claude": "high" }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
+| `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
+| `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
+| `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
+| `models.claude`, `models.codex` | unset | Model passed to that executor. |
+| `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
+| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+
+`models` and `effort` are keyed per executor for the reason `doWork.models` is: a value valid for one CLI is not valid for
+the other. The conductor reads only its own keys, never `doWork.executor`.
+
+`conductor.prompts.*` follow the same rules as `doWork.prompts.*` (see [The turn prompts](#the-turn-prompts)): inline
+text, or a plain `.md` filename resolved inside `.automata/`. An unresolvable file reference is an error, not a fall
+back to the default.
+
+```bash
+automata config set conductor-executor claude
+automata config set conductor-model claude opus
+automata config set conductor-effort claude high
+automata config set conductor-prompt issue conductor-issue.md
+automata config set conductor-prompt pr "Read the checks first."
+```
+
+`conductor-prompt` takes the kind (`issue` or `pr`) followed by prompt text or a `.md` filename. The wizard has the
+`conductor-executor`, `conductor-model` and `conductor-effort` set the executor settings; the wizard does not have screens
+for them. The wizard has the same two screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`); they save to `.automata/conductor-issue.md`
+and `.automata/conductor-pr.md`.

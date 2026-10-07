@@ -100,6 +100,27 @@ export interface AutomataGitConfig {
   releaseFlow?: ReleaseFlow;
 }
 
+/** Instructions for the conductor, one per kind of watched item. Text or a `.md` filename in `.automata/`. */
+export interface ConductorPrompts {
+  issue?: string;
+  pr?: string;
+}
+
+/** Settings of `automata conductor`. */
+export interface AutomataConductorConfig {
+  /** Issue and pull request numbers the conductor watches. */
+  watch?: number[];
+  prompts?: ConductorPrompts;
+  /** The CLI the conductor runs. Unset means Claude. */
+  executor?: Executor;
+  /** Model per executor, as `doWork.models`. */
+  models?: DoWorkModels;
+  /** Reasoning effort per executor, as `doWork.effort`. */
+  effort?: DoWorkEffort;
+  /** The most replies the conductor posts on one watched item. Unset means 5. */
+  maxRepliesPerItem?: number;
+}
+
 export interface AutomataConfig {
   remoteType?: RemoteType;
   issueDiscoveryTechnique?: IssueDiscoveryTechnique;
@@ -110,6 +131,7 @@ export interface AutomataConfig {
   prompts?: AutomataPrompts;
   doWork?: AutomataDoWorkConfig;
   git?: AutomataGitConfig;
+  conductor?: AutomataConductorConfig;
 }
 
 export const DEFAULT_CLAUDE_SYSTEM_PROMPT =
@@ -158,14 +180,17 @@ export const DEFAULT_DO_WORK = {
 export const DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT =
   "You are the agent named in the context below, working on a GitHub issue together with the people allowed to instruct you. " +
   "Answer the messages marked NEW; the earlier messages are context only.\n\n" +
-  "Do not modify, create or delete any file, and do not create a branch or a pull request, " +
+  "Do not modify, create or delete any file in the repository, and do not create a branch or a pull request, " +
   "UNLESS a message marked NEW explicitly asks you to implement the work. " +
   "If it does: create a branch off the base branch named below, implement the change following the project's existing conventions, " +
   "run the tests and the linter, and open a pull request whose body contains `Closes #<issue number>`.\n\n" +
   "Otherwise do not touch the code at all: reply on the issue with the specification, the plan, or the open questions you need answered. " +
   "Keep the reply short and concrete.\n\n" +
   "Either way, always post a reply on the issue before you finish — including when you implemented and opened a pull request. " +
-  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.";
+  "Silence is indistinguishable from a crash, and the run will be reported as having produced no answer.\n\n" +
+  "Post the reply yourself with the GitHub CLI: write it to a temporary file outside the repository (the only file you may create in this case) and run `gh issue comment <issue-number> --body-file <file>`, " +
+  "or `gh pr comment <pr-number> --body-file <file>` when you are replying on a pull request. " +
+  "`do-work` does not publish your output, so printing the answer to stdout does not count as a posted reply.";
 
 /** Default instructions for a build turn on an existing pull request. */
 export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
@@ -174,6 +199,7 @@ export const DEFAULT_DO_WORK_PR_WORK_PROMPT =
   "Address every message marked NEW and every unresolved review thread listed. " +
   "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch. " +
   "Do not merge the pull request and do not push to the base branch.\n\n" +
+  "Once a review thread is fixed and pushed, resolve it (GraphQL `resolveReviewThread`) after replying; leave open any thread you did not fix. " +
   "Reply on the pull request with a short summary of what you changed, or reply in the review thread when your answer belongs to a specific comment. " +
   "Always post a reply — silence looks like a crash.";
 
@@ -194,8 +220,33 @@ export const DEFAULT_DO_WORK_PR_ORPHAN_PROMPT =
   "Follow the project's existing conventions, run the tests and the linter, then commit and push to that branch.\n\n" +
   "Do not merge the pull request, do not close it, and do not push to the base branch. " +
   "If you conclude that it should be merged or closed, say so in your reply and leave the decision to the humans.\n\n" +
+  "Once a review thread is fixed and pushed, resolve it (GraphQL `resolveReviewThread`) after replying; leave open any thread you did not fix. " +
   "Reply on the pull request with a short summary of what you did and what you recommend, or reply in the review thread " +
   "when your answer belongs to a specific comment. Always post a reply — silence looks like a crash.";
+
+/**
+ * Default instructions for the conductor on a watched issue. The thread that
+ * follows holds the issue, its linked pull requests, their review threads and
+ * the CI status; the conductor stands in for the people allowed to instruct the
+ * agent, so this prompt asks for their next message, not for code.
+ */
+export const DEFAULT_CONDUCTOR_ISSUE_PROMPT =
+  "You are the conductor: you act for the people allowed to instruct the agent named in the context below. " +
+  "The agent spoke last on the thread below, and no allowed user has answered yet.\n\n" +
+  "Read the whole thread — the issue, its pull requests, the unresolved review threads and the CI status. " +
+  "Decide what the agent needs next: an answer to its question, a decision, or a correction. " +
+  "Write the next message to the agent, short and concrete. " +
+  "Do not change any file, do not merge or close anything, and do not push to any branch.";
+
+/** Default instructions for the conductor on a watched pull request. See `DEFAULT_CONDUCTOR_ISSUE_PROMPT`. */
+export const DEFAULT_CONDUCTOR_PR_PROMPT =
+  "You are the conductor: you act for the people allowed to instruct the agent named in the context below. " +
+  "The agent spoke last on the pull request below, and no allowed user has answered yet.\n\n" +
+  "Read the whole thread — the pull request, the unresolved review threads and the CI status. " +
+  "Decide what the agent needs next: an answer to its question, a decision on a review thread, or a correction. " +
+  "A failing check is the agent's work to fix; name it if the agent has not. " +
+  "Write the next message to the agent, short and concrete. " +
+  "Do not change any file, do not merge or close the pull request, and do not push to any branch.";
 
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
@@ -278,6 +329,12 @@ export function readConfig(): AutomataConfig {
   }
   if (config.doWork?.prompts?.prOrphan) {
     config.doWork.prompts.prOrphan = resolvePromptRef(config.doWork.prompts.prOrphan, dir);
+  }
+  if (config.conductor?.prompts?.issue) {
+    config.conductor.prompts.issue = resolvePromptRef(config.conductor.prompts.issue, dir);
+  }
+  if (config.conductor?.prompts?.pr) {
+    config.conductor.prompts.pr = resolvePromptRef(config.conductor.prompts.pr, dir);
   }
   return config;
 }

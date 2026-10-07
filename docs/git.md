@@ -67,6 +67,30 @@ The `Sonar:` and `Sonar New Issues:` lines only appear when a SonarCloud check i
 
 When the Sonar check is failing and the SonarCloud project is public, an additional `Sonar Failures:` section is printed with structured quality-gate details, issue details, and security-hotspot details when Sonar exposes them. If the SonarCloud public API returns `401`, the section explains that the project is private and advises opening the Sonar URL in an authenticated browser.
 
+### Azure DevOps mode
+
+With `remoteType: "azdo"` the command reads the same fields from the `azdo` CLI (0.20.0+) and renders them exactly
+like GitHub mode, including `--json` and the exit codes.
+
+- **Current branch** (what `get-pr-info` always queries, and any caller passing the checked-out branch): `azdo pr status --json`, which reports policy and
+  status checks.
+- **Another branch** (callers that pass a different branch to `getPrInfo`, such as `execute-prompt`): `azdo pr list --branch <branch> --status all --json` finds the newest PR (any state), and
+  `azdo pipeline get-runs --pr <id> --json` supplies its build runs, shown as `Build <run name>`. `azdo pr status`
+  has no branch option and `pr list` carries no checks, so policy and status checks are not shown for this case.
+- A check whose URL is on SonarCloud gets the same `Sonar:` / `Sonar New Issues:` / `Sonar Failures:` enrichment.
+
+| azdo state | `status` | `conclusion` | Symbol |
+|---|---|---|---|
+| `succeeded` | `COMPLETED` | `SUCCESS` | ✓ |
+| `failed`, `rejected`, `error` | `COMPLETED` | `FAILURE` | ✗ |
+| `notApplicable`, `notSet` | `COMPLETED` | `SKIPPED` | ○ |
+| `queued` | `QUEUED` | `null` | ● (pending) |
+| `running` | `IN_PROGRESS` | `null` | ● (pending) |
+| `pending`, any other state | `PENDING` | `null` | ● (pending) |
+
+Pipeline runs map as: not completed → `pending`; `succeeded` → `succeeded`; `failed` → `failed`; `canceled` →
+`error`; any other result → `pending`.
+
 ### Machine-readable summary fields
 
 These fields appear on every invocation and are easy to grep or parse:
@@ -170,7 +194,7 @@ When one or more checks fail, a trailing `FailedChecks:` section is printed afte
 
 ## `automata git get-pr-comments`
 
-List open (unresolved) review thread comments on the pull request for the current branch. **GitHub only** — not supported in Azure DevOps mode (see [azdo-gap.md](azdo-gap.md)).
+List open (unresolved) review thread comments on the pull request for the current branch. Works with both GitHub and Azure DevOps remotes.
 
 ```bash
 automata git get-pr-comments           # human-readable output
@@ -224,12 +248,28 @@ No open comments.
 
 `line` is `null` for file-level comments (not anchored to a specific line). Returns `[]` when there are no unresolved threads.
 
+### Azure DevOps mode
+
+With `remoteType: "azdo"` the command finds the open PR of the current branch with
+`azdo pr list --branch <branch> --status active --json`, then reads its threads with
+`azdo pr comments --pr-number <id> --exclude-resolved --code-related-only --exclude-system --json` and prints them in
+the same shape as above.
+
+- A thread is **unresolved** when its status is `active` or `pending`; `fixed`, `wontFix`, `closed` and `byDesign`
+  threads are skipped.
+- **General threads** (not anchored to a file) are left out, because GitHub review threads are always file-anchored.
+  Azure DevOps system comments (branch updates, votes, build events) are left out too.
+- One entry per thread: its first non-system comment, as in GitHub mode. `path` is the file path azdo reports
+  (with a leading `/`); `line` is the right-hand line, or the left-hand one, or `null`.
+- `author` is the Azure DevOps **display name** (azdo-cli 0.20.0 exposes no unique login), or `Unknown` when it is
+  missing. It is for display only and must not be used for authorization.
+
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success (including when there are no open comments) |
-| `1` | Error: no PR found, `gh` not installed/authenticated, or Azure DevOps remote type |
+| `1` | Error: no PR found, or `gh` / `azdo` not installed/authenticated |
 
 ---
 

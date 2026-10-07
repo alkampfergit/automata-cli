@@ -293,6 +293,10 @@ describe("doWork configuration", () => {
   it("ships default turn prompts that state their boundary and name no skill", () => {
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/Do not modify, create or delete any file/);
     expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/Closes #/);
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("gh issue comment <issue-number> --body-file <file>");
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("gh pr comment <pr-number> --body-file <file>");
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toMatch(/stdout does not count as a posted reply/);
+    expect(DEFAULT_DO_WORK_ISSUE_DISCUSS_PROMPT).toContain("temporary file outside the repository");
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/Do not merge the pull request/);
     expect(DEFAULT_DO_WORK_PR_WORK_PROMPT).toMatch(/do not push to the base branch/);
     // The defaults must work with no plugin installed, so they name no skill.
@@ -344,6 +348,31 @@ describe("doWork configuration", () => {
     writeFileSync(
       join(TEST_CWD, ".automata", "config.json"),
       JSON.stringify({ doWork: { prompts: { prOrphan: "../escape.md" } } }),
+    );
+    expect(() => readConfig()).toThrow(/plain filename/);
+  });
+
+  it("resolves conductor.prompts file references", () => {
+    writeFileSync(join(TEST_CWD, ".automata", "c-issue.md"), "Read the issue thread");
+    writeFileSync(join(TEST_CWD, ".automata", "c-pr.md"), "Read the pull request");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { watch: [1], prompts: { issue: "c-issue.md", pr: "c-pr.md" } } }),
+    );
+    const { conductor } = readConfig();
+    expect(conductor?.prompts).toEqual({ issue: "Read the issue thread", pr: "Read the pull request" });
+    expect(conductor?.watch).toEqual([1]);
+  });
+
+  it("keeps inline conductor prompts and throws when a conductor prompt file escapes .automata/", () => {
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { prompts: { issue: "inline text" } } }),
+    );
+    expect(readConfig().conductor?.prompts?.issue).toBe("inline text");
+    writeFileSync(
+      join(TEST_CWD, ".automata", "config.json"),
+      JSON.stringify({ conductor: { prompts: { pr: "../escape.md" } } }),
     );
     expect(() => readConfig()).toThrow(/plain filename/);
   });

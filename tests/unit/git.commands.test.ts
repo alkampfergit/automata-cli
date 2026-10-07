@@ -23,6 +23,15 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+// ── Mock the azdo readiness check so the ordered spawnSync mocks below stay about the command under test ──
+
+const mockAssertAzdoReady = vi.fn();
+
+vi.mock("../../src/remote/azdoPrerequisites.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/remote/azdoPrerequisites.js")>();
+  return { ...actual, assertAzdoReady: () => mockAssertAzdoReady() };
+});
+
 // ── Mock the changelog read so publish-release does not see the real file ─────
 
 // Defaults to null -- the documented "this repository keeps no changelog" path.
@@ -979,16 +988,24 @@ describe("git get-pr-comments command", () => {
     expect(out.exitCode).toBe(1);
   });
 
-  it("exits 1 with unsupported message when remoteType is azdo", async () => {
+  it("lists the unresolved Azure DevOps threads when remoteType is azdo", async () => {
     mockReadConfig.mockReturnValue({ remoteType: "azdo" });
-    mockSpawnSync.mockReturnValueOnce(ok("feature/my-branch\n"));
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n"))
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n"));
+    vi.doMock("../../src/config/azdoService.js", () => ({
+      getPrComments: () => [
+        { author: "Alice Rossi", body: "Rename this.", path: "/src/a.ts", line: 12, createdAt: "2026-09-30T10:00:00Z" },
+      ],
+    }));
 
     const { gitCommand } = await import("../../src/commands/git.js");
-    await expect(gitCommand.parseAsync(["node", "git", "get-pr-comments"])).rejects.toThrow("process.exit(1)");
+    await gitCommand.parseAsync(["node", "git", "get-pr-comments"]);
 
-    expect(out.stderr).toContain("not supported for Azure DevOps");
-    expect(out.stderr).toContain("docs/azdo-gap.md");
-    expect(out.exitCode).toBe(1);
+    vi.doUnmock("../../src/config/azdoService.js");
+
+    expect(out.stdout).toContain("[Alice Rossi] on /src/a.ts:12");
+    expect(out.stdout).toContain("Rename this.");
   });
 
   it("strips ANSI escape sequences from comment bodies before output", async () => {
@@ -1019,6 +1036,7 @@ describe("git get-pr-info: azdo dispatch", () => {
     mockReadConfig.mockReset();
     mockReadRawConfig.mockReset();
     mockReadRawConfig.mockReturnValue({});
+    mockAssertAzdoReady.mockReset();
     out = captureStreams();
   });
 
@@ -1036,6 +1054,8 @@ describe("git get-pr-info: azdo dispatch", () => {
     };
     mockSpawnSync
       .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
       .mockReturnValueOnce(ok(JSON.stringify(azdoPrOutput))); // azdo pr status --json
 
     const { gitCommand } = await import("../../src/commands/git.js");
@@ -1047,8 +1067,63 @@ describe("git get-pr-info: azdo dispatch", () => {
     const calls = mockSpawnSync.mock.calls as [string, string[]][];
     const azdoCall = calls.find(([cmd]) => cmd === "azdo");
     expect(azdoCall).toBeDefined();
-    expect(azdoCall?.[1]).toEqual(["pr", "status", "--json"]);
+    expect(azdoCall?.[1]).toEqual(["pr", "status", "--json", "--no-update-check"]);
     expect(out.exitCode).toBeUndefined();
+  });
+
+  it("enriches an azdo PR with SonarCloud data when a check points at SonarCloud", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const sonarUrl = "https://sonarcloud.io/summary/new_code?id=my_project&pullRequest=7";
+    const azdoPrOutput = {
+      pullRequests: [
+        {
+          id: 7,
+          title: "AzDO PR",
+          status: "active",
+          url: "https://dev.azure.com/o/p/_git/r/pullrequest/7",
+          checks: [{ state: "succeeded", name: "sonarcloud/quality gate", description: "Gate passed", targetUrl: sonarUrl }],
+        },
+      ],
+    };
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
+      .mockReturnValueOnce(ok(JSON.stringify(azdoPrOutput))); // azdo pr status --json
+    const fetchMock = vi.fn().mockResolvedValueOnce(fetchOk({ paging: { total: 4 } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await gitCommand.parseAsync(["node", "git", "get-pr-info"]);
+    vi.unstubAllGlobals();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(out.stdout).toContain(`Sonar: ${sonarUrl}`);
+    expect(out.stdout).toContain("Sonar New Issues: 4");
+  });
+
+  it("getPrInfo(branch) looks up another branch with azdo pr list and lists its pipeline runs as checks", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    const listOutput = {
+      pullRequests: [
+        { id: 7, title: "Other PR", status: "active", url: "https://dev.azure.com/o/p/_git/r/pullrequest/7" },
+      ],
+    };
+    const runs = [{ id: 900, name: "20260930.2", state: "completed", result: "failed" }];
+    mockSpawnSync
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok(JSON.stringify(listOutput))) // azdo pr list
+      .mockReturnValueOnce(ok(JSON.stringify(runs))); // azdo pipeline get-runs
+
+    const { getPrInfo } = await import("../../src/git/gitService.js");
+    const pr = await getPrInfo("feature/other");
+
+    const azdoCalls = (mockSpawnSync.mock.calls as [string, string[]][]).filter(([cmd]) => cmd === "azdo");
+    expect(azdoCalls[0]?.[1]).toContain("--branch");
+    expect(pr?.checks).toEqual([
+      { name: "Build 20260930.2", status: "COMPLETED", conclusion: "FAILURE", description: "", detailsUrl: "" },
+    ]);
   });
 
   it("maps azdo completed status to MERGED for finish-feature", async () => {
@@ -1061,6 +1136,8 @@ describe("git get-pr-info: azdo dispatch", () => {
     mockSpawnSync
       .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
       .mockReturnValueOnce(ok("")) // hasUncommittedChanges → clean
+      .mockReturnValueOnce(ok("git@ssh.dev.azure.com:v3/o/p/r\n")) // git remote get-url origin
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch: the argument is the checked-out branch
       .mockReturnValueOnce(ok(JSON.stringify(azdoMergedOutput))) // azdo pr status → MERGED
       .mockReturnValueOnce({ stdout: "", stderr: "", status: 2 }) // isUpstreamGone → gone
       .mockReturnValueOnce(ok("")) // fetchPrune
@@ -1073,6 +1150,37 @@ describe("git get-pr-info: azdo dispatch", () => {
 
     expect(out.stdout).toContain("Done");
     expect(out.exitCode).toBeUndefined();
+  });
+
+  it("stops before any azdo call when the prerequisites fail", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    mockAssertAzdoReady.mockImplementation(() => {
+      throw new Error("azdo-cli 0.5.0 is too old; 0.20.0 or newer is required.");
+    });
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("https://dev.azure.com/o/p/_git/r\n")); // git remote get-url origin
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(gitCommand.parseAsync(["node", "git", "get-pr-info"])).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("too old");
+    expect(out.exitCode).toBe(1);
+    const calls = mockSpawnSync.mock.calls as [string, string[]][];
+    expect(calls.some(([cmd]) => cmd === "azdo")).toBe(false);
+  });
+
+  it("rejects an azdo remoteType whose origin is a GitHub URL", async () => {
+    mockReadConfig.mockReturnValue({ remoteType: "azdo" });
+    mockSpawnSync
+      .mockReturnValueOnce(ok("feature/my-branch\n")) // getCurrentBranch
+      .mockReturnValueOnce(ok("git@github.com:o/r.git\n")); // git remote get-url origin
+
+    const { gitCommand } = await import("../../src/commands/git.js");
+    await expect(gitCommand.parseAsync(["node", "git", "get-pr-info"])).rejects.toThrow("process.exit(1)");
+
+    expect(out.stderr).toContain("origin` is a GitHub URL");
+    expect(out.exitCode).toBe(1);
   });
 });
 

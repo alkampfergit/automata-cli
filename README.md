@@ -133,6 +133,12 @@ One tick of the autonomous loop: answer the open issues whose newest message fro
 
 ---
 
+## `automata conductor`
+
+One cron-friendly tick of the conductor role, run as an allowed (human) account with its own run lock beside `do-work`'s. Reference: [docs/conductor.md](docs/conductor.md).
+
+---
+
 ## Development
 
 ### Prerequisites

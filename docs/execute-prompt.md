@@ -101,9 +101,9 @@ If no custom prompt is configured, the built-in default is used:
 | Code | Meaning |
 |---|---|
 | `0` | AI invocation completed successfully |
-| `1` | No current branch, no PR found, no open comments found, unsupported remote, or AI tool error |
+| `1` | No current branch, no PR found, no open comments found, or AI tool error |
 
-> **Note**: `fix-comments` is not supported for Azure DevOps remotes.
+> **Note**: with `remoteType: "azdo"`, `fix-comments` reads the unresolved file-anchored threads described in [docs/git.md](git.md#azure-devops-mode-1).
 
 ---
 

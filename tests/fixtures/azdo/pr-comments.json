@@ -1,0 +1,29 @@
+{
+  "branch": "feature/x",
+  "pullRequest": { "id": 42, "title": "My PR", "status": "active", "url": "https://dev.azure.com/o/p/_git/repo/pullrequest/42" },
+  "threads": [
+    {
+      "id": 1, "status": "active", "threadContext": "/src/a.ts", "line": 12,
+      "comments": [
+        { "id": 1, "author": "Alice Rossi", "content": "Rename this.", "publishedAt": "2026-09-30T10:00:00Z", "commentType": "text" },
+        { "id": 2, "author": "Bob", "content": "Done.", "publishedAt": "2026-09-30T11:00:00Z", "commentType": "text" }
+      ]
+    },
+    {
+      "id": 2, "status": "pending", "threadContext": "/src/b.ts", "line": null,
+      "comments": [{ "id": 1, "author": null, "content": "Whole file is unclear.", "publishedAt": null, "commentType": "text" }]
+    },
+    {
+      "id": 3, "status": "fixed", "threadContext": "/src/c.ts", "line": 3,
+      "comments": [{ "id": 1, "author": "Alice Rossi", "content": "Resolved one.", "publishedAt": "2026-09-30T10:00:00Z", "commentType": "text" }]
+    },
+    {
+      "id": 4, "status": "active", "threadContext": "/src/d.ts", "line": 1,
+      "comments": [{ "id": 1, "author": "Build Service", "content": "Policy updated.", "publishedAt": "2026-09-30T10:00:00Z", "commentType": "system" }]
+    },
+    {
+      "id": 5, "status": "active", "threadContext": null, "line": null,
+      "comments": [{ "id": 1, "author": "Carol", "content": "General remark.", "publishedAt": "2026-09-30T10:00:00Z", "commentType": "text" }]
+    }
+  ]
+}

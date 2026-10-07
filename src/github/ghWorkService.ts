@@ -52,6 +52,17 @@ export interface PrSurface {
   /** Conversation comments and non-empty review bodies. */
   messages: RawMessage[];
   threads: ReviewThread[];
+  /** The pull request description and its author; not part of `messages`, so it never counts as a turn. */
+  description?: { author: string; body: string };
+}
+
+/** One CI check of a pull request, as `gh` reports it. */
+export interface CiCheck {
+  name: string;
+  /** `COMPLETED`, `IN_PROGRESS`, `QUEUED` or `PENDING`. */
+  status: string;
+  /** Null until the check completes. */
+  conclusion: string | null;
 }
 
 /** Identifies a posted marker comment so it can be updated or deleted later. */
@@ -641,7 +652,32 @@ export function getPrSurface(prNumber: number): PrSurface {
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
     threads,
+    description: { author: login(raw.author), body: raw.body },
   };
+}
+
+/**
+ * The CI checks of a pull request: check runs and commit statuses alike.
+ *
+ * A commit status has a `state` instead of `status`/`conclusion`, and no
+ * `status` at all, so `PENDING` is the only state that maps to "not finished".
+ */
+export function getPrChecks(prNumber: number): CiCheck[] {
+  const raw = ghJson<{
+    statusCheckRollup?:
+      | { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string }[]
+      | null;
+  }>(
+    ["pr", "view", String(prNumber), "--json", "statusCheckRollup"],
+    `read the checks of pull request #${String(prNumber)}`,
+  );
+  return (raw.statusCheckRollup ?? []).map((check) => {
+    const name = check.name ?? check.context ?? "unnamed check";
+    if (check.status !== undefined) return { name, status: check.status, conclusion: check.conclusion ?? null };
+    const state = check.state ?? "";
+    const pending = state === "PENDING" || state === "EXPECTED";
+    return { name, status: pending ? "PENDING" : "COMPLETED", conclusion: pending || state === "" ? null : state };
+  });
 }
 
 /**
@@ -680,6 +716,91 @@ export function assignPrToAgent(prNumber: number, agentUser: string): void {
     throw new Error(
       stderr.trim() || `Failed to assign pull request #${String(prNumber)} to ${agentUser}.`,
     );
+  }
+}
+
+export interface WatchTarget {
+  number: number;
+  kind: "issue" | "pr";
+  /** `closed` covers a merged pull request too. */
+  state: "open" | "closed";
+  title: string;
+  /** Label names; a pull request is an issue to the REST API, so both have them. */
+  labels: string[];
+}
+
+interface RawWatchTarget {
+  number: number;
+  state: string;
+  title: string;
+  labels?: ({ name?: string } | string)[];
+  pull_request?: unknown;
+}
+
+/** Resolve an issue or pull request number with one REST call (a PR is an issue in GitHub's model). */
+export function getWatchTarget(id: number): WatchTarget {
+  const { owner, repo } = getRepoSlug();
+  const raw = ghJson<RawWatchTarget>(["api", `repos/${owner}/${repo}/issues/${String(id)}`], `read #${String(id)}`);
+  return {
+    number: raw.number,
+    kind: raw.pull_request === undefined ? "issue" : "pr",
+    state: raw.state === "closed" ? "closed" : "open",
+    title: raw.title,
+    labels: (raw.labels ?? []).map((label) => (typeof label === "string" ? label : (label.name ?? ""))).filter((name) => name.length > 0),
+  };
+}
+
+/**
+ * Add a label to an issue or a pull request. A repository that does not have the
+ * label gets it created first: the caller needs the label to exist, because it is
+ * the only record of why the conductor stopped.
+ */
+export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: string, description: string): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  const args = [edit, "edit", String(target.number), "--add-label", name];
+  let result = run("gh", args);
+  if (result.status !== 0 && isMissingLabelError(result.stderr)) {
+    const created = run("gh", ["label", "create", name, "--description", description]);
+    // Two ticks can race to create it; "already exists" is the label we need.
+    if (created.status !== 0 && !/already exists/i.test(created.stderr)) {
+      throw new Error(created.stderr.trim() || `Failed to create the label ${name}.`);
+    }
+    result = run("gh", args);
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to add the label ${name} to #${String(target.number)}.`);
+  }
+}
+
+/**
+ * Make `do-work` pick an item up under the configured discovery technique.
+ * `title-contains` cannot be applied to an existing item, so it throws.
+ */
+export function applyDiscovery(
+  target: WatchTarget,
+  technique: IssueDiscoveryTechnique,
+  value: string,
+): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  let flag: string;
+  let arg: string;
+  switch (technique) {
+    case "label":
+      flag = "--add-label";
+      arg = value;
+      break;
+    case "assignee":
+      flag = "--add-assignee";
+      arg = value;
+      break;
+    default:
+      throw new Error(
+        "issueDiscoveryTechnique `title-contains` cannot be applied to an existing item; use `label` or `assignee`.",
+      );
+  }
+  const { stderr, status } = run("gh", [edit, "edit", String(target.number), flag, arg]);
+  if (status !== 0) {
+    throw new Error(stderr.trim() || `Failed to apply the discovery setting to #${String(target.number)}.`);
   }
 }
 

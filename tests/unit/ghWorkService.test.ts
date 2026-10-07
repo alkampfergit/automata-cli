@@ -525,6 +525,35 @@ describe("getReviewThreads pagination", () => {
   });
 });
 
+describe("getPrChecks", () => {
+  it("maps check runs and commit statuses to one shape", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json({
+        statusCheckRollup: [
+          { name: "build", status: "COMPLETED", conclusion: "FAILURE" },
+          { name: "lint", status: "IN_PROGRESS", conclusion: "" },
+          { context: "sonar", state: "SUCCESS" },
+          { context: "deploy", state: "PENDING" },
+        ],
+      }),
+    );
+    const { getPrChecks } = await import("../../src/github/ghWorkService.js");
+    expect(getPrChecks(57)).toEqual([
+      { name: "build", status: "COMPLETED", conclusion: "FAILURE" },
+      { name: "lint", status: "IN_PROGRESS", conclusion: "" },
+      { name: "sonar", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "deploy", status: "PENDING", conclusion: null },
+    ]);
+    expect(calls()[0].args).toEqual(["pr", "view", "57", "--json", "statusCheckRollup"]);
+  });
+
+  it("returns an empty list when the pull request has no checks", async () => {
+    mockSpawnSync.mockReturnValueOnce(json({ statusCheckRollup: null }));
+    const { getPrChecks } = await import("../../src/github/ghWorkService.js");
+    expect(getPrChecks(57)).toEqual([]);
+  });
+});
+
 describe("getPrSurface", () => {
   const prView = {
     number: 57,
@@ -992,5 +1021,58 @@ describe("createDraftPullRequest", () => {
     expect(() => createDraftPullRequest({ ...input, label: undefined })).toThrow(
       "could not read its number",
     );
+  });
+});
+
+describe("getWatchTarget and applyDiscovery", () => {
+  it("tells an issue from a pull request and reads the state", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json({ number: 7, state: "closed", title: "x", pull_request: {} }));
+    const { getWatchTarget } = await import("../../src/github/ghWorkService.js");
+    expect(getWatchTarget(7)).toEqual({ number: 7, kind: "pr", state: "closed", title: "x", labels: [] });
+    expect(calls()[1].args).toEqual(["api", "repos/acme/widget/issues/7"]);
+  });
+
+  it("labels an issue, assigns a pull request, and rejects title-contains", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { applyDiscovery } = await import("../../src/github/ghWorkService.js");
+    const t = { number: 7, state: "open" as const, title: "x", labels: [] };
+    applyDiscovery({ ...t, kind: "issue" }, "label", "automata");
+    applyDiscovery({ ...t, kind: "pr" }, "assignee", "carol");
+    expect(calls().map((c) => c.args)).toEqual([
+      ["issue", "edit", "7", "--add-label", "automata"],
+      ["pr", "edit", "7", "--add-assignee", "carol"],
+    ]);
+    expect(() => applyDiscovery({ ...t, kind: "issue" }, "title-contains", "x")).toThrow(/title-contains/);
+  });
+});
+
+describe("addLabel", () => {
+  it("adds the label to an issue or a pull request", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    addLabel({ number: 7, kind: "pr" }, "conductor-blocked", "d");
+    expect(calls().map((c) => c.args)).toEqual([["pr", "edit", "7", "--add-label", "conductor-blocked"]]);
+  });
+
+  it("creates a missing label once, then retries", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "could not add label: 'conductor-blocked' not found", status: 1 })
+      .mockReturnValueOnce(ok(""))
+      .mockReturnValueOnce(ok(""));
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    addLabel({ number: 7, kind: "issue" }, "conductor-blocked", "d");
+    expect(calls().map((c) => c.args.slice(0, 3))).toEqual([
+      ["issue", "edit", "7"],
+      ["label", "create", "conductor-blocked"],
+      ["issue", "edit", "7"],
+    ]);
+  });
+
+  it("throws on any other failure", async () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403", status: 1 });
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    expect(() => addLabel({ number: 7, kind: "issue" }, "x", "d")).toThrow(/403/);
   });
 });

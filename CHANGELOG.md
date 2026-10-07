@@ -10,6 +10,57 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-07
+
+### Added
+
+- `automata conductor` stops on its own so it is safe to run unattended: `conductor.maxRepliesPerItem` (default 5)
+  caps the replies per watched item, a model that prints `NEEDS-HUMAN: <reason>` makes the tick label the item
+  `conductor-blocked` and stay silent, and closed or merged items are left alone. `--check` and `--dry-run` show
+  both rules. A pull request linked to a watched issue gets no separate reply. See
+  [docs/conductor.md](docs/conductor.md#loop-safety)
+- In Azure DevOps mode, `git get-pr-comments` (and `--json`) and `execute-prompt fix-comments` list the unresolved
+  (`active` or `pending`) file-anchored review threads of the PR, in the same output shape and with the same exit
+  codes as GitHub mode. General threads and system comments are left out; the author is a display name. See
+  [docs/git.md](docs/git.md#azure-devops-mode-1).
+- In Azure DevOps mode, `git get-pr-info` (and `--json`) lists the PR's checks with the same symbols and exit codes
+  as GitHub mode, fails when Azure DevOps cannot retrieve the checks, and runs the SonarCloud enrichment for a
+  SonarCloud check. The state mapping is in [docs/git.md](docs/git.md#azure-devops-mode).
+- The default `do-work` build and orphan prompts tell the agent to resolve the review threads it fixed, so Copilot
+  threads no longer stay open after a fix.
+- `automata conductor`, the skeleton of the conductor role (epic #114): it loads the `do-work` configuration, exits 1
+  unless `gh` is authenticated as a user listed in `allowedUsers` who is not `agentUser`, and takes its own run lock
+  (`.automata/conductor.lock`) so it runs next to `do-work`. See `docs/conductor.md`
+- When a `do-work` agent run finishes without posting an answer, `do-work` now asks the same executor to write the
+  answer from the run transcript, posts it on the issue or pull request, and verifies it before deleting the marker;
+  any failure keeps the existing notice and adds why recovery did not help. See `docs/do-work.md`
+- `automata conductor add|remove|list` manage a watch list stored as `conductor.watch` in `.automata/config.json`;
+  `add` applies the discovery label (or assigns the `issueDiscoveryValue` login) and follows an issue's linked PR, and each tick drops
+  closed issues and closed/merged PRs from the list, logging each removal. See `docs/conductor.md`
+
+- `conductor.prompts.issue` and `conductor.prompts.pr` configure the instructions for the conductor on a watched issue
+  and a watched pull request (inline text or a `.md` file in `.automata/`, built-in defaults), set with
+  `automata config set conductor-prompt <issue|pr> <value>` or the wizard's `Prompts` menu. The thread assembly that
+  uses them (issue, pull requests, review threads, CI status) feeds each conductor tick. See `docs/conductor.md`
+- `automata conductor` now answers each watched item whose newest message is the agent's: it runs Claude
+  read-only and the model posts the reply as a comment with `gh ... --body-file -`. A run that posted nothing is
+  detected and makes the tick exit 1. New keys `conductor.executor`, `conductor.models` and `conductor.effort`, set with
+  `automata config set conductor-executor|conductor-model|conductor-effort`. No approve and no merge. The Claude run reads
+  only inside the working directory and cannot aim `gh` at another repository. `conductor.executor` `codex` is refused. See
+  `docs/conductor.md`
+- `automata conductor --check` prints a read-only report of what a tick would do — the configuration, the run lock,
+  the watch list with the entries a tick would drop, and the reply decision per conversation — and exits 1 on a
+  problem. `automata conductor --dry-run` runs the model for the reply a tick would post for each watched item and prints it instead of
+  posting it (the `codex` executor is refused); it takes no lock and changes no watch list. The two options cannot be combined. See `docs/conductor.md`
+
+### Changed
+
+- The default `do-work` issue-discuss prompt now tells the model to post its reply with `gh issue comment` / `gh pr comment`
+  `--body-file`, and states that printing to stdout is not a posted reply. See `docs/wiki/Prompts.md`
+- In Azure DevOps mode, `git get-pr-info` and `git finish-feature` check that `azdo` is installed, at least 0.20.0 and
+  authenticated before calling it, and fail with a clear message otherwise; they also reject an `origin` that is a
+  GitHub URL. See `docs/azdo-gap.md`
+
 ## [0.10.0] - 2026-09-30
 
 ### Added

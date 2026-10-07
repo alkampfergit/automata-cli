@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { identityProblemFor } from "../../src/github/identity.js";
+import { conductorIdentityProblemFor, identityProblemFor } from "../../src/github/identity.js";
 
 const AGENT = "automata-bot";
 const ALLOWED = ["alice", "bob"];
@@ -33,5 +33,23 @@ describe("identityProblemFor", () => {
 
   it("matches allowedUsers case-insensitively", () => {
     expect(identityProblemFor("ALICE", AGENT, ALLOWED)).toContain("listed in allowedUsers");
+  });
+});
+
+describe("conductorIdentityProblemFor", () => {
+  it("accepts an allowed user who is not the agent", () => {
+    expect(conductorIdentityProblemFor("Alice", "bot", ["alice", "bob"])).toBeNull();
+  });
+
+  it("rejects the agent, even when it is also allowed", () => {
+    expect(conductorIdentityProblemFor("BOT", "bot", ["bot"])).toMatch(/is the agent/);
+  });
+
+  it("rejects an account that is not allowed", () => {
+    expect(conductorIdentityProblemFor("carol", "bot", ["alice"])).toMatch(/not listed in allowedUsers/);
+  });
+
+  it("rejects an unverifiable identity", () => {
+    expect(conductorIdentityProblemFor(null, "bot", ["alice"])).toMatch(/Could not determine/);
   });
 });

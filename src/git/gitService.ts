@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readConfig, readRawConfig } from "../config/configStore.js";
+import { assertAzdoReady } from "../remote/azdoPrerequisites.js";
+import { parseOrigin } from "../remote/originUrl.js";
 import * as azdoService from "../config/azdoService.js";
 import { selectBackend } from "../remote/backend.js";
 import { recordCommand } from "../run/commandTrace.js";
@@ -275,11 +277,17 @@ function parseOwnerRepo(): string | null {
   const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
   if (status !== 0) return null;
   const url = stdout.trim();
-  const https = /github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
-  if (https) return https[1];
-  const ssh = /github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
-  if (ssh) return ssh[1];
-  return null;
+  const origin = parseOrigin(url);
+  return origin?.kind === "github" ? `${origin.owner}/${origin.repo}` : null;
+}
+
+/** Fails early, with a clear message, when the Azure DevOps backend cannot work here. */
+function assertAzdoRemote(): void {
+  const { stdout, status } = run("git", ["remote", "get-url", "origin"]);
+  if (status === 0 && parseOrigin(stdout)?.kind === "github") {
+    throw new Error("remoteType is `azdo` but `origin` is a GitHub URL. Fix `remoteType` in .automata/config.json.");
+  }
+  assertAzdoReady();
 }
 
 function extractLastMarkdownUrl(markdown: string): string | null {
@@ -789,31 +797,29 @@ async function getPrInfoGh(branch: string): Promise<PrInfo | null> {
     };
   });
 
-  // SonarCloud detection
-  const sonarCheck = checks.find((c) => isSonarUrl(c.detailsUrl));
-  const sonar = sonarCheck === undefined ? undefined : await describeSonarCheck(sonarCheck, raw.number);
+  return withSonar({ number: raw.number, title: raw.title, state: raw.state, url: raw.url, checks });
+}
 
+/** Adds the SonarCloud summary when one of the checks points at SonarCloud. */
+async function withSonar(pr: PrInfo): Promise<PrInfo> {
+  const sonarCheck = pr.checks.find((c) => isSonarUrl(c.detailsUrl));
+  if (sonarCheck === undefined) return pr;
+  const sonar = await describeSonarCheck(sonarCheck, pr.number);
   return {
-    number: raw.number,
-    title: raw.title,
-    state: raw.state,
-    url: raw.url,
-    checks,
-    ...(sonar === undefined
-      ? {}
-      : {
-          sonarcloudUrl: sonar.sonarcloudUrl,
-          sonarNewIssues: sonar.sonarNewIssues,
-          sonarNewIssuesNote: sonar.sonarNewIssuesNote,
-        }),
-    ...(sonar?.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
+    ...pr,
+    sonarcloudUrl: sonar.sonarcloudUrl,
+    sonarNewIssues: sonar.sonarNewIssues,
+    sonarNewIssuesNote: sonar.sonarNewIssuesNote,
+    ...(sonar.sonarFailures === undefined ? {} : { sonarFailures: sonar.sonarFailures }),
   };
 }
 
 export async function getPrInfo(branch: string): Promise<PrInfo | null> {
   const config = readConfig();
   if (selectBackend(config) === "azdo") {
-    return azdoService.getPrInfo();
+    assertAzdoRemote();
+    const pr = azdoService.getPrInfo(branch === getCurrentBranch() ? undefined : branch);
+    return pr === null ? null : withSonar(pr);
   }
   return getPrInfoGh(branch);
 }
@@ -1267,17 +1273,17 @@ function getPrCommentsGh(branch: string): PrComment[] | null {
     });
 }
 
-export function getPrComments(branch: string): PrComment[] | null | "unsupported" {
+export function getPrComments(branch: string): PrComment[] | null {
   const config = readConfig();
   if (selectBackend(config) === "azdo") {
-    return "unsupported";
+    assertAzdoRemote();
+    return azdoService.getPrComments(branch);
   }
   return getPrCommentsGh(branch);
 }
 
 export type PrCommentsResult =
   | { ok: true; branch: string; comments: PrComment[] }
-  | { ok: false; kind: "unsupported" }
   | { ok: false; kind: "no-pr"; branch: string }
   | { ok: false; kind: "error"; message: string };
 
@@ -1288,13 +1294,12 @@ export function resolveCurrentBranchComments(): PrCommentsResult {
   } catch (err) {
     return { ok: false, kind: "error", message: (err as Error).message };
   }
-  let raw: PrComment[] | null | "unsupported";
+  let raw: PrComment[] | null;
   try {
     raw = getPrComments(branch);
   } catch (err) {
     return { ok: false, kind: "error", message: (err as Error).message };
   }
-  if (raw === "unsupported") return { ok: false, kind: "unsupported" };
   if (raw === null) return { ok: false, kind: "no-pr", branch };
   return { ok: true, branch, comments: raw };
 }
