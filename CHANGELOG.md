@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-07
+
 ### Added
 
 - `automata conductor` stops on its own so it is safe to run unattended: `conductor.maxRepliesPerItem` (default 5)
