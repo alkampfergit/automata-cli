@@ -1284,37 +1284,48 @@ async function reconcileMarker(
   }
 
   if (analysis.answeredAt !== null) {
-    reportOvertakenMessages(item, analysis);
-    try {
-      deleteMarker(marker);
-    } catch (err) {
-      progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
-    }
-    if (analysis.missed.length > 0) {
-      return {
-        outcome: "answered-no-reply",
-        detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
-        reason: "flagged",
-      };
-    }
-    if (recovered) {
-      return {
-        outcome: "answered",
-        detail: "answered (recovered from the run transcript)",
-        reason: "answered",
-      };
-    }
-    return runError === null
-      ? { outcome: "answered", detail: "answered", reason: "answered" }
-      : {
-          outcome: "answered",
-          detail: `answered, but the run reported: ${runError.message}`,
-          reason: "answered",
-        };
+    return reportAnswered(item, marker, analysis, runError, recovered);
   }
 
   if (claudeAuth !== null) return reportClaudeAuth(item, marker, participants, claudeAuth);
   return reportNoAnswer(item, marker, runError, diagnostics, recoveryNote);
+}
+
+/** The thread holds an answer: drop the marker and say how it got there. */
+function reportAnswered(
+  item: WorkItem,
+  marker: MarkerRef,
+  analysis: AnswerAnalysis,
+  runError: Error | null,
+  recovered: boolean,
+): Reconciled {
+  reportOvertakenMessages(item, analysis);
+  try {
+    deleteMarker(marker);
+  } catch (err) {
+    progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
+  }
+  if (analysis.missed.length > 0) {
+    return {
+      outcome: "answered-no-reply",
+      detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
+      reason: "flagged",
+    };
+  }
+  if (recovered) {
+    return {
+      outcome: "answered",
+      detail: "answered (recovered from the run transcript)",
+      reason: "answered",
+    };
+  }
+  return runError === null
+    ? { outcome: "answered", detail: "answered", reason: "answered" }
+    : {
+        outcome: "answered",
+        detail: `answered, but the run reported: ${runError.message}`,
+        reason: "answered",
+      };
 }
 
 /** True when the last earlier comment of the agent on the surface carries the login-failure marker. */
