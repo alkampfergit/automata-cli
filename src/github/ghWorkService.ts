@@ -983,7 +983,7 @@ export function createDraftPullRequest(input: DraftPullRequestInput): { number: 
   if (input.label !== undefined && input.label.length > 0) {
     const labelled = run("gh", [...base, "--label", input.label]);
     if (labelled.status === 0) return parseCreatedPrUrl(labelled.stdout, input.head);
-    if (!isMissingLabelError(labelled.stderr)) {
+    if (!isMissingLabelError(labelled.stderr, input.label)) {
       throw new Error(
         labelled.stderr.trim() || `Failed to open a draft pull request for ${input.head}.`,
       );

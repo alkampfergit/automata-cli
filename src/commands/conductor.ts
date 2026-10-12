@@ -155,7 +155,7 @@ function readTargetMessages(target: ReplyTarget) {
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
 function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun });
+  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun, echoResult: false });
 }
 
 /**
@@ -200,7 +200,7 @@ function captureStdout(): { sink: RunSink; text: () => string } {
 async function runModelForText(prompt: string, execution: ConductorExecution): Promise<string | null> {
   const { owner, repo } = getRepoSlug();
   const captured = captureStdout();
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun };
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun, echoResult: false };
   try {
     await runClaude(prompt, options);
   } finally {
