@@ -963,6 +963,18 @@ describe("do-work marker reconciliation", () => {
       expect(mockRecordTick.mock.calls[0][0]).toMatchObject({ note: "claude-auth" });
     });
 
+    it("still blocks the tick when doWork.postRunLog is false, and posts no output", async () => {
+      mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { postRunLog: false } });
+      gh.getIssueSurface.mockReturnValue(needsWork(42));
+      failAuth();
+      await runDoWork();
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/claude \/login/);
+      expect(body).not.toMatch(/Failed to authenticate|OAuth|```/);
+      expect(exitCode).toBe(2);
+      expect(mockRecordTick.mock.calls[0][0]).toMatchObject({ note: "claude-auth" });
+    });
+
     it("posts the comment once: a later failure deletes its marker instead", async () => {
       gh.postMarker.mockReturnValue({ commentId: "9", createdAt: "2026-01-03T00:00:00Z" });
       gh.getIssueSurface.mockReturnValue({
