@@ -3,7 +3,6 @@ import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
   readRawConfig,
-  writeConfig,
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_CONDUCTOR_REBASE_PROMPT,
@@ -60,7 +59,8 @@ import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
-import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
+import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
+import { readWatch, writeWatch } from "../conductor/watchStore.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -72,16 +72,14 @@ function fail(message: string): number {
 }
 
 /**
- * Apply a change to the watch list against the config as it is on disk right
- * now, so a concurrent `add`/`remove`/prune is not overwritten by a stale
+ * Apply a change to the watch list as it is on disk right now, so a concurrent `add`/`remove`/prune is not overwritten by a stale
  * snapshot taken earlier in the command (the network calls in between are slow).
  */
 function updateWatch(change: (current: number[]) => number[]): void {
-  const raw = readRawConfig();
-  const current = normalizeWatch(raw.conductor?.watch);
+  const current = readWatch();
   const next = change(current);
   if (next.length === current.length && next.every((id, i) => id === current[i])) return;
-  writeConfig({ ...raw, conductor: { ...raw.conductor, watch: next } });
+  writeWatch(next);
 }
 
 function describe(target: WatchTarget): string {
@@ -89,12 +87,12 @@ function describe(target: WatchTarget): string {
 }
 
 /**
- * Drop closed issues and closed/merged pull requests from `conductor.watch`,
+ * Drop closed issues and closed/merged pull requests from the watch list,
  * logging each removal. An id that cannot be looked up stays: a network error
  * must not empty the list.
  */
-export function pruneWatchList(config: AutomataConfig): number[] {
-  const watch = normalizeWatch(config.conductor?.watch);
+export function pruneWatchList(): number[] {
+  const watch = readWatch();
   const dropped: number[] = [];
   for (const id of watch) {
     try {
@@ -429,7 +427,7 @@ export function runWatchAdd(rawId: string): number {
 export function runWatchRemove(rawId: string): number {
   const id = parseWatchId(rawId);
   if (id === null) return fail(`"${rawId}" is not an issue or pull request number.`);
-  const before = normalizeWatch(readRawConfig().conductor?.watch);
+  const before = readWatch();
   if (!before.includes(id)) return fail(`#${String(id)} is not on the watch list.`);
   updateWatch((current) => withoutWatched(current, id));
   process.stdout.write(`Stopped watching #${String(id)}.\n`);
@@ -439,7 +437,7 @@ export function runWatchRemove(rawId: string): number {
 export function runWatchList(): number {
   const config = loadGitHubConfig();
   if (typeof config === "number") return config;
-  const watch = normalizeWatch(config.conductor?.watch);
+  const watch = readWatch();
   if (watch.length === 0) {
     process.stdout.write("The watch list is empty.\n");
     return 0;
@@ -569,7 +567,7 @@ function runConductorCheck(): number {
     // the header says "unknown repository"
   }
   const linkMap = onceLinkMap();
-  const watchIds = "problem" in checked ? [] : normalizeWatch(checked.config.conductor?.watch);
+  const watchIds = "problem" in checked ? [] : readWatch();
   const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap);
   const report =
     "problem" in checked
@@ -599,7 +597,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
-  const watchIds = normalizeWatch(config.conductor?.watch);
+  const watchIds = readWatch();
   const covered = coveredOf(watchIds, context.linkMap);
   for (const id of watchIds) {
     try {
@@ -727,7 +725,7 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
-    const watch = pruneWatchList(config);
+    const watch = pruneWatchList();
     let failed = 0;
     const linkMap = onceLinkMap();
     const covered = coveredOf(watch, linkMap);

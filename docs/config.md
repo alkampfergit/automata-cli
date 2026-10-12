@@ -277,7 +277,6 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 ```json
 {
   "conductor": {
-    "watch": [114, 120],
     "prompts": {
       "issue": "conductor-issue.md",
       "pr": "conductor-pr.md"
@@ -291,7 +290,6 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 
 | Key | Default | Meaning |
 |---|---|---|
-| `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
 | `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
 | `prompts.rebase` | built-in | The request the conductor sends to the agent when a watched pull request has a merge conflict. See [conductor.md](conductor.md#rebase-check). Also `automata config set conductor-prompt rebase <text>` and the wizard screen `Prompts → Conductor — Rebase`. |
@@ -299,6 +297,10 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
 | `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). The rebase requests of the [rebase check](conductor.md#rebase-check) have their own counter with the same limit. A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+
+`conductor.watch` is no longer a config key. The watch list is in `.automata/conductor-watch.json`, which is gitignored
+(see [conductor.md](conductor.md#watch-list)). If `config.json` still has `conductor.watch`, the first read copies it
+into the new file once, and the old key is ignored after that. You can delete it from `config.json`.
 
 `models` and `effort` are keyed per executor for the reason `doWork.models` is: a value valid for one CLI is not valid for
 the other. The conductor reads only its own keys, never `doWork.executor`.

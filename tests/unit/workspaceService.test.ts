@@ -92,6 +92,7 @@ describe("prepareBaseBranch", () => {
       ".automata/automata.lock",
       ".automata/conductor.lock",
       ".automata/automata-heartbeat.json",
+      ".automata/conductor-watch.json",
     ]);
   });
 
