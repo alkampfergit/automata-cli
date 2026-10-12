@@ -87,7 +87,7 @@ describe("decideConductorReply with loop safety", () => {
       messages: [msg("pr-comment", "alice", "1", REPLY_MARKER)],
     };
     const issue = { ...owed(), messages: [...owed().messages, msg("issue-comment", "alice", "0", REPLY_MARKER)] };
-    expect(loopStateOf([issue, pr], ["Conductor-Blocked"], 5)).toEqual({ blocked: true, replies: 2, maxReplies: 5 });
+    expect(loopStateOf([issue, pr], ["Conductor-Blocked"], 5)).toMatchObject({ blocked: true, replies: 2, maxReplies: 5 });
   });
 });
 

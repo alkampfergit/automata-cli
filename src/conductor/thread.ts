@@ -1,5 +1,6 @@
 import { analyzeSurface, formatMessages, type Participants, type RawMessage } from "../github/conversation.js";
 import { NEEDS_HUMAN_PREFIX, REPLY_MARKER } from "./loopSafety.js";
+import { rebaseMarker } from "./alwaysChecks.js";
 import { openCopilotThreads, renderCopilotBlock } from "./copilot.js";
 import type { CiCheck, IssueSurface, PrSurface, ReviewThread } from "../github/ghWorkService.js";
 
@@ -35,6 +36,11 @@ export interface ConductorPromptInput {
   replyTo?: ReplyTarget;
   /** `--dry-run`: the prompt asks for the reply as the final message and tells the model nothing can be posted. */
   dryRun?: boolean;
+  /**
+   * A rebase turn: the head commit of the conflicting pull request `replyTo` names. `frame` is then
+   * `conductor.prompts.rebase`, the request for the agent, and the comment ends with the rebase marker.
+   */
+  rebaseHead?: string;
 }
 
 /** The issue or pull request a reply is posted on. */
@@ -56,14 +62,16 @@ export function defaultReplyTarget(thread: ConductorThread): ReplyTarget {
  * reply that is not posted does not exist. `--body-file -` reads the body from
  * stdin, because a read-only run cannot write a file.
  */
-export function postingInstruction(target: ReplyTarget): string {
+export function postingInstruction(target: ReplyTarget, rebaseHead?: string): string {
   const command = target.kind === "pr" ? "pr" : "issue";
   const number = String(target.number);
   return [
     `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
       "What you print is discarded; only a posted comment counts.",
     `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
-    `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`,
+    rebaseHead === undefined
+      ? `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`
+      : `End the comment body with the line \`${rebaseMarker(rebaseHead)}\` on its own, and not with any other marker; automata counts the rebase requests with it.`,
     "Post exactly one comment. Do not approve, merge or close anything.",
     needsHumanInstruction(),
   ].join("\n");
@@ -75,6 +83,15 @@ function needsHumanInstruction(): string {
     "If you cannot go on without a person, post no comment. Make the last line of your final message " +
     `\`${NEEDS_HUMAN_PREFIX} <one-line reason>\`; automata then labels the item and stays silent.`
   );
+}
+
+/** Appended to a rebase turn: what the situation is and what the comment must be. */
+function rebaseInstruction(target: ReplyTarget): string {
+  return [
+    `Pull request #${String(target.number)} has a merge conflict with its base branch.`,
+    "The instructions at the top of this message are the request for the agent. Make the comment that request, " +
+      "in your own words if the thread needs it (for example, name the branches), and do not do the rebase yourself.",
+  ].join("\n");
 }
 
 /**
@@ -190,7 +207,8 @@ export function composeConductorPrompt(input: ConductorPromptInput): string {
     "Only the messages above exist. Anything from other accounts has been withheld",
     "deliberately — do not ask about it.",
     "",
-    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo),
+    ...(input.rebaseHead === undefined ? [] : [rebaseInstruction(replyTo), ""]),
+    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo, input.rebaseHead),
   );
   return lines.join("\n");
 }

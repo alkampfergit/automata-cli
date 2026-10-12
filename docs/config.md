@@ -294,10 +294,11 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
 | `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
+| `prompts.rebase` | built-in | The request the conductor sends to the agent when a watched pull request has a merge conflict. See [conductor.md](conductor.md#rebase-check). Also `automata config set conductor-prompt rebase <text>` and the wizard screen `Prompts → Conductor — Rebase`. |
 | `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
-| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). The rebase requests of the [rebase check](conductor.md#rebase-check) have their own counter with the same limit. A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
 
 `models` and `effort` are keyed per executor for the reason `doWork.models` is: a value valid for one CLI is not valid for
 the other. The conductor reads only its own keys, never `doWork.executor`.
@@ -312,9 +313,10 @@ automata config set conductor-model claude opus
 automata config set conductor-effort claude high
 automata config set conductor-prompt issue conductor-issue.md
 automata config set conductor-prompt pr "Read the checks first."
+automata config set conductor-prompt rebase "Please rebase and push."
 ```
 
-`conductor-prompt` takes the kind (`issue` or `pr`) followed by prompt text or a `.md` filename. The wizard has the
+`conductor-prompt` takes the kind (`issue`, `pr` or `rebase`) followed by prompt text or a `.md` filename. The wizard has the
 `conductor-executor`, `conductor-model` and `conductor-effort` set the executor settings; the wizard does not have screens
-for them. The wizard has the same two screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`); they save to `.automata/conductor-issue.md`
-and `.automata/conductor-pr.md`.
+for them. The wizard has the same three screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`, `Conductor — Rebase`); they save to
+`.automata/conductor-issue.md`, `.automata/conductor-pr.md` and `.automata/conductor-rebase.md`.

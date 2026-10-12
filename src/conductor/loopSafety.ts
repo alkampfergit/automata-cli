@@ -53,6 +53,10 @@ export interface LoopState {
   /** Conductor replies already on the item (the issue and its pull requests together). */
   replies: number;
   maxReplies: number;
+  /** Rebase requests already on the item; they have their own counter (see `alwaysChecks.ts`). */
+  rebases: number;
+  /** The limit of rebase requests: the same value as `maxReplies`. */
+  maxRebases: number;
 }
 
 /**
