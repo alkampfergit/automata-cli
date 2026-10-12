@@ -33,7 +33,7 @@ export function renderCopilotBlock(number: number, threads: ReviewThread[], agen
     const location = thread.line === null ? `${thread.path}:(file)` : `${thread.path}:${String(thread.line)}`;
     const first: RawMessage = thread.comments[0];
     const link = thread.url === null ? "" : ` (${thread.url})`;
-    return `- ${location}${link}\n  ${first.author}: ${first.body.trim().split("\n").join("\n  ")}`;
+    return `- ${location}${link}\n  ${first.author}: ${first.body.trim().replaceAll("\n", "\n  ")}`;
   });
   return [
     `Open Copilot review comments on pull request #${String(number)}:`,

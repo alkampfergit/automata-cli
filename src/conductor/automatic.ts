@@ -34,17 +34,21 @@ export interface AutomaticLoop {
  * stopping is what the operator asked for). A failed tick is logged and retried.
  */
 export async function runAutomatic(loop: AutomaticLoop): Promise<number> {
-  while (!loop.stopped()) {
-    const result = await loop.tick();
-    if (result.open === 0) {
-      loop.log("Conductor: no open item is watched any more; leaving the loop.");
-      return 0;
-    }
-    if (loop.stopped()) break;
-    if (result.code !== 0) loop.log(`Conductor: the tick ended with exit code ${String(result.code)}; the next tick runs anyway.`);
-    loop.log(`Conductor: next tick in ${String(loop.intervalSeconds)} s.`);
-    await loop.sleep(loop.intervalSeconds);
+  if (loop.stopped()) {
+    loop.log("Conductor: stopped.");
+    return 0;
   }
-  loop.log("Conductor: stopped.");
-  return 0;
+  const result = await loop.tick();
+  if (result.open === 0) {
+    loop.log("Conductor: no open item is watched any more; leaving the loop.");
+    return 0;
+  }
+  if (loop.stopped()) {
+    loop.log("Conductor: stopped.");
+    return 0;
+  }
+  if (result.code !== 0) loop.log(`Conductor: the tick ended with exit code ${String(result.code)}; the next tick runs anyway.`);
+  loop.log(`Conductor: next tick in ${String(loop.intervalSeconds)} s.`);
+  await loop.sleep(loop.intervalSeconds);
+  return runAutomatic(loop);
 }
