@@ -10,6 +10,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- The conductor now creates the `conductor-blocked` label when `gh` reports it only as `'conductor-blocked' not found`,
+  instead of failing the tick without recording why it stopped
+
 ## [0.11.0] - 2026-10-07
 
 ### Added

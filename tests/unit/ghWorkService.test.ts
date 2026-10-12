@@ -943,6 +943,21 @@ describe("isMissingLabelError", () => {
   });
 });
 
+describe("isMissingLabelError with a requested label name", () => {
+  const stderr = "failed to update https://github.com/acme/widget/issues/94: 'conductor-blocked' not found";
+
+  it("recognises the wording that has no word label when the name matches", async () => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr, "conductor-blocked")).toBe(true);
+  });
+
+  it("does not recognise it without the name, or for another name", async () => {
+    const { isMissingLabelError } = await import("../../src/github/ghWorkService.js");
+    expect(isMissingLabelError(stderr)).toBe(false);
+    expect(isMissingLabelError(stderr, "rescue")).toBe(false);
+  });
+});
+
 describe("createDraftPullRequest", () => {
   const input = {
     head: "rescue/develop-20260910T054512Z",
@@ -1049,6 +1064,24 @@ describe("getWatchTarget and applyDiscovery", () => {
 });
 
 describe("addLabel", () => {
+  it("creates the label when gh says only that the quoted name was not found", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({
+        stdout: "",
+        stderr: "failed to update https://github.com/acme/widget/issues/94: 'conductor-blocked' not found",
+        status: 1,
+      })
+      .mockReturnValueOnce(ok(""))
+      .mockReturnValueOnce(ok(""));
+    const { addLabel } = await import("../../src/github/ghWorkService.js");
+    addLabel({ number: 94, kind: "issue" }, "conductor-blocked", "d");
+    expect(calls().map((c) => c.args.slice(0, 3))).toEqual([
+      ["issue", "edit", "94"],
+      ["label", "create", "conductor-blocked"],
+      ["issue", "edit", "94"],
+    ]);
+  });
+
   it("adds the label to an issue or a pull request", async () => {
     mockSpawnSync.mockReturnValue(ok(""));
     const { addLabel } = await import("../../src/github/ghWorkService.js");
