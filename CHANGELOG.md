@@ -19,6 +19,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   again, does not start the Claude-based redaction pass, posts the comment once, and shows the problem in
   `--check`. The detection also works when `doWork.postRunLog` is `false`; the output is then not posted. See
   [docs/do-work.md](docs/do-work.md#claude-login-failure)
+- `automata conductor --automatic [--interval <seconds>]` runs the tick in a loop in the foreground (default 60 s)
+  and exits 0 when no open item is watched. The conductor also answers open Copilot review threads: it tells the
+  agent to fix each comment and resolve its thread, unless the agent is working. See
+  [docs/conductor.md](docs/conductor.md#automatic-mode)
 
 ### Fixed
 

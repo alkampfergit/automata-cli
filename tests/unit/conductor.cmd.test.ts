@@ -5,6 +5,7 @@ const mockLogin = vi.fn();
 const mockAcquire = vi.fn();
 const mockRelease = vi.fn();
 const mockInspect = vi.fn();
+const mockInspectRun = vi.fn();
 const mockRawConfig = vi.fn();
 const mockWrite = vi.fn();
 const mockTarget = vi.fn();
@@ -47,6 +48,7 @@ vi.mock("../../src/run/runLock.js", () => ({
   CONDUCTOR_LOCK_RELATIVE_PATH: ".automata/conductor.lock",
   acquireConductorLock: (...a: unknown[]) => mockAcquire(...a),
   inspectConductorLock: (...a: unknown[]) => mockInspect(...a),
+  inspectRunLock: (...a: unknown[]) => mockInspectRun(...a),
 }));
 
 function text(author: string, createdAt: string, body: string) {
@@ -72,6 +74,7 @@ beforeEach(() => {
   mockLinks.mockReturnValue({ byIssue: new Map() });
   mockAcquire.mockReturnValue({ ok: true, handle: { release: mockRelease } });
   mockInspect.mockReturnValue({ kind: "free" });
+  mockInspectRun.mockReturnValue({ kind: "free" });
   mockIssueSurface.mockImplementation((n: number) => issueSurface(n, [text("alice", "t1", "hi")]));
   mockChecks.mockReturnValue([]);
 });
@@ -592,5 +595,71 @@ describe("conductor loop safety", () => {
     expect(await runConductor({ dryRun: true })).toBe(0);
     expect(mockAddLabel).not.toHaveBeenCalled();
     expect(stdout).toMatch(/needs a human \(not labelled\): stuck/);
+  });
+});
+
+describe("conductor --automatic", () => {
+  async function runWith(options: object): Promise<number> {
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    return runConductor(options);
+  }
+
+  it("rejects --interval without --automatic", async () => {
+    expect(await runWith({ interval: "5" })).toBe(1);
+    expect(stderr).toMatch(/--interval needs --automatic/);
+  });
+
+  it("rejects --automatic with --check or --dry-run, and a bad interval", async () => {
+    expect(await runWith({ automatic: true, check: true })).toBe(1);
+    expect(await runWith({ automatic: true, dryRun: true })).toBe(1);
+    expect(stderr).toMatch(/--automatic cannot be used with --check or --dry-run/);
+    expect(await runWith({ automatic: true, interval: "0" })).toBe(1);
+    expect(stderr).toMatch(/--interval must be a positive whole number/);
+    expect(mockAcquire).not.toHaveBeenCalled();
+  });
+
+  it("exits 0 at once when the watch list is empty", async () => {
+    expect(await runWith({ automatic: true, interval: "1" })).toBe(0);
+    expect(mockAcquire).toHaveBeenCalledOnce();
+    expect(stdout).toMatch(/leaving the loop/);
+  });
+
+  it("waits, then leaves once the last watched item is closed", async () => {
+    vi.useFakeTimers();
+    try {
+      const config = { ...CONFIG, conductor: { watch: [7] } };
+      mockReadConfig.mockReturnValue(config);
+      mockRawConfig.mockReturnValue(config);
+      mockTarget.mockReturnValueOnce(issue(7));
+      mockTarget.mockReturnValue({ ...issue(7), state: "closed" });
+      const done = runWith({ automatic: true, interval: "3" });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await done).toBe(0);
+      expect(mockAcquire).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits with a Copilot-only turn while the do-work lock is held", async () => {
+    const config = { ...CONFIG, conductor: { watch: [9] } };
+    mockReadConfig.mockReturnValue(config);
+    mockRawConfig.mockReturnValue(config);
+    mockTarget.mockReturnValue({ ...issue(9), kind: "pr" });
+    mockPrSurface.mockReturnValue({
+      pr: { number: 9, title: "T", url: "u", state: "OPEN", isDraft: false, headRefName: "f", baseRefName: "develop" },
+      assignees: [],
+      messages: [],
+      threads: [{ path: "a.ts", line: 1, isResolved: false, url: null, comments: [{ kind: "thread-comment", author: "Copilot", body: "fix", createdAt: "2026-10-01T10:00:00Z" }] }],
+    });
+    mockInspectRun.mockReturnValue({ kind: "held", owner: { pid: 1 }, heldForMs: 1 });
+    expect(await runWith({})).toBe(0);
+    expect(stdout).toMatch(/agent is working/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+
+    mockInspectRun.mockReturnValue({ kind: "free" });
+    mockRunClaude.mockResolvedValue(undefined);
+    await runWith({});
+    expect(mockRunClaude).toHaveBeenCalledOnce();
   });
 });

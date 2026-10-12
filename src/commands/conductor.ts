@@ -43,6 +43,7 @@ import {
   resolveConductorExecution,
   type ConductorExecution,
 } from "../conductor/execution.js";
+import { parseInterval, runAutomatic, type TickResult } from "../conductor/automatic.js";
 import { conductReply } from "../conductor/reply.js";
 import {
   BLOCKED_LABEL,
@@ -60,7 +61,7 @@ import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../co
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
-import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock } from "../run/runLock.js";
+import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock, inspectRunLock } from "../run/runLock.js";
 
 function fail(message: string): number {
   process.stderr.write(`Error: ${message}\n`);
@@ -265,6 +266,12 @@ async function conductDryRunItem(
   return "replied";
 }
 
+/** The agent is working while its `do-work` run lock is held; a conductor must not start a second turn on its items. */
+function agentIsWorking(config: AutomataConfig): boolean {
+  const status = inspectRunLock(config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes);
+  return status.kind === "held" || status.kind === "suspect";
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -294,6 +301,10 @@ async function conductItem(
     const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && (decision.reason === "blocked" || decision.reason === "limit"));
     const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
     process.stdout.write(`${why}\n`);
+    return "idle";
+  }
+  if (owed.kind === "reply" && owed.copilot === true && dryRun === undefined && agentIsWorking(config)) {
+    process.stdout.write(`Conductor: ${label} has open Copilot review threads, but the agent is working (the do-work run lock is held); waiting.\n`);
     return "idle";
   }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
@@ -481,6 +492,9 @@ export interface ConductorOptions {
   check?: boolean;
   dryRun?: boolean;
   verbose?: boolean;
+  automatic?: boolean;
+  /** Seconds, as typed; only with `automatic`. */
+  interval?: string;
 }
 
 function staleMinutesOf(config: AutomataConfig): number {
@@ -614,17 +628,66 @@ export async function runConductor(options: ConductorOptions = {}): Promise<numb
 }
 
 async function runConductorTick(options: ConductorOptions): Promise<number> {
-  if (options.check === true && options.dryRun === true) {
-    return fail("--check and --dry-run cannot be used together.");
-  }
+  const problem = optionsProblem(options);
+  if (problem !== null) return fail(problem);
+  if (options.automatic === true) return runConductorAutomatic(options.interval);
   if (options.check === true) return runConductorCheck();
+  return (await runTick(options)).code;
+}
+
+function optionsProblem(options: ConductorOptions): string | null {
+  if (options.check === true && options.dryRun === true) return "--check and --dry-run cannot be used together.";
+  if (options.automatic !== true) {
+    return options.interval === undefined ? null : "--interval needs --automatic.";
+  }
+  if (options.check === true || options.dryRun === true) return "--automatic cannot be used with --check or --dry-run.";
+  const interval = parseInterval(options.interval);
+  return typeof interval === "string" ? interval : null;
+}
+
+/** `--automatic`: ticks until no open item is watched, or until SIGINT/SIGTERM. */
+async function runConductorAutomatic(rawInterval: string | undefined): Promise<number> {
+  const intervalSeconds = parseInterval(rawInterval) as number;
+  let stop = false;
+  let wake: (() => void) | null = null;
+  const onSignal = (): void => {
+    if (stop) process.exit(130);
+    stop = true;
+    process.stdout.write("Conductor: stopping after the current tick.\n");
+    wake?.();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    process.stdout.write(`Conductor: automatic mode, one tick every ${String(intervalSeconds)} s. Press Ctrl+C to stop.\n`);
+    return await runAutomatic({
+      intervalSeconds,
+      tick: () => runTick({}),
+      stopped: () => stop,
+      log: (line) => process.stdout.write(`${line}\n`),
+      sleep: (seconds) =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, seconds * 1000);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        }),
+    });
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
+async function runTick(options: ConductorOptions): Promise<TickResult> {
   const checked = preflight();
-  if ("problem" in checked) return fail(checked.problem);
-  if (options.dryRun === true) return runConductorDryRun(checked);
+  if ("problem" in checked) return { code: fail(checked.problem), open: null };
+  if (options.dryRun === true) return { code: await runConductorDryRun(checked), open: null };
   const { config, login, participants, execution } = checked;
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
-  if (!lock.ok) return reportHeldLock(lock.heldBy, lock.suspect, staleMinutes);
+  if (!lock.ok) return { code: reportHeldLock(lock.heldBy, lock.suspect, staleMinutes), open: null };
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
@@ -646,7 +709,7 @@ async function runConductorTick(options: ConductorOptions): Promise<number> {
         failed++;
       }
     }
-    return failed > 0 ? 1 : 0;
+    return { code: failed > 0 ? 1 : 0, open: watch.length };
   } finally {
     lock.handle.release();
   }
@@ -662,6 +725,8 @@ export const conductorCommand = new Command("conductor")
     "--verbose",
     "Trace every `git` and `gh` call with its duration and exit code, show the model's steps, and list the tool calls the run was denied",
   )
+  .option("--automatic", "Run a tick every --interval seconds until no open item is watched (Ctrl+C stops it)")
+  .option("--interval <seconds>", "Seconds between two ticks with --automatic (default 60)")
   .action(async (options: ConductorOptions) => {
     exitWith(await runConductor(options));
   });
