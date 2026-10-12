@@ -4,6 +4,22 @@ import { describePermissionDenials, parsePermissionDenials } from "../../src/con
 const result = (denials: unknown) => JSON.stringify({ type: "result", result: "x", permission_denials: denials }) + "\n";
 
 describe("parsePermissionDenials", () => {
+  it("reads the shape Claude Code 2.1.285 prints in the result event (captured from a real dontAsk run)", () => {
+    const real = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      permission_denials: [
+        {
+          tool_name: "Bash",
+          tool_use_id: "toolu_01Ck9vGd5XqM2ZYYVmgB2Vu1",
+          tool_input: { command: "gh issue comment 94 --body hello", description: "Post a comment on issue 94" },
+        },
+      ],
+    });
+    expect(parsePermissionDenials(real + "\n")).toEqual([{ tool: "Bash", target: "gh issue comment 94 --body hello" }]);
+  });
+
   it("reads the command of a denied Bash call and the path of a denied file tool", () => {
     const out = result([
       { tool_name: "Bash", tool_input: { command: "gh issue comment 94 --body hi" } },

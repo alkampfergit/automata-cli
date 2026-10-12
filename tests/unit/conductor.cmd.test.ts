@@ -418,7 +418,9 @@ describe("conductor --check and --dry-run", () => {
     mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
     mockRunClaude.mockImplementation(async (_p: string, options: { printSteps?: boolean; sink: { output(s: string, t: string): void } }) => {
       expect(options.printSteps).toBe(true);
-      const denied = [{ tool_name: "Bash", tool_input: { command: "gh issue comment 5 --body x" } }];
+      const denied = [
+        { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "gh issue comment 5 --body x", description: "Post" } },
+      ];
       options.sink.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: denied", permission_denials: denied }) + "\n");
     });
     expect(await runWith({ verbose: true })).toBe(0);
