@@ -348,7 +348,7 @@ describe("conductor --check and --dry-run", () => {
   const owed = [text("bot", "2026-10-01T00:00:00Z", "question?")];
   const answered = [text("bot", "2026-10-01T00:00:00Z", "q"), text("alice", "2026-10-02T00:00:00Z", "a")];
 
-  async function runWith(options: { check?: boolean; dryRun?: boolean }): Promise<number> {
+  async function runWith(options: { check?: boolean; dryRun?: boolean; verbose?: boolean }): Promise<number> {
     const { runConductor } = await import("../../src/commands/conductor.js");
     return runConductor(options);
   }
@@ -410,6 +410,32 @@ describe("conductor --check and --dry-run", () => {
     expect(mockRunClaude).toHaveBeenCalledOnce();
     expect(mockAcquire).not.toHaveBeenCalled();
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("--verbose lists the denied tool calls and the commands traced, on stderr, and does not change stdout", async () => {
+    watching(5);
+    mockTarget.mockImplementation((n: number) => issue(n));
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
+    mockRunClaude.mockImplementation(async (_p: string, options: { printSteps?: boolean; sink: { output(s: string, t: string): void } }) => {
+      expect(options.printSteps).toBe(true);
+      const denied = [{ tool_name: "Bash", tool_input: { command: "gh issue comment 5 --body x" } }];
+      options.sink.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: denied", permission_denials: denied }) + "\n");
+    });
+    expect(await runWith({ verbose: true })).toBe(0);
+    expect(stderr).toMatch(/denied 1 tool call\(s\):\n  - Bash gh issue comment 5 --body x/);
+    expect(stderr).toMatch(/Commands \(\d+\)/);
+    expect(stdout).not.toMatch(/Commands/);
+  });
+
+  it("without --verbose the run prints no steps, no denials and no trace", async () => {
+    watching(5);
+    mockTarget.mockImplementation((n: number) => issue(n));
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
+    mockRunClaude.mockImplementation(async (_p: string, options: { printSteps?: boolean }) => {
+      expect(options.printSteps).toBe(false);
+    });
+    await runWith({});
+    expect(stderr).not.toMatch(/denied|Commands \(/);
   });
 
   it("--check reads the open pull request link map once for the whole report", async () => {
