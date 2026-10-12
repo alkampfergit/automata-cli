@@ -38,7 +38,7 @@ describe("ClaudeAuthTail", () => {
     const tail = new ClaudeAuthTail();
     tail.output("stdout", "x".repeat(CLAUDE_AUTH_TAIL_MAX * 2));
     tail.output("stderr", "Failed to authenticate");
-    expect(tail.tail.length).toBe(CLAUDE_AUTH_TAIL_MAX);
+    expect(tail.tail).toHaveLength(CLAUDE_AUTH_TAIL_MAX);
     expect(detectClaudeAuthFailure(tail.tail)).toBe(true);
   });
 });
