@@ -759,7 +759,7 @@ export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: str
   const edit = target.kind === "pr" ? "pr" : "issue";
   const args = [edit, "edit", String(target.number), "--add-label", name];
   let result = run("gh", args);
-  if (result.status !== 0 && isMissingLabelError(result.stderr)) {
+  if (result.status !== 0 && isMissingLabelError(result.stderr, name)) {
     const created = run("gh", ["label", "create", name, "--description", description]);
     // Two ticks can race to create it; "already exists" is the label we need.
     if (created.status !== 0 && !/already exists/i.test(created.stderr)) {
@@ -940,9 +940,18 @@ const MISSING_LABEL_PATTERNS = [
   /\blabels?\b[^\n]*\b(?:not found|does not exist)\b/i,
 ];
 
-/** True when stderr says the label is missing, and nothing else went wrong. */
-export function isMissingLabelError(stderr: string): boolean {
-  return MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr));
+/**
+ * True when stderr says the label is missing, and nothing else went wrong.
+ *
+ * Some gh versions say only `failed to update <url>: 'rescue' not found`, with no
+ * word `label`. That wording is accepted only when the quoted name is the label
+ * that was requested, so a missing issue or branch does not trigger a retry.
+ */
+export function isMissingLabelError(stderr: string, name?: string): boolean {
+  if (MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr))) {
+    return true;
+  }
+  return name !== undefined && stderr.includes(`'${name}' not found`);
 }
 
 /**
