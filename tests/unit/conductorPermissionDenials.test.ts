@@ -56,4 +56,12 @@ describe("describePermissionDenials", () => {
     expect(lines[1]).toHaveLength(301);
     expect(lines[1]?.endsWith("…")).toBe(true);
   });
+
+  it("drops terminal control characters from a model-made command", () => {
+    const [line] = describePermissionDenials([{ tool: "Bash", target: "echo \u001b[31mred\u001b]0;x\u0007 \u009bdone" }]);
+    // eslint-disable-next-line no-control-regex
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(line).toContain("echo");
+    expect(line).toContain("done");
+  });
 });
