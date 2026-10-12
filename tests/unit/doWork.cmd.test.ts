@@ -940,6 +940,47 @@ describe("do-work marker reconciliation", () => {
     expect(stdout).toMatch(/failed/);
   });
 
+  describe("a Claude login failure", () => {
+    const AUTH = "Failed to authenticate: OAuth session expired and could not be refreshed\n";
+    const failAuth = (): void => {
+      mockInvokeClaude.mockImplementation(() => {
+        lastSink?.output("stderr", AUTH);
+        return Promise.reject(new Error("Claude Code exited with code 1."));
+      });
+    };
+
+    it("blocks the tick with the login advice and starts no second redaction pass", async () => {
+      gh.getIssueSurface.mockReturnValue(needsWork(42));
+      failAuth();
+      await runDoWork();
+      const body = gh.updateMarker.mock.calls[0][1] as string;
+      expect(body).toMatch(/claude \/login/);
+      expect(body).toContain("<!-- automata:claude-auth -->");
+      expect(body).not.toMatch(/terminated unexpectedly|failed before posting/);
+      expect(mockScrub).not.toHaveBeenCalled();
+      expect(mockRecover).not.toHaveBeenCalled();
+      expect(exitCode).toBe(2);
+      expect(mockRecordTick.mock.calls[0][0]).toMatchObject({ note: "claude-auth" });
+    });
+
+    it("posts the comment once: a later failure deletes its marker instead", async () => {
+      gh.postMarker.mockReturnValue({ commentId: "9", createdAt: "2026-01-03T00:00:00Z" });
+      gh.getIssueSurface.mockReturnValue({
+        ...needsWork(42),
+        messages: [
+          message("alice", "2026-01-01T00:00:00Z", "issue-body"),
+          { ...message("automata-bot", "2026-01-02T00:00:00Z"), body: "told\n<!-- automata:claude-auth -->" },
+          message("alice", "2026-01-02T12:00:00Z"),
+        ],
+      });
+      failAuth();
+      await runDoWork();
+      expect(gh.updateMarker).not.toHaveBeenCalled();
+      expect(gh.deleteMarker).toHaveBeenCalledTimes(1);
+      expect(exitCode).toBe(2);
+    });
+  });
+
   it("deletes the marker for a non-zero run that still posted an answer", async () => {
     answersAfterMarker();
     mockInvokeClaude.mockRejectedValue(new Error("claude exited with code 1"));
