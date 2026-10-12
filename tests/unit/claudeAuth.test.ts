@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CLAUDE_AUTH_MARKER,
+  CLAUDE_AUTH_TAIL_MAX,
+  ClaudeAuthTail,
   detectClaudeAuthFailure,
   renderClaudeAuthComment,
 } from "../../src/run/claudeAuth.js";
@@ -28,5 +30,15 @@ describe("renderClaudeAuthComment", () => {
     expect(body).toContain(CLAUDE_AUTH_MARKER);
     expect(body).not.toMatch(/terminated unexpectedly/);
     expect(body).toContain("Failed to authenticate");
+  });
+});
+
+describe("ClaudeAuthTail", () => {
+  it("keeps only a bounded tail", () => {
+    const tail = new ClaudeAuthTail();
+    tail.output("stdout", "x".repeat(CLAUDE_AUTH_TAIL_MAX * 2));
+    tail.output("stderr", "Failed to authenticate");
+    expect(tail.tail.length).toBe(CLAUDE_AUTH_TAIL_MAX);
+    expect(detectClaudeAuthFailure(tail.tail)).toBe(true);
   });
 });

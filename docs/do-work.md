@@ -642,8 +642,9 @@ When a Claude run exits with a non-zero code and its output shows an authenticat
 - It records `note=claude-auth` in the operation log, so `--check` lists the problem under `Recent ticks`.
 
 There is no check before each tick. The failure is found from the Claude output. The patterns are in
-`CLAUDE_AUTH_PATTERNS` in `src/run/claudeAuth.ts`. Detection needs `doWork.postRunLog` (on by default), because it
-reads the run transcript.
+`CLAUDE_AUTH_PATTERNS` in `src/run/claudeAuth.ts`. Detection does not depend on `doWork.postRunLog`. When it is `false`, only a
+bounded tail (8 KB) of the output is kept in memory for the detector. It is not saved and not posted, so the
+comment has no output excerpt.
 
 ### What it costs
 

@@ -82,6 +82,7 @@ import {
   CLAUDE_AUTH_MARKER,
   CLAUDE_AUTH_REASON,
   CLAUDE_AUTH_REMEDY,
+  ClaudeAuthTail,
   detectClaudeAuthFailure,
   renderClaudeAuthComment,
 } from "../run/claudeAuth.js";
@@ -1715,13 +1716,20 @@ async function runRecorded(
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
 
+  // Without a transcript, a bounded in-memory tail still lets the login failure be found.
+  const authTail = transcript === null && execution.executor === "claude" ? new ClaudeAuthTail() : null;
+
   let runError: Error | null = null;
   try {
-    await invokeExecutor(prompt, execution, silent, transcript ?? undefined);
+    await invokeExecutor(prompt, execution, silent, transcript ?? authTail ?? undefined);
   } catch (err) {
     runError = err as Error;
   }
-  if (transcript === null) return { runError, diagnostics: null, recovery: null, claudeAuth: null };
+  if (transcript === null) {
+    // The tail is only tested, never posted: the user turned the run log off.
+    const claudeAuth = runError !== null && authTail !== null && detectClaudeAuthFailure(authTail.tail) ? "" : null;
+    return { runError, diagnostics: null, recovery: null, claudeAuth };
+  }
   // Only the pattern redaction of the transcript: a model pass would start Claude again.
   const tail = transcript.excerpt();
   const claudeAuth =
