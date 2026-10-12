@@ -1365,10 +1365,7 @@ function reportClaudeAuth(
     if (alreadyTold) deleteMarker(marker);
     else updateMarker(marker, renderClaudeAuthComment(surface, excerpt));
   } catch (err) {
-    progress(
-      `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
-        `  the humans have not been told that Claude Code is not signed in.\n`,
-    );
+    warnMarkerNotUpdated(surface, err, "that Claude Code is not signed in");
   }
   return result;
 }
@@ -1459,6 +1456,14 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): Reconciled {
   };
 }
 
+/** Tell the operator that the marker comment could not be updated, so the humans were not told `what`. */
+function warnMarkerNotUpdated(surface: string, err: unknown, what: string): void {
+  progress(
+    `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
+      `  the humans have not been told ${what}.\n`,
+  );
+}
+
 /**
  * The run produced no answer. Deliberately does not claim nothing changed: a run
  * can commit and push and still fail to comment, and a failed run can leave
@@ -1489,10 +1494,7 @@ async function reportNoAnswer(
   try {
     updateMarker(marker, explanation + recovery + ((await diagnostics?.()) ?? ""));
   } catch (err) {
-    progress(
-      `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
-        `  the humans have not been told that this run produced no answer.\n`,
-    );
+    warnMarkerNotUpdated(surface, err, "that this run produced no answer");
   }
   return runError === null
     ? {
