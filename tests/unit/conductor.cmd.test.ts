@@ -11,6 +11,7 @@ const mockWrite = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
+const mockPostMarker = vi.fn();
 const mockLinks = vi.fn();
 const mockIssueSurface = vi.fn();
 const mockPrSurface = vi.fn();
@@ -32,6 +33,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
+  postMarker: (...a: unknown[]) => mockPostMarker(...a),
   getOpenPrLinkMap: () => mockLinks(),
   getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
   getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
@@ -661,5 +663,93 @@ describe("conductor --automatic", () => {
     mockRunClaude.mockResolvedValue(undefined);
     await runWith({});
     expect(mockRunClaude).toHaveBeenCalledOnce();
+  });
+});
+
+describe("conductor rebase check", () => {
+  const SHA = "abc1234def";
+  const MARK = "<!-- automata:conductor -->";
+  const rebaseMark = (sha: string) => `<!-- automata:conductor-rebase head=${sha} -->`;
+  const comment = (author: string, at: string, body: string) => ({ kind: "pr-comment", author, body, createdAt: at });
+
+  function watchingPr(mergeable: string, messages: unknown[], labels: string[] = ["conductor-blocked"], extra: object = {}) {
+    const config = { ...CONFIG, conductor: { watch: [9], ...extra } };
+    mockReadConfig.mockReturnValue(config);
+    mockRawConfig.mockReturnValue(config);
+    mockTarget.mockReturnValue({ ...issue(9), kind: "pr", labels });
+    mockPrSurface.mockImplementation(() => ({
+      pr: { number: 9, title: "T", url: "u", state: "OPEN", isDraft: false, headRefName: "f", baseRefName: "develop", mergeable, headSha: SHA },
+      assignees: [],
+      messages,
+      threads: [],
+    }));
+  }
+  const spoke = [comment("alice", "2026-10-01T09:00:00Z", "go")];
+
+  it("rebases a blocked pull request with a conflict, with the configured prompt and the rebase marker", async () => {
+    watchingPr("CONFLICTING", spoke, ["conductor-blocked"], { prompts: { rebase: "REBASE NOW" } });
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+    const [prompt] = mockRunClaude.mock.calls[0] as [string];
+    expect(prompt.startsWith("REBASE NOW")).toBe(true);
+    expect(prompt).toContain("gh pr comment 9 --body-file -");
+    expect(prompt).toContain(rebaseMark(SHA));
+    expect(stdout).toMatch(/needs a rebase request on pull request #9/);
+  });
+
+  it("uses the default prompt of the issue", async () => {
+    watchingPr("CONFLICTING", spoke);
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
+  });
+
+  it.each(["UNKNOWN", "MERGEABLE"])("does not rebase when mergeable is %s", async (mergeable) => {
+    watchingPr(mergeable, spoke);
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("runs at most once per head commit", async () => {
+    watchingPr("CONFLICTING", [...spoke, comment("alice", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`)]);
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/already requested for head commit abc1234/);
+  });
+
+  it("has its own limit: replies do not use it up, and rebases do not use up the replies", async () => {
+    const replies = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${MARK}`));
+    watchingPr("CONFLICTING", [...spoke, ...replies], ["conductor-blocked"], { maxRepliesPerItem: 2 });
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+
+    mockRunClaude.mockClear();
+    const rebases = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${rebaseMark(`old${String(i)}`)}`));
+    watchingPr("CONFLICTING", [...spoke, ...rebases], ["conductor-blocked"], { maxRepliesPerItem: 2 });
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/already asked for 2 rebases/);
+  });
+
+  it("labels the item again and records the head commit when the rebase run needs a human", async () => {
+    mockAddLabel.mockReset();
+    watchingPr("CONFLICTING", spoke);
+    mockRunClaude.mockImplementation((_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }) => {
+      options.sink?.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: the conflict is a design choice" }) + "\n");
+      return Promise.resolve();
+    });
+    expect(await run()).toBe(0);
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 9 }), "conductor-blocked", expect.any(String));
+    expect(mockPostMarker).toHaveBeenCalledWith("pr", 9, expect.stringContaining(rebaseMark(SHA)));
+  });
+
+  it("waits while the do-work lock is held", async () => {
+    watchingPr("CONFLICTING", spoke);
+    mockInspectRun.mockReturnValue({ kind: "held", owner: { pid: 1 }, heldForMs: 1 });
+    await run();
+    expect(stdout).toMatch(/has a merge conflict, but the agent is working/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
   });
 });

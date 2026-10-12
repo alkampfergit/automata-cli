@@ -3,6 +3,7 @@ import { type Participants, type RawMessage } from "../github/conversation.js";
 import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
 import { BLOCKED_LABEL, REPLY_MARKER, countConductorReplies, type LoopState } from "./loopSafety.js";
 import { newestCopilotAt, openCopilotThreads } from "./copilot.js";
+import { countRebaseTurns, runAlwaysChecks, type AlwaysDecision, type AlwaysSkipReason } from "./alwaysChecks.js";
 
 /**
  * Pure rule for the conductor: does a watched item need a reply from an allowed
@@ -21,6 +22,10 @@ export interface Conversation {
   messages: RawMessage[];
   /** Pull request only: the newest comment of Copilot in an unresolved review thread, if any. */
   copilotAt?: string | null;
+  /** Pull request only: GitHub's merge state (`CONFLICTING`, `MERGEABLE`, `UNKNOWN`). */
+  mergeable?: string;
+  /** Pull request only: the commit the head branch points at. */
+  headSha?: string;
 }
 
 export type ConductorSkipReason =
@@ -28,11 +33,14 @@ export type ConductorSkipReason =
   | "no-agent-message"
   | "answered"
   | "blocked"
-  | "limit";
+  | "limit"
+  | AlwaysSkipReason;
 
+/** `rebase` comes from an always check (see `alwaysChecks.ts`) and ignores the loop-safety stop. */
 export type ConductorDecision =
   | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string; copilot?: true }
-  | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string };
+  | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string }
+  | Extract<AlwaysDecision, { kind: "rebase" }>;
 
 /**
  * The one rule for "is this item finished": the pruning of the watch list and
@@ -59,6 +67,8 @@ export function prConversation(surface: PrSurface): Conversation {
     state: surface.pr.state === "OPEN" ? "open" : "closed",
     messages: [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)],
     copilotAt: newestCopilotAt(openCopilotThreads(surface)),
+    mergeable: surface.pr.mergeable,
+    headSha: surface.pr.headSha,
   };
 }
 
@@ -164,14 +174,23 @@ export function decideConductorReply(
   p: Participants,
   loop?: LoopState,
 ): ConductorVerdict {
-  const decided = conversations.map((conversation) => decideConversation(conversation, p));
+  // The always checks come first and ignore the stop: a rebase request replaces the
+  // ordinary decision of its conversation, and a skipped one is listed beside it.
+  const always = runAlwaysChecks(
+    conversations,
+    loop === undefined ? { rebases: 0, maxRebases: Infinity } : { rebases: loop.rebases, maxRebases: loop.maxRebases },
+  );
+  const decided = conversations.map((conversation) =>
+    always.find((decision) => decision.kind === "rebase" && decision.surface === conversation) ?? decideConversation(conversation, p),
+  );
   const stop = loop === undefined ? null : loopStop(loop);
   const decisions = decided.map((decision): ConductorDecision =>
     decision.kind === "reply" && stop !== null
       ? { kind: "skip", surface: decision.surface, reason: stop.reason, detail: stop.detail }
       : decision,
   );
-  return { needsReply: decisions.some((decision) => decision.kind === "reply"), decisions };
+  decisions.push(...always.filter((decision) => decision.kind === "skip"));
+  return { needsReply: decisions.some((decision) => decision.kind !== "skip"), decisions };
 }
 
 function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: string } | null {
@@ -193,5 +212,7 @@ export function loopStateOf(conversations: Conversation[], labels: string[], max
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
     replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
     maxReplies,
+    rebases: countRebaseTurns(conversations.flatMap((conversation) => conversation.messages)),
+    maxRebases: maxReplies,
   };
 }

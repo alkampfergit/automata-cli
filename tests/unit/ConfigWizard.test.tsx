@@ -16,6 +16,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
   DEFAULT_CONDUCTOR_ISSUE_PROMPT: "default conductor issue prompt",
   DEFAULT_CONDUCTOR_PR_PROMPT: "default conductor pr prompt",
+  DEFAULT_CONDUCTOR_REBASE_PROMPT: "default conductor rebase prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {

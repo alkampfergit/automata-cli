@@ -12,6 +12,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- The conductor has a rebase check that runs even on an item with the `conductor-blocked` label: when GitHub reports
+  a merge conflict on a watched pull request, the conductor asks the agent to rebase. The request is configurable
+  with `conductor.prompts.rebase` (`automata config set conductor-prompt rebase`, and a wizard screen). It runs once
+  per head commit and has its own limit, `conductor.maxRepliesPerItem`. See
+  [docs/conductor.md](docs/conductor.md#rebase-check)
 - `automata conductor --verbose` traces every `git` and `gh` call, shows the steps of the model run and lists the tool
   calls that the run was denied, so a `denied by permissions` block shows which command was refused
 - `do-work` finds a Claude Code login failure (for example `Failed to authenticate: OAuth session expired and could

@@ -104,6 +104,8 @@ export interface AutomataGitConfig {
 export interface ConductorPrompts {
   issue?: string;
   pr?: string;
+  /** Sent to the agent when a watched pull request has a merge conflict. */
+  rebase?: string;
 }
 
 /** Settings of `automata conductor`. */
@@ -248,6 +250,14 @@ export const DEFAULT_CONDUCTOR_PR_PROMPT =
   "Write the next message to the agent, short and concrete. " +
   "Do not change any file, do not merge or close the pull request, and do not push to any branch.";
 
+/**
+ * Default request for a watched pull request that conflicts with its base branch.
+ * The conductor posts it, as a comment, to the agent.
+ */
+export const DEFAULT_CONDUCTOR_REBASE_PROMPT =
+  "please fetch, update the target branch then rebase the branch on the target branch, resolve conflicts, commit and push, " +
+  "then wait for all the checks to report ok, if some check fails, or if you have issues in sonar cloud, please fix them";
+
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
 
@@ -335,6 +345,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.conductor?.prompts?.pr) {
     config.conductor.prompts.pr = resolvePromptRef(config.conductor.prompts.pr, dir);
+  }
+  if (config.conductor?.prompts?.rebase) {
+    config.conductor.prompts.rebase = resolvePromptRef(config.conductor.prompts.rebase, dir);
   }
   return config;
 }

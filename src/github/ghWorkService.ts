@@ -25,6 +25,10 @@ export interface PullRequestRef {
   state: "OPEN" | "CLOSED" | "MERGED";
   isDraft: boolean;
   updatedAt: string;
+  /** GitHub's lazily computed merge state: `CONFLICTING` means a merge conflict; `UNKNOWN` means not computed yet. */
+  mergeable?: string;
+  /** The commit the head branch points at. */
+  headSha?: string;
 }
 
 export interface ReviewThread {
@@ -97,6 +101,8 @@ interface RawPrView {
   isCrossRepository?: boolean;
   state?: string;
   isDraft?: boolean;
+  mergeable?: string;
+  headRefOid?: string;
   body: string;
   author?: RawAuthor;
   createdAt: string;
@@ -609,7 +615,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -648,6 +654,8 @@ export function getPrSurface(prNumber: number): PrSurface {
       state,
       isDraft: raw.isDraft ?? false,
       updatedAt: raw.updatedAt ?? raw.createdAt,
+      mergeable: raw.mergeable,
+      headSha: raw.headRefOid,
     },
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,

@@ -6,6 +6,7 @@ import {
   writeConfig,
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
+  DEFAULT_CONDUCTOR_REBASE_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
 } from "../config/configStore.js";
@@ -20,6 +21,7 @@ import {
   getRepoSlug,
   getWatchTarget,
   addLabel,
+  postMarker,
   type WatchTarget,
 } from "../github/ghWorkService.js";
 import type { Participants } from "../github/conversation.js";
@@ -52,6 +54,7 @@ import {
   parseNeedsHuman,
   resolveMaxReplies,
 } from "../conductor/loopSafety.js";
+import { rebaseMarker } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
@@ -241,6 +244,22 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
   return "idle";
 }
 
+/**
+ * A rebase turn ended in `NEEDS-HUMAN:`. The rebase check ignores the label, so the turn must leave a
+ * trace for its head commit, or the next tick would run the model again. The note carries the rebase marker.
+ */
+function noteRebaseStop(replyTo: ReplyTarget, headSha: string, reason: string, label: string): void {
+  try {
+    postMarker(
+      replyTo.kind,
+      replyTo.number,
+      `The conductor stopped on the rebase of this pull request and needs a person: ${reason}\n\n${rebaseMarker(headSha)}`,
+    );
+  } catch (err) {
+    process.stderr.write(`Warning: could not record the stopped rebase of ${label}; the next tick tries again: ${(err as Error).message}\n`);
+  }
+}
+
 type ItemResult = "replied" | "idle" | "failed";
 
 async function conductDryRunItem(
@@ -272,6 +291,19 @@ function agentIsWorking(config: AutomataConfig): boolean {
   return status.kind === "held" || status.kind === "suspect";
 }
 
+/** The configured instructions for a turn, or the built-in default. */
+function frameFor(key: "issue" | "pr" | "rebase", config: AutomataConfig): string {
+  const prompts = config.conductor?.prompts;
+  switch (key) {
+    case "issue":
+      return prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT;
+    case "pr":
+      return prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT;
+    case "rebase":
+      return prompts?.rebase ?? DEFAULT_CONDUCTOR_REBASE_PROMPT;
+  }
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -295,27 +327,28 @@ async function conductItem(
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
   const owed = verdict.decisions.find(
-    (decision) => decision.kind === "reply" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
+    (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
   if (owed === undefined) {
-    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && (decision.reason === "blocked" || decision.reason === "limit"));
+    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
     const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
     process.stdout.write(`${why}\n`);
     return "idle";
   }
-  if (owed.kind === "reply" && owed.copilot === true && dryRun === undefined && agentIsWorking(config)) {
-    process.stdout.write(`Conductor: ${label} has open Copilot review threads, but the agent is working (the do-work run lock is held); waiting.\n`);
+  const rebaseHead = owed.kind === "rebase" ? owed.headSha : undefined;
+  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
+  if ((copilotTurn || rebaseHead !== undefined) && dryRun === undefined && agentIsWorking(config)) {
+    const what = copilotTurn ? "has open Copilot review threads" : "has a merge conflict";
+    process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
     return "idle";
   }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
-  const frame =
-    thread.kind === "issue"
-      ? (config.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT)
-      : (config.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT);
-  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined });
+  const frame = frameFor(rebaseHead !== undefined ? "rebase" : thread.kind, config);
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, rebaseHead });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
-  process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  const need = rebaseHead === undefined ? "a reply" : "a rebase request";
+  process.stdout.write(`Conductor: ${label} needs ${need} on ${where}; running ${describeConductorExecution(execution)}.\n`);
   if (dryRun) return conductDryRunItem(prompt, execution, label, where, replyTo, dryRun);
   const captured = captureStdout();
   const outcome = await conductReply({
@@ -326,6 +359,7 @@ async function conductItem(
   reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
+    if (rebaseHead !== undefined) noteRebaseStop(replyTo, rebaseHead, needsHuman, label);
     return blockItem(item, label, needsHuman);
   }
   switch (outcome.kind) {

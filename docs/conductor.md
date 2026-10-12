@@ -51,6 +51,30 @@ each comment, and then resolve the review thread. The conductor run stays read-o
   tries again on the next tick.
 - [Loop safety](#loop-safety) applies: the reply limit and the `conductor-blocked` label stop a Copilot turn too.
 
+## Rebase check
+
+Some checks run on every watched item, even one with the `conductor-blocked` label or one that has used its replies.
+Today there is one: the rebase check (`src/conductor/alwaysChecks.ts`; another check is one more function in
+`ALWAYS_CHECKS`). It runs before the [loop-safety rules](#loop-safety).
+
+A watched pull request, or an open pull request linked to a watched issue, is owed a rebase request when GitHub reports
+`mergeable: CONFLICTING`. `MERGEABLE` and `UNKNOWN` do nothing; GitHub computes the value lazily, and the next tick
+reads `UNKNOWN` again. A pull request that is not watched is not touched.
+
+The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.rebase` as its instructions. The
+model posts that request as a comment to the agent; the agent does the rebase. The comment ends with the marker
+`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. The marker gives two rules:
+
+| Rule | Skip reason | Effect |
+|------|-------------|--------|
+| Once per head commit | `rebase-done` | A rebase request for the current head commit exists, so the check waits. A new push gives a new commit and arms the check again. |
+| Rebase limit | `rebase-limit` | The item has `conductor.maxRepliesPerItem` rebase requests (default 5). The rebase requests have their own counter: they do not use up the replies, and the replies do not use up the rebase requests. |
+
+If the rebase run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-blocked` label again and the
+conductor posts one short note with the rebase marker, so the check does not run again for the same head commit. As for
+a Copilot turn, the check waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists
+it as `rebase request on PR #<n>`.
+
 ## Watch list
 
 The items the conductor follows are stored in `.automata/config.json` as `conductor.watch`, an array of issue and pull
@@ -114,10 +138,11 @@ The prompt depends on the kind of the watched item:
 |-----|----------|
 | `conductor.prompts.issue` | A watched issue (and its linked pull requests) |
 | `conductor.prompts.pr` | A watched pull request |
+| `conductor.prompts.rebase` | A [rebase request](#rebase-check) for a watched pull request that has a merge conflict |
 
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
-[config.md](config.md#conductor). Without a key, a built-in default applies. Both defaults ask the model to write the
-next message to the agent, and forbid file changes, merging, closing and pushing.
+[config.md](config.md#conductor). Without a key, a built-in default applies. The issue and pull request defaults ask the model to write the
+next message to the agent, and forbid file changes, merging, closing and pushing. The rebase default is the request itself: fetch, update the target branch, rebase, resolve conflicts, commit and push, wait for the checks, and fix a failing check or a SonarCloud issue.
 
 After the thread, automata appends the posting instruction itself, so a configured prompt cannot lose it: post one
 comment with `gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input,

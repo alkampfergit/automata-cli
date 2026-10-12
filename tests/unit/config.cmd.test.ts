@@ -383,6 +383,11 @@ describe("automata config set do-work-*", () => {
     expect(readConfigFile().conductor).toEqual({ prompts: { issue: "c-issue.md", pr: "Read the PR" } });
   });
 
+  it("sets the conductor rebase prompt", () => {
+    expect(run(["config", "set", "conductor-prompt", "rebase", "Rebase it"]).trim()).toBe("conductor rebase prompt set.");
+    expect(readConfigFile().conductor).toEqual({ prompts: { rebase: "Rebase it" } });
+  });
+
   it("rejects an unknown conductor prompt kind and an empty conductor prompt", () => {
     expect(runExpectingFailure(["config", "set", "conductor-prompt", "epic", "x.md"])).toMatch(
       /invalid kind "epic"/,
