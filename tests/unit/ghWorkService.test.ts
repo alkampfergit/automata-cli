@@ -989,6 +989,15 @@ describe("createDraftPullRequest", () => {
 
   // The label is cosmetic; a repository that has not defined it must still get
   // the pull request, which is the whole reason the rescue exists.
+  it("retries without --label when gh says only that the quoted name was not found", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ stdout: "", stderr: "failed to update https://github.com/acme/widget/pull/52: 'rescue' not found\n", status: 1 })
+      .mockReturnValueOnce(ok("https://github.com/acme/widget/pull/52\n"));
+    const { createDraftPullRequest } = await import("../../src/github/ghWorkService.js");
+    expect(createDraftPullRequest(input).number).toBe(52);
+    expect(calls()[1].args).not.toContain("--label");
+  });
+
   it("retries exactly once without --label when the label does not exist", async () => {
     mockSpawnSync
       .mockReturnValueOnce({ stdout: "", stderr: "could not add label: 'rescue' not found\n", status: 1 })

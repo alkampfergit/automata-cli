@@ -132,12 +132,15 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  * the process would die mid-loop, leaving the marker comment unreconciled, the
  * remaining queue unprocessed and the `finally` that releases the lock skipped.
  *
+ * `echoResult: false` keeps the final result text off stdout while the steps still go to stderr; a caller
+ * that reads stdout as the reply needs it.
+ *
  * `printSteps` controls output only; the argv is identical either way, so what
  * `--dry-run` prints is what runs.
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; echoResult?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
@@ -169,7 +172,7 @@ export function runClaude(
       if (options.printSteps !== true) return;
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
-        formatEvent(event, turnCount);
+        formatEvent(event, turnCount, options.echoResult !== false);
         if (event["type"] === "assistant") turnCount++;
       } catch {
         // skip non-JSON lines
@@ -279,7 +282,7 @@ function formatContentBlock(block: Record<string, unknown>): string | null {
   return null;
 }
 
-function formatResultEvent(event: Record<string, unknown>): void {
+function formatResultEvent(event: Record<string, unknown>, echoResult: boolean): void {
   const result = event["result"] as string | undefined;
   const cost = event["cost_usd"] as number | undefined;
   const duration = event["duration_ms"] as number | undefined;
@@ -295,18 +298,18 @@ function formatResultEvent(event: Record<string, unknown>): void {
     process.stderr.write(`  [info] ${parts.join(" | ")}\n`);
   }
 
-  if (result) {
+  if (result && echoResult) {
     process.stdout.write(result + "\n");
   }
 }
 
-function formatEvent(event: Record<string, unknown>, turnCount: number): void {
+function formatEvent(event: Record<string, unknown>, turnCount: number, echoResult = true): void {
   const type = event["type"] as string | undefined;
 
   if (type === "assistant") {
     formatAssistantEvent(event, turnCount);
   } else if (type === "result") {
-    formatResultEvent(event);
+    formatResultEvent(event, echoResult);
   }
 }
 

@@ -223,6 +223,30 @@ describe("claudeService.invokeClaudeCode (verbose mode)", () => {
     expect(stdoutLines.join("")).toContain("The answer is 42");
   });
 
+  it("runClaude with echoResult:false prints the steps to stderr and leaves stdout alone", async () => {
+    const events = [JSON.stringify({ type: "result", result: "the reply", num_turns: 1 })];
+    const child = createMockChildProcess(events, 0) as EventEmitter & { stdout: Readable; stderr: Readable };
+    child.stderr = new Readable({ read() {} });
+    mockSpawn.mockReturnValue(child);
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
+      stderrLines.push(String(msg));
+      return true;
+    });
+    const stdoutLines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((msg: unknown) => {
+      stdoutLines.push(String(msg));
+      return true;
+    });
+
+    const { runClaude } = await import("../../src/claude/claudeService.js");
+    await runClaude("hello", { printSteps: true, echoResult: false });
+
+    expect(stderrLines.join("")).toContain("--- Result ---");
+    expect(stdoutLines.join("")).not.toContain("the reply");
+  });
+
   it("combines yolo and verbose flags", async () => {
     const child = createMockChildProcess([], 0);
     mockSpawn.mockReturnValue(child);

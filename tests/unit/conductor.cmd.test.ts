@@ -416,8 +416,9 @@ describe("conductor --check and --dry-run", () => {
     watching(5);
     mockTarget.mockImplementation((n: number) => issue(n));
     mockIssueSurface.mockImplementation((n: number) => issueSurface(n, owed));
-    mockRunClaude.mockImplementation(async (_p: string, options: { printSteps?: boolean; sink: { output(s: string, t: string): void } }) => {
+    mockRunClaude.mockImplementation(async (_p: string, options: { printSteps?: boolean; echoResult?: boolean; sink: { output(s: string, t: string): void } }) => {
       expect(options.printSteps).toBe(true);
+      expect(options.echoResult).toBe(false);
       const denied = [
         { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "gh issue comment 5 --body x", description: "Post" } },
       ];
