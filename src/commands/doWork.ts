@@ -78,6 +78,13 @@ import {
   type RunSink,
 } from "../run/runTranscript.js";
 import { scrubExcerpt } from "../run/secondOpinion.js";
+import {
+  CLAUDE_AUTH_MARKER,
+  CLAUDE_AUTH_REASON,
+  CLAUDE_AUTH_REMEDY,
+  detectClaudeAuthFailure,
+  renderClaudeAuthComment,
+} from "../run/claudeAuth.js";
 import { readTranscriptTail, recoverAnswer, type RecoveryResult } from "../run/answerRecovery.js";
 import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
 import {
@@ -219,6 +226,8 @@ interface ItemReport {
    * only — the `--json` item shape is deliberately unchanged.
    */
   sync?: string;
+  /** True when the run stopped because Claude Code is not signed in. */
+  claudeAuth?: boolean;
 }
 
 /**
@@ -1175,6 +1184,8 @@ interface Reconciled {
   outcome: Outcome;
   detail: string;
   reason: ReconcileReason;
+  /** True when the run stopped because Claude Code is not signed in. */
+  claudeAuth?: boolean;
 }
 
 async function reconcileMarker(
@@ -1185,6 +1196,7 @@ async function reconcileMarker(
   runError: Error | null,
   diagnostics: (() => Promise<string>) | null,
   recovery: (() => Promise<RecoveryResult>) | null = null,
+  claudeAuth: string | null = null,
 ): Promise<Reconciled> {
   let analysis: AnswerAnalysis;
   try {
@@ -1199,7 +1211,7 @@ async function reconcileMarker(
   let recoveryNote: string | null = null;
   let recovered = false;
   // Only a run that finished: a failed run's output is not an answer to publish.
-  if (analysis.answeredAt === null && runError === null && recovery !== null) {
+  if (analysis.answeredAt === null && runError === null && recovery !== null && claudeAuth === null) {
     const attempt = await attemptRecovery(item, marker, participants, watermark, recovery);
     if ("analysis" in attempt) {
       analysis = attempt.analysis;
@@ -1231,7 +1243,50 @@ async function reconcileMarker(
       : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}`, reason: "answered" };
   }
 
+  if (claudeAuth !== null) return reportClaudeAuth(item, marker, participants, claudeAuth);
   return reportNoAnswer(item, marker, runError, diagnostics, recoveryNote);
+}
+
+/**
+ * The run stopped because Claude Code is not signed in. The comment says so and
+ * names the fix, and carries a marker: when an earlier comment of the agent on
+ * the same surface already carries it, nothing new is posted. No second
+ * redaction pass runs — it would start Claude again and fail the same way.
+ */
+function reportClaudeAuth(
+  item: WorkItem,
+  marker: MarkerRef,
+  participants: Participants,
+  excerpt: string,
+): Reconciled {
+  const surface = markerSurfaceLabel(item);
+  const result: Reconciled = {
+    outcome: "failed",
+    detail: `${CLAUDE_AUTH_REASON}. ${CLAUDE_AUTH_REMEDY}`,
+    reason: "no-answer",
+    claudeAuth: true,
+  };
+  let alreadyTold = false;
+  try {
+    const before = new Date(marker.createdAt).getTime();
+    const agent = participants.agentUser.toLowerCase();
+    const last = readAnsweringSurface(item)
+      .filter((message) => message.author.toLowerCase() === agent && new Date(message.createdAt).getTime() < before)
+      .at(-1);
+    alreadyTold = last?.body.includes(CLAUDE_AUTH_MARKER) === true;
+  } catch {
+    // The surface could not be read: post the comment rather than stay silent.
+  }
+  try {
+    if (alreadyTold) deleteMarker(marker);
+    else updateMarker(marker, renderClaudeAuthComment(surface, excerpt));
+  } catch (err) {
+    progress(
+      `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
+        `  the humans have not been told that Claude Code is not signed in.\n`,
+    );
+  }
+  return result;
 }
 
 type RecoveryAttempt = { analysis: AnswerAnalysis; posted: boolean } | { reason: string };
@@ -1605,7 +1660,7 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
-  const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
+  const { runError, diagnostics, recovery, claudeAuth } = await runRecorded(item, prompt, execution, settings, silent);
   const ranExecutor = true;
 
   // Kept registered until reconciliation (which may run a recovery pass) ends,
@@ -1620,6 +1675,7 @@ async function processItem(
       runError,
       diagnostics,
       recovery,
+      claudeAuth,
     );
   } finally {
     inFlightMarker = null;
@@ -1628,7 +1684,14 @@ async function processItem(
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
 
-  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
+  return {
+    ...base,
+    outcome: outcome.outcome,
+    detail: outcome.detail,
+    ranExecutor,
+    execution,
+    claudeAuth: outcome.claudeAuth,
+  };
 }
 
 /**
@@ -1646,6 +1709,8 @@ async function runRecorded(
   runError: Error | null;
   diagnostics: (() => Promise<string>) | null;
   recovery: (() => Promise<RecoveryResult>) | null;
+  /** The redacted output of a run that stopped on a Claude login failure, else null. */
+  claudeAuth: string | null;
 }> {
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
@@ -1656,9 +1721,14 @@ async function runRecorded(
   } catch (err) {
     runError = err as Error;
   }
-  if (transcript === null) return { runError, diagnostics: null, recovery: null };
+  if (transcript === null) return { runError, diagnostics: null, recovery: null, claudeAuth: null };
+  // Only the pattern redaction of the transcript: a model pass would start Claude again.
+  const tail = transcript.excerpt();
+  const claudeAuth =
+    runError !== null && execution.executor === "claude" && detectClaudeAuthFailure(tail) ? tail : null;
   return {
     runError,
+    claudeAuth,
     recovery: async () => {
       const text = (transcript.saved ? readTranscriptTail(transcript.path) : null) ?? transcript.excerpt();
       if (text.trim() === "") return { ok: false, reason: "the run transcript is empty" };
@@ -1932,7 +2002,7 @@ async function runDoWorkTraced(options: DoWorkOptions): Promise<number> {
 
   // After the lock is released: a log write must never extend the window in
   // which the next cron tick is turned away.
-  logTick(reports, exitCode, startedAt);
+  logTick(reports, exitCode, startedAt, reports.some((report) => report.claudeAuth === true) ? "claude-auth" : undefined);
 
   return exitCode;
 }
@@ -2603,6 +2673,7 @@ type BlockedReason =
   | "lock-held"
   | "config-invalid"
   | "preflight-failed"
+  | "claude-auth"
   | "no-candidates"
   | "all-skipped";
 
@@ -2698,6 +2769,9 @@ function classifyBlocked(
   items: WorkItem[],
   reports: ItemReport[],
 ): { reason: BlockedReason; trigger: string } | null {
+  if (reports.some((report) => report.claudeAuth === true)) {
+    return { reason: "claude-auth", trigger: `${CLAUDE_AUTH_REASON}; run \`claude /login\` again` };
+  }
   const ran = reports.some((report) => report.ranExecutor === true);
   if (ran) return null;
 
@@ -2974,9 +3048,25 @@ async function processItems(
     // executor — a refresh read error, say — did not spend one.
     if (report.ranExecutor === true) runsUsed++;
     reports.push(report);
+    if (report.claudeAuth === true) {
+      reports.push(...items.slice(index + 1).map((rest) => skipForClaudeAuth(rest)));
+      break;
+    }
   }
 
   return { reports, deferred };
+}
+
+/** An item the tick did not start because an earlier run showed Claude Code is not signed in. */
+function skipForClaudeAuth(item: WorkItem): ItemReport {
+  return {
+    issue: item.issue?.number ?? null,
+    pr: item.pr?.number ?? null,
+    title: itemTitle(item),
+    turn: item.turn,
+    outcome: "skipped",
+    detail: `${CLAUDE_AUTH_REASON}; run \`claude /login\` again`,
+  };
 }
 
 /**

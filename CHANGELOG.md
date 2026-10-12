@@ -14,6 +14,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 - `automata conductor --verbose` traces every `git` and `gh` call, shows the steps of the model run and lists the tool
   calls that the run was denied, so a `denied by permissions` block shows which command was refused
+- `do-work` finds a Claude Code login failure (for example `Failed to authenticate: OAuth session expired and could
+  not be refreshed`) and blocks the tick with the reason `claude-auth`. It tells the user to run `claude /login`
+  again, does not start the Claude-based redaction pass, posts the comment once, and shows the problem in
+  `--check`. See [docs/do-work.md](docs/do-work.md#claude-login-failure)
 
 ### Fixed
 

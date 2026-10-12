@@ -1,0 +1,4 @@
+- [X] Detector and comment text
+- [X] Wire into do-work (comment, block, skip rest)
+- [X] --check problem
+- [X] Tests, docs, changelog
