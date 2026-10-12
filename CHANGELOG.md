@@ -10,6 +10,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- `automata conductor --verbose` traces every `git` and `gh` call, shows the steps of the model run and lists the tool
+  calls that the run was denied, so a `denied by permissions` block shows which command was refused
+
 ### Fixed
 
 - The conductor now creates the `conductor-blocked` label when `gh` reports it only as `'conductor-blocked' not found`,

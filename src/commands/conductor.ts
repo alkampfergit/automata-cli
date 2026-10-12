@@ -58,6 +58,8 @@ import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
+import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
+import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
 import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock } from "../run/runLock.js";
 
 function fail(message: string): number {
@@ -153,7 +155,33 @@ function readTargetMessages(target: ReplyTarget) {
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
 function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink });
+  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun });
+}
+
+/**
+ * Set for the length of one `--verbose` invocation. Process-wide like the command trace,
+ * so the item functions need no extra parameter; `runConductor` always clears it.
+ */
+let verboseRun = false;
+
+/** `--verbose`: the tool calls the permission mode refused, which the model's own summary leaves out. */
+function reportDenials(stdout: string, label: string): void {
+  if (!verboseRun || stdout.length === 0) return;
+  const lines = describePermissionDenials(parsePermissionDenials(stdout));
+  if (lines.length === 0) {
+    process.stderr.write(`Conductor: the run for ${label} reported no denied tool call.\n`);
+    return;
+  }
+  process.stderr.write(`Conductor: the run for ${label} was denied ${String(lines.length)} tool call(s):\n`);
+  for (const line of lines) process.stderr.write(`  - ${line}\n`);
+}
+
+/** `--verbose`: every `git` and `gh` call the tick made, with its duration and exit code. */
+function reportCommandTrace(): void {
+  const trace = takeCommandTrace();
+  if (trace === null) return;
+  process.stderr.write(`Commands (${String(trace.length)})\n`);
+  for (const traced of trace) process.stderr.write(`  ${describeTracedCommand(traced)}\n`);
 }
 
 /** A sink that keeps what the run printed on stdout. */
@@ -172,8 +200,12 @@ function captureStdout(): { sink: RunSink; text: () => string } {
 async function runModelForText(prompt: string, execution: ConductorExecution): Promise<string | null> {
   const { owner, repo } = getRepoSlug();
   const captured = captureStdout();
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink };
-  await runClaude(prompt, options);
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun };
+  try {
+    await runClaude(prompt, options);
+  } finally {
+    reportDenials(captured.text(), "the dry run");
+  }
   return extractDryRunReply(execution.executor, captured.text());
 }
 
@@ -280,6 +312,7 @@ async function conductItem(
     read: () => readTargetMessages(replyTo),
     run: () => runModel(prompt, execution, replyTo, captured.sink),
   });
+  reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
     return blockItem(item, label, needsHuman);
@@ -447,6 +480,7 @@ function preflight(): Preflight | { problem: string } {
 export interface ConductorOptions {
   check?: boolean;
   dryRun?: boolean;
+  verbose?: boolean;
 }
 
 function staleMinutesOf(config: AutomataConfig): number {
@@ -567,6 +601,19 @@ function reportHeldLock(held: { pid: number; host: string; startedAt: string }, 
  * the reply a tick would post for each watched item, but posts nothing, and changes nothing: no lock, no prune.
  */
 export async function runConductor(options: ConductorOptions = {}): Promise<number> {
+  verboseRun = options.verbose === true;
+  if (verboseRun) startCommandTrace();
+  try {
+    const code = await runConductorTick(options);
+    reportCommandTrace();
+    return code;
+  } finally {
+    verboseRun = false;
+    stopCommandTrace();
+  }
+}
+
+async function runConductorTick(options: ConductorOptions): Promise<number> {
   if (options.check === true && options.dryRun === true) {
     return fail("--check and --dry-run cannot be used together.");
   }
@@ -611,6 +658,10 @@ export const conductorCommand = new Command("conductor")
   )
   .option("--check", "Report what a tick would do, including pending prunes, and change nothing; exit 1 on a problem")
   .option("--dry-run", "Run the model for each owed reply and print it instead of posting; no lock, no prune")
+  .option(
+    "--verbose",
+    "Trace every `git` and `gh` call with its duration and exit code, show the model's steps, and list the tool calls the run was denied",
+  )
   .action(async (options: ConductorOptions) => {
     exitWith(await runConductor(options));
   });

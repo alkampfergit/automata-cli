@@ -9,6 +9,7 @@ reply as a comment. Comment only: the conductor never approves or merges.
 automata conductor              # one tick
 automata conductor --check      # report what a tick would do; change nothing
 automata conductor --dry-run    # write the replies, but do not post them
+automata conductor --verbose    # trace the work behind a tick or a run of the options above
 automata conductor add <id>     # watch an issue or pull request
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
@@ -223,6 +224,21 @@ item; `--check` lists all of them) and prints the reply instead of posting it:
 - The `codex` executor is refused (exit 1), as for a tick: it has no command allow-list, so it cannot be limited.
 - The [loop-safety rules](#loop-safety) apply. A reply of `NEEDS-HUMAN: <reason>` is printed as such; no label is applied.
 - The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
+
+## `--verbose`
+
+Add `--verbose` to a tick, to `--check` or to `--dry-run` to see the work behind the result. It writes to stderr, so
+stdout is the same as without it. It changes no behaviour.
+
+- `Commands (N)` lists every `git` and `gh` call that automata made, with its duration and exit code. It is printed
+  after the tick, in the format of [`do-work --verbose`](do-work.md).
+- The steps of the model run are printed as they happen (`[step N] running: …`).
+- After each model run, the tool calls that the permission mode refused are listed, for example
+  `Bash gh issue comment 94 --body "…"`. The model's own summary does not give this. A run that did not
+  report a refusal prints `the run for #94 reported no denied tool call`.
+
+Use it when a tick says `needs a human (… denied by permissions)`: the denied command shows which call is outside the
+allow-list described in [Running the model](#running-the-model).
 
 ## Configuration
 
