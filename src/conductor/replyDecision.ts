@@ -1,7 +1,8 @@
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
 import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
-import { BLOCKED_LABEL, countConductorReplies, type LoopState } from "./loopSafety.js";
+import { BLOCKED_LABEL, REPLY_MARKER, countConductorReplies, type LoopState } from "./loopSafety.js";
+import { newestCopilotAt, openCopilotThreads } from "./copilot.js";
 
 /**
  * Pure rule for the conductor: does a watched item need a reply from an allowed
@@ -18,6 +19,8 @@ export interface Conversation {
   /** `closed` covers a merged pull request too, as in `WatchTarget`. */
   state: "open" | "closed";
   messages: RawMessage[];
+  /** Pull request only: the newest comment of Copilot in an unresolved review thread, if any. */
+  copilotAt?: string | null;
 }
 
 export type ConductorSkipReason =
@@ -28,7 +31,7 @@ export type ConductorSkipReason =
   | "limit";
 
 export type ConductorDecision =
-  | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string }
+  | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string; copilot?: true }
   | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string };
 
 /**
@@ -55,6 +58,7 @@ export function prConversation(surface: PrSurface): Conversation {
     number: surface.pr.number,
     state: surface.pr.state === "OPEN" ? "open" : "closed",
     messages: [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)],
+    copilotAt: newestCopilotAt(openCopilotThreads(surface)),
   };
 }
 
@@ -68,6 +72,34 @@ export function prConversation(surface: PrSurface): Conversation {
  * unanswered.
  */
 export function decideConversation(conversation: Conversation, p: Participants): ConductorDecision {
+  const decision = decideByAgentMessage(conversation, p);
+  if (decision.kind === "reply") return decision;
+  return copilotTurn(conversation) ?? decision;
+}
+
+/**
+ * An open Copilot thread is work owed when Copilot wrote after the conductor's
+ * newest reply: the conductor has then not yet passed it on. Without that test an
+ * open thread would draw a new reply on every tick until the agent resolves it.
+ */
+function copilotTurn(conversation: Conversation): ConductorDecision | null {
+  const copilotAt = conversation.copilotAt ?? null;
+  if (copilotAt === null || isWatchClosed(conversation.state)) return null;
+  let lastReply = "";
+  for (const message of conversation.messages) {
+    if (message.body.includes(REPLY_MARKER) && message.createdAt > lastReply) lastReply = message.createdAt;
+  }
+  if (copilotAt <= lastReply) return null;
+  return {
+    kind: "reply",
+    surface: conversation,
+    agentMessageAt: copilotAt,
+    copilot: true,
+    reason: `an unresolved Copilot review thread has a comment at ${copilotAt} that no conductor reply follows`,
+  };
+}
+
+function decideByAgentMessage(conversation: Conversation, p: Participants): ConductorDecision {
   if (isWatchClosed(conversation.state)) {
     return { kind: "skip", surface: conversation, reason: "closed", detail: "the item is closed or merged" };
   }

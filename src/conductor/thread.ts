@@ -1,5 +1,6 @@
 import { analyzeSurface, formatMessages, type Participants, type RawMessage } from "../github/conversation.js";
 import { NEEDS_HUMAN_PREFIX, REPLY_MARKER } from "./loopSafety.js";
+import { openCopilotThreads, renderCopilotBlock } from "./copilot.js";
 import type { CiCheck, IssueSurface, PrSurface, ReviewThread } from "../github/ghWorkService.js";
 
 /**
@@ -154,6 +155,8 @@ function prSection(pr: ThreadPr, participants: Participants): string[] {
     lines.push("", `Unresolved review threads on pull request #${number}:`, "", threads.join("\n\n"));
   }
   lines.push("", `CI status of pull request #${number}:`, "", renderChecks(checks));
+  const copilot = openCopilotThreads(surface);
+  if (copilot.length > 0) lines.push("", renderCopilotBlock(surface.pr.number, copilot, participants.agentUser));
   return lines;
 }
 

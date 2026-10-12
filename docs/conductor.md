@@ -10,12 +10,46 @@ automata conductor              # one tick
 automata conductor --check      # report what a tick would do; change nothing
 automata conductor --dry-run    # write the replies, but do not post them
 automata conductor --verbose    # trace the work behind a tick or a run of the options above
+automata conductor --automatic  # run a tick every 60 seconds until nothing open is watched
+automata conductor --automatic --interval 30
 automata conductor add <id>     # watch an issue or pull request
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
 ```
 
-The tick has no options.
+| Option | Effect |
+|--------|--------|
+| `--check` | Report what a tick would do; change nothing. |
+| `--dry-run` | Write the replies, but do not post them. |
+| `--automatic` | Run the tick in a loop; see [Automatic mode](#automatic-mode). |
+| `--interval <seconds>` | Seconds between two ticks. A positive whole number, default 60. Needs `--automatic`. |
+
+## Automatic mode
+
+`--automatic` replaces an external cron. The command stays in the foreground and prints the output of every tick in
+the terminal, so that terminal cannot take other commands. Each iteration is a whole tick: it takes the conductor lock,
+prunes the watch list, conducts each item and releases the lock. Then the command waits `--interval` seconds.
+
+- A tick that exits 1, or that finds the lock held, does not stop the loop. The next tick runs after the interval.
+- The loop exits with code 0 when the watch list is empty after the prune, also when it is empty at the start. A
+  watched item that cannot be read stays on the list, so a network error does not end the loop.
+- Ctrl+C (SIGINT) or SIGTERM stops the loop after the current tick has released its lock. A second signal exits at once.
+- `--automatic` cannot be used with `--check` or `--dry-run`. `--interval` without `--automatic` is an error. Both
+  errors exit 1 before any tick.
+
+## Copilot review threads
+
+A pull request (a watched one, or the one linked to a watched issue) with an unresolved review thread that Copilot
+started is owed a reply, also when the agent did not speak last. The prompt then gets a block that lists each thread
+(file, line, URL and Copilot's comment) and tells the model to write, in its reply, an instruction to the agent: fix
+each comment, and then resolve the review thread. The conductor run stays read-only; it does not resolve threads.
+
+- A Copilot account is a login that contains `copilot`, for example `Copilot`.
+- The turn is owed only when Copilot wrote after the newest conductor reply (the reply marker) on that conversation.
+  Open threads therefore do not draw a new reply on every tick.
+- While the `do-work` run lock is held the agent is working, and the conductor starts no Copilot turn; it logs this and
+  tries again on the next tick.
+- [Loop safety](#loop-safety) applies: the reply limit and the `conductor-blocked` label stop a Copilot turn too.
 
 ## Watch list
 
@@ -49,6 +83,7 @@ separately, and the item needs a reply when either does. A conversation needs a 
 | Outcome | When |
 |---------|------|
 | reply | `agentUser` wrote and no allowed user wrote after it. Review-thread comments count on a pull request, and an issue description written by `agentUser` counts as its message. |
+| reply (Copilot) | A pull request has an unresolved Copilot review thread newer than the newest conductor reply; see [Copilot review threads](#copilot-review-threads). |
 | skip, `answered` | An allowed user wrote after the newest `agentUser` message. |
 | skip, `no-agent-message` | `agentUser` never wrote there. |
 | skip, `closed` | The issue is closed or the pull request closed or merged — the rule the tick-start prune uses. |
