@@ -430,6 +430,15 @@ describe("conductor --check and --dry-run", () => {
     expect(stdout).not.toMatch(/Commands/);
   });
 
+  it("--verbose still prints the command trace when the tick throws", async () => {
+    watching(5);
+    mockLinks.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    await expect(runWith({ verbose: true })).rejects.toThrow("boom");
+    expect(stderr).toMatch(/Commands \(\d+\)/);
+  });
+
   it("without --verbose the run prints no steps, no denials and no trace", async () => {
     watching(5);
     mockTarget.mockImplementation((n: number) => issue(n));

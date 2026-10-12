@@ -604,10 +604,10 @@ export async function runConductor(options: ConductorOptions = {}): Promise<numb
   verboseRun = options.verbose === true;
   if (verboseRun) startCommandTrace();
   try {
-    const code = await runConductorTick(options);
-    reportCommandTrace();
-    return code;
+    return await runConductorTick(options);
   } finally {
+    // In `finally` so an unexpected failure still prints the trace.
+    reportCommandTrace();
     verboseRun = false;
     stopCommandTrace();
   }

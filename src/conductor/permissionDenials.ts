@@ -56,7 +56,12 @@ export function parsePermissionDenials(stdout: string): PermissionDenial[] {
 /** One line per denial, with a long command cut and its line breaks flattened. */
 export function describePermissionDenials(denials: readonly PermissionDenial[]): string[] {
   return denials.map((denial) => {
-    const flat = `${denial.tool} ${denial.target}`.replace(/\s+/g, " ").trim();
+    // The target comes from the model: drop terminal control characters (ESC, BEL, ...) before it is printed.
+    const flat = `${denial.tool} ${denial.target}`
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     return flat.length <= MAX_TARGET_LENGTH ? flat : `${flat.slice(0, MAX_TARGET_LENGTH)}…`;
   });
 }
