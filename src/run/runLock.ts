@@ -45,6 +45,9 @@ export const RUN_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${LOCK_FILE}`;
 const CONDUCTOR_LOCK_FILE = "conductor.lock";
 export const CONDUCTOR_LOCK_RELATIVE_PATH = `${LOCK_DIR}/${CONDUCTOR_LOCK_FILE}`;
 
+/** The conductor's watch list. Machine state, gitignored, written by `conductor add`, `remove` and the prune. */
+export const WATCH_RELATIVE_PATH = `${LOCK_DIR}/conductor-watch.json`;
+
 /**
  * Every path automata writes inside the checkout for its own bookkeeping.
  *
@@ -60,6 +63,7 @@ export const AUTOMATA_OWN_PATHS: readonly string[] = [
   RUN_LOCK_RELATIVE_PATH,
   CONDUCTOR_LOCK_RELATIVE_PATH,
   HEARTBEAT_RELATIVE_PATH,
+  WATCH_RELATIVE_PATH,
 ];
 
 export interface LockOwner {

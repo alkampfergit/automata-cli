@@ -10,6 +10,13 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Changed
+
+- The conductor watch list moved from `conductor.watch` in `.automata/config.json` to `.automata/conductor-watch.json`,
+  which is gitignored, so `conductor add`, `remove` and the tick's pruning no longer make `git status` dirty. If the new
+  file does not exist, the old `conductor.watch` entries are copied into it once; `config.json` is not rewritten and the
+  old key is ignored after that. See `docs/conductor.md` and `docs/config.md`
+
 ### Added
 
 - The conductor has a rebase check that runs even on an item with the `conductor-blocked` label: when GitHub reports

@@ -7,7 +7,10 @@ const mockRelease = vi.fn();
 const mockInspect = vi.fn();
 const mockInspectRun = vi.fn();
 const mockRawConfig = vi.fn();
-const mockWrite = vi.fn();
+let watchState: number[] = [];
+const mockWriteWatch = vi.fn((list: number[]) => {
+  watchState = list;
+});
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
@@ -25,9 +28,12 @@ vi.mock("../../src/config/configStore.js", async (importOriginal) => {
     ...actual,
     readConfig: () => mockReadConfig(),
     readRawConfig: () => mockRawConfig(),
-    writeConfig: (...a: unknown[]) => mockWrite(...a),
   };
 });
+vi.mock("../../src/conductor/watchStore.js", () => ({
+  readWatch: () => watchState,
+  writeWatch: (list: number[]) => mockWriteWatch(list),
+}));
 vi.mock("../../src/github/ghWorkService.js", () => ({
   getAuthenticatedLogin: () => mockLogin(),
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
@@ -68,6 +74,7 @@ let stderr = "";
 beforeEach(() => {
   stdout = "";
   stderr = "";
+  watchState = [];
   vi.spyOn(process.stdout, "write").mockImplementation((s) => ((stdout += String(s)), true));
   vi.spyOn(process.stderr, "write").mockImplementation((s) => ((stderr += String(s)), true));
   mockReadConfig.mockReturnValue(CONFIG);
@@ -162,7 +169,7 @@ describe("conductor watch list", () => {
     const mod = await import("../../src/commands/conductor.js");
     return mod[name](id);
   }
-  const written = () => mockWrite.mock.calls.at(-1)?.[0] as { conductor: { watch: number[] } };
+  const written = () => ({ conductor: { watch: mockWriteWatch.mock.calls.at(-1)?.[0] as number[] } });
 
   it("add applies the discovery label, stores the id and follows the linked PR", async () => {
     mockTarget.mockReturnValue(issue(114));
@@ -174,10 +181,11 @@ describe("conductor watch list", () => {
   });
 
   it("add keeps the existing list and writes nothing new for a known id", async () => {
-    mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "a", conductor: { watch: [5] } });
+    watchState = [5];
+    mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "a" });
     mockTarget.mockReturnValue(pr(5));
     expect(await call("runWatchAdd", "5")).toBe(0);
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("add refuses a closed item and a bad id", async () => {
@@ -185,7 +193,7 @@ describe("conductor watch list", () => {
     expect(await call("runWatchAdd", "9")).toBe(1);
     expect(await call("runWatchAdd", "abc")).toBe(1);
     expect(mockApply).not.toHaveBeenCalled();
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("add fails when applying the discovery setting fails, storing nothing", async () => {
@@ -195,7 +203,7 @@ describe("conductor watch list", () => {
     });
     expect(await call("runWatchAdd", "9")).toBe(1);
     expect(stderr).toMatch(/cannot be applied/);
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("add resolves linked PRs before applying discovery, so a lookup failure changes nothing", async () => {
@@ -206,7 +214,7 @@ describe("conductor watch list", () => {
     expect(await call("runWatchAdd", "9")).toBe(1);
     expect(stderr).toMatch(/graphql down/);
     expect(mockApply).not.toHaveBeenCalled();
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("add requires a discovery technique", async () => {
@@ -220,11 +228,11 @@ describe("conductor watch list", () => {
       expect(await call("runWatchAdd", "9")).toBe(1);
     }
     expect(mockApply).not.toHaveBeenCalled();
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("remove drops the id and leaves GitHub alone", async () => {
-    mockRawConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [1, 2] } });
+    watchState = [1, 2];
     expect(await call("runWatchRemove", "1")).toBe(0);
     expect(written().conductor.watch).toEqual([2]);
     expect(mockApply).not.toHaveBeenCalled();
@@ -232,14 +240,14 @@ describe("conductor watch list", () => {
 
   it("remove of an unknown id exits 1", async () => {
     expect(await call("runWatchRemove", "1")).toBe(1);
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("list prints each item, and notes an empty list", async () => {
     const { runWatchList } = await import("../../src/commands/conductor.js");
     expect(runWatchList()).toBe(0);
     expect(stdout).toMatch(/empty/);
-    mockRawConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [1, 2] } });
+    watchState = [1, 2];
     mockTarget.mockImplementation((n: number) => {
       if (n === 2) throw new Error("boom");
       return issue(n);
@@ -251,16 +259,15 @@ describe("conductor watch list", () => {
   });
 
   it("list exits 1 for an Azure DevOps remote without querying GitHub", async () => {
-    mockRawConfig.mockReturnValue({ ...CONFIG, remoteType: "azdo", conductor: { watch: [1] } });
+    watchState = [1];
+    mockRawConfig.mockReturnValue({ ...CONFIG, remoteType: "azdo" });
     const { runWatchList } = await import("../../src/commands/conductor.js");
     expect(runWatchList()).toBe(1);
     expect(mockTarget).not.toHaveBeenCalled();
   });
 
   it("the tick drops closed items, logs each, and keeps unreadable ones", async () => {
-    const watching = { ...CONFIG, conductor: { watch: [1, 2, 3, 4] } };
-    mockReadConfig.mockReturnValue(watching);
-    mockRawConfig.mockReturnValue(watching);
+    watchState = [1, 2, 3, 4];
     mockTarget.mockImplementation((n: number) => {
       if (n === 1) return issue(1, "closed");
       if (n === 2) return pr(2, "closed");
@@ -277,7 +284,8 @@ describe("conductor watch list", () => {
 
 describe("conductor tick replies", () => {
   const watching = (extra: object = {}) => {
-    const config = { ...CONFIG, conductor: { watch: [7], ...extra } };
+    watchState = [7];
+    const config = { ...CONFIG, conductor: { ...extra } };
     mockReadConfig.mockReturnValue(config);
     mockRawConfig.mockReturnValue(config);
     mockTarget.mockReturnValue(issue(7));
@@ -348,7 +356,9 @@ describe("conductor tick replies", () => {
 });
 
 describe("conductor --check and --dry-run", () => {
-  const watching = (...ids: number[]) => mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: ids } });
+  const watching = (...ids: number[]) => {
+    watchState = ids;
+  };
   // The agent wrote last on #5, so a reply is owed; #6 is answered.
   const owed = [text("bot", "2026-10-01T00:00:00Z", "question?")];
   const answered = [text("bot", "2026-10-01T00:00:00Z", "q"), text("alice", "2026-10-02T00:00:00Z", "a")];
@@ -374,7 +384,7 @@ describe("conductor --check and --dry-run", () => {
     expect(stdout).toMatch(/skip issue #6 \(answered\)/);
     expect(stdout).toMatch(/RESULT: healthy/);
     expect(mockAcquire).not.toHaveBeenCalled();
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
     expect(mockRunClaude).not.toHaveBeenCalled();
   });
 
@@ -414,7 +424,7 @@ describe("conductor --check and --dry-run", () => {
     expect(stdout).toMatch(/#7 is closed; a tick would drop it/);
     expect(mockRunClaude).toHaveBeenCalledOnce();
     expect(mockAcquire).not.toHaveBeenCalled();
-    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
   });
 
   it("--verbose lists the denied tool calls and the commands traced, on stderr, and does not change stdout", async () => {
@@ -483,7 +493,8 @@ describe("conductor --check and --dry-run", () => {
   });
 
   it("--dry-run refuses the codex executor, as a tick does, and runs no model", async () => {
-    mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { watch: [5], executor: "codex" } });
+    watchState = [5];
+    mockReadConfig.mockReturnValue({ ...CONFIG, conductor: { executor: "codex" } });
     expect(await runWith({ dryRun: true })).toBe(1);
     expect(stderr).toMatch(/codex is not supported/);
     expect(mockRunCodex).not.toHaveBeenCalled();
@@ -502,7 +513,8 @@ describe("conductor --check and --dry-run", () => {
 
 describe("conductor loop safety", () => {
   const watching = (extra: object = {}, labels: string[] = []) => {
-    const config = { ...CONFIG, conductor: { watch: [7], ...extra } };
+    watchState = [7];
+    const config = { ...CONFIG, conductor: { ...extra } };
     mockReadConfig.mockReturnValue(config);
     mockRawConfig.mockReturnValue(config);
     mockTarget.mockReturnValue({ ...issue(7), labels });
@@ -629,9 +641,7 @@ describe("conductor --automatic", () => {
   it("waits, then leaves once the last watched item is closed", async () => {
     vi.useFakeTimers();
     try {
-      const config = { ...CONFIG, conductor: { watch: [7] } };
-      mockReadConfig.mockReturnValue(config);
-      mockRawConfig.mockReturnValue(config);
+      watchState = [7];
       mockTarget.mockReturnValueOnce(issue(7));
       mockTarget.mockReturnValue({ ...issue(7), state: "closed" });
       const done = runWith({ automatic: true, interval: "3" });
@@ -644,9 +654,7 @@ describe("conductor --automatic", () => {
   });
 
   it("waits with a Copilot-only turn while the do-work lock is held", async () => {
-    const config = { ...CONFIG, conductor: { watch: [9] } };
-    mockReadConfig.mockReturnValue(config);
-    mockRawConfig.mockReturnValue(config);
+    watchState = [9];
     mockTarget.mockReturnValue({ ...issue(9), kind: "pr" });
     mockPrSurface.mockReturnValue({
       pr: { number: 9, title: "T", url: "u", state: "OPEN", isDraft: false, headRefName: "f", baseRefName: "develop" },
