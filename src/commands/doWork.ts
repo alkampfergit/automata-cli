@@ -1272,12 +1272,8 @@ async function reconcileMarker(
   let recoveryNote: string | null = null;
   let recovered = false;
   // Only a run that finished: a failed run's output is not an answer to publish.
-  if (
-    analysis.answeredAt === null &&
-    runError === null &&
-    recovery !== null &&
-    claudeAuth === null
-  ) {
+  const canRecover = runError === null && recovery !== null && claudeAuth === null;
+  if (analysis.answeredAt === null && canRecover) {
     const attempt = await attemptRecovery(item, marker, participants, watermark, recovery);
     if ("analysis" in attempt) {
       analysis = attempt.analysis;
@@ -2298,15 +2294,14 @@ function buildSelectionEvidence(
   };
 }
 
-function collectSelection(settings: Settings, verbose: boolean): SelectionEvidence {
-  const issues = discoverIssues(settings);
-  const linkMap = getOpenPrLinkMap();
-  const policy = {
-    baseBranch: settings.baseBranch,
-    defaultBranch: linkMap.defaultBranch,
-    protectedBranches: settings.protectedBranches,
-  };
-  const decisions = skipDuplicateHeadBranches([
+/** One decision per issue, then one per orphan pull request: the two passes share one run cap. */
+function decideAll(
+  settings: Settings,
+  issues: GitHubIssue[],
+  linkMap: ReturnType<typeof getOpenPrLinkMap>,
+  policy: Parameters<typeof decideWork>[2],
+): Decision[] {
+  return skipDuplicateHeadBranches([
     ...issues.map((issue) =>
       decideWork(buildIssueState(issue, linkMap), settings.participants, policy),
     ),
@@ -2318,6 +2313,17 @@ function collectSelection(settings: Settings, verbose: boolean): SelectionEviden
       ),
     ),
   ]);
+}
+
+function collectSelection(settings: Settings, verbose: boolean): SelectionEvidence {
+  const issues = discoverIssues(settings);
+  const linkMap = getOpenPrLinkMap();
+  const policy = {
+    baseBranch: settings.baseBranch,
+    defaultBranch: linkMap.defaultBranch,
+    protectedBranches: settings.protectedBranches,
+  };
+  const decisions = decideAll(settings, issues, linkMap, policy);
   return buildSelectionEvidence(settings, issues, linkMap, decisions, verbose);
 }
 
@@ -3101,18 +3107,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // Issues first, then the orphan pull requests, and the ordering is load
   // bearing: the two passes share one run cap, so a pile of dependency-bump
   // pull requests must not be able to starve the issues.
-  const decisions = skipDuplicateHeadBranches([
-    ...issues.map((issue) =>
-      decideWork(buildIssueState(issue, linkMap), settings.participants, policy),
-    ),
-    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
-      decideOrphanPrWork(
-        { prSurface: getPrSurface(candidate.pr.number) },
-        settings.participants,
-        policy,
-      ),
-    ),
-  ]);
+  const decisions = decideAll(settings, issues, linkMap, policy);
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 
   const planText = `Work plan (${String(items.length)} of ${String(decisions.length)} candidates need an answer):\n${describePlan(decisions)}`;
