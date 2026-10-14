@@ -110,7 +110,7 @@ export interface ConductorPrompts {
 
 /** Settings of `automata conductor`. */
 export interface AutomataConductorConfig {
-  /** @deprecated The watch list lives in `.automata/conductor-watch.json`. Read only to migrate it once. */
+  /** Legacy key. The watch list lives in `.automata/conductor-watch.json`. Read only to migrate it once. */
   watch?: number[];
   prompts?: ConductorPrompts;
   /** The CLI the conductor runs. Unset means Claude. */
