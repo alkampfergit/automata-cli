@@ -178,7 +178,9 @@ export function decideConductorReply(
   // ordinary decision of its conversation, and a skipped one is listed beside it.
   const always = runAlwaysChecks(
     conversations,
-    loop === undefined ? { rebases: 0, maxRebases: Infinity } : { rebases: loop.rebases, maxRebases: loop.maxRebases },
+    loop === undefined
+      ? { rebases: 0, maxRebases: Infinity, agentUser: p.agentUser }
+      : { rebases: loop.rebases, maxRebases: loop.maxRebases, agentUser: p.agentUser },
   );
   const decided = conversations.map((conversation) =>
     always.find((decision) => decision.kind === "rebase" && decision.surface === conversation) ?? decideConversation(conversation, p),
@@ -207,12 +209,12 @@ function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: strin
 }
 
 /** The loop-safety state of an item from its conversations, its labels and the configured limit. */
-export function loopStateOf(conversations: Conversation[], labels: string[], maxReplies: number): LoopState {
+export function loopStateOf(conversations: Conversation[], labels: string[], maxReplies: number, agentUser: string): LoopState {
   return {
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
     replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
     maxReplies,
-    rebases: countRebaseTurns(conversations.flatMap((conversation) => conversation.messages)),
+    rebases: countRebaseTurns(conversations.flatMap((conversation) => conversation.messages), agentUser),
     maxRebases: maxReplies,
   };
 }

@@ -16,21 +16,34 @@ export function rebaseMarker(headSha: string): string {
   return `${REBASE_MARKER_PREFIX} head=${headSha} -->`;
 }
 
-function rebaseComments(messages: RawMessage[]): RawMessage[] {
-  return messages.filter(
-    (message) => (message.kind === "issue-comment" || message.kind === "pr-comment") && message.body.includes(REBASE_MARKER_PREFIX),
-  );
+/** True when the last non-empty line of the body is a rebase marker, and nothing follows it. */
+function endsWithRebaseMarker(body: string): string | null {
+  const last = body.trimEnd().split("\n").at(-1)?.trim() ?? "";
+  return last.startsWith(REBASE_MARKER_PREFIX) && last.endsWith("-->") ? last : null;
 }
 
-/** The rebase turns already on the messages. Only comments count, as for the replies. */
-export function countRebaseTurns(messages: RawMessage[]): number {
-  return rebaseComments(messages).length;
+/** Only comments of the agent count: another account cannot forge the state of the check. */
+function rebaseComments(messages: RawMessage[], agentUser: string): Array<{ marker: string }> {
+  const agent = agentUser.toLowerCase();
+  const found: Array<{ marker: string }> = [];
+  for (const message of messages) {
+    if (message.kind !== "issue-comment" && message.kind !== "pr-comment") continue;
+    if (message.author.toLowerCase() !== agent) continue;
+    const marker = endsWithRebaseMarker(message.body);
+    if (marker !== null) found.push({ marker });
+  }
+  return found;
+}
+
+/** The rebase turns already on the messages. Only comments of the agent count, as for the replies. */
+export function countRebaseTurns(messages: RawMessage[], agentUser: string): number {
+  return rebaseComments(messages, agentUser).length;
 }
 
 /** True when a rebase turn already ran for this head commit. */
-export function hasRebaseFor(messages: RawMessage[], headSha: string): boolean {
+export function hasRebaseFor(messages: RawMessage[], headSha: string, agentUser: string): boolean {
   const marker = rebaseMarker(headSha);
-  return rebaseComments(messages).some((message) => message.body.includes(marker));
+  return rebaseComments(messages, agentUser).some((comment) => comment.marker === marker);
 }
 
 export type AlwaysSkipReason = "rebase-limit" | "rebase-done";
@@ -44,6 +57,8 @@ export interface AlwaysState {
   /** Rebase turns already on the item (the issue and its pull requests together). */
   rebases: number;
   maxRebases: number;
+  /** The only account whose rebase markers count. */
+  agentUser: string;
 }
 
 export type AlwaysCheck = (conversation: Conversation, state: AlwaysState) => AlwaysDecision | null;
@@ -57,7 +72,7 @@ export const rebaseCheck: AlwaysCheck = (conversation, state) => {
   if (conversation.kind !== "pr" || conversation.state !== "open") return null;
   const headSha = conversation.headSha;
   if (conversation.mergeable !== "CONFLICTING" || headSha === undefined || headSha.length === 0) return null;
-  if (hasRebaseFor(conversation.messages, headSha)) {
+  if (hasRebaseFor(conversation.messages, headSha, state.agentUser)) {
     return {
       kind: "skip",
       surface: conversation,

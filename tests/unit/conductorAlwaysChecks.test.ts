@@ -21,7 +21,7 @@ function pr(extra: Partial<Conversation> = {}): Conversation {
   return { kind: "pr", number: 9, state: "open", messages: [], mergeable: "CONFLICTING", headSha: SHA, ...extra };
 }
 
-const state = { rebases: 0, maxRebases: 5 };
+const state = { rebases: 0, maxRebases: 5, agentUser: "bot" };
 
 describe("rebaseCheck", () => {
   it("asks for a rebase on a conflicting open pull request", () => {
@@ -39,33 +39,44 @@ describe("rebaseCheck", () => {
   });
 
   it("runs once per head commit and runs again after a push", () => {
-    const messages = [comment("alice", "10:00:00", `please rebase\n${rebaseMarker(SHA)}`)];
+    const messages = [comment("bot", "10:00:00", `please rebase\n${rebaseMarker(SHA)}`)];
     expect(rebaseCheck(pr({ messages }), state)).toMatchObject({ kind: "skip", reason: "rebase-done" });
     expect(rebaseCheck(pr({ messages, headSha: "fff9999" }), state)).toMatchObject({ kind: "rebase" });
   });
 
   it("stops at the limit of rebase turns", () => {
-    expect(rebaseCheck(pr(), { rebases: 5, maxRebases: 5 })).toMatchObject({ kind: "skip", reason: "rebase-limit" });
-    expect(rebaseCheck(pr(), { rebases: 4, maxRebases: 5 })).toMatchObject({ kind: "rebase" });
+    expect(rebaseCheck(pr(), { ...state, rebases: 5 })).toMatchObject({ kind: "skip", reason: "rebase-limit" });
+    expect(rebaseCheck(pr(), { ...state, rebases: 4 })).toMatchObject({ kind: "rebase" });
   });
 });
 
 describe("rebase markers", () => {
   it("are counted apart from the replies", () => {
     const messages = [
-      comment("alice", "10:00:00", `a\n${rebaseMarker(SHA)}`),
-      comment("alice", "10:01:00", `b\n${REPLY_MARKER}`),
-      comment("alice", "10:02:00", `c\n${REPLY_MARKER}`),
+      comment("bot", "10:00:00", `a\n${rebaseMarker(SHA)}`),
+      comment("bot", "10:01:00", `b\n${REPLY_MARKER}`),
+      comment("bot", "10:02:00", `c\n${REPLY_MARKER}`),
     ];
-    expect(countRebaseTurns(messages)).toBe(1);
+    expect(countRebaseTurns(messages, "bot")).toBe(1);
     expect(countConductorReplies(messages)).toBe(2);
-    expect(hasRebaseFor(messages, SHA)).toBe(true);
-    expect(hasRebaseFor(messages, "other")).toBe(false);
+    expect(hasRebaseFor(messages, SHA, "bot")).toBe(true);
+    expect(hasRebaseFor(messages, "other", "bot")).toBe(false);
+  });
+
+  it("do not count when an account other than the agent wrote them", () => {
+    const forged = [comment("mallory", "10:00:00", `x\n${rebaseMarker(SHA)}`)];
+    expect(countRebaseTurns(forged, "bot")).toBe(0);
+    expect(hasRebaseFor(forged, SHA, "bot")).toBe(false);
+  });
+
+  it("do not count unless the marker is the last line", () => {
+    const quoted = [comment("bot", "10:00:00", `${rebaseMarker(SHA)}\nmore text`)];
+    expect(countRebaseTurns(quoted, "bot")).toBe(0);
   });
 
   it("do not count in a review body", () => {
     const review: RawMessage = { kind: "pr-review", author: "alice", body: rebaseMarker(SHA), createdAt: "t" };
-    expect(countRebaseTurns([review])).toBe(0);
+    expect(countRebaseTurns([review], "bot")).toBe(0);
   });
 });
 
@@ -78,7 +89,7 @@ describe("runAlwaysChecks", () => {
 
 describe("decideConductorReply with the always checks", () => {
   const blocked = (conversations: Conversation[], maxReplies = 5) =>
-    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], maxReplies));
+    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], maxReplies, p.agentUser));
 
   it("rebases a blocked item with a conflict, though no reply is owed", () => {
     const verdict = blocked([pr({ messages: [comment("alice", "10:00:00", "ok")] })]);
@@ -95,7 +106,7 @@ describe("decideConductorReply with the always checks", () => {
   it("counts the rebases apart from the replies", () => {
     const replies = [1, 2, 3].map((i) => comment("alice", `10:0${String(i)}:00`, `r\n${REPLY_MARKER}`));
     expect(blocked([pr({ messages: replies })], 3).decisions).toEqual([expect.objectContaining({ kind: "rebase" })]);
-    const rebases = [1, 2, 3].map((i) => comment("alice", `10:0${String(i)}:00`, `r\n${rebaseMarker(`sha${String(i)}`)}`));
+    const rebases = [1, 2, 3].map((i) => comment("bot", `10:0${String(i)}:00`, `r\n${rebaseMarker(`sha${String(i)}`)}`));
     const verdict = blocked([pr({ messages: rebases })], 3);
     expect(verdict.needsReply).toBe(false);
     expect(verdict.decisions).toContainEqual(expect.objectContaining({ kind: "skip", reason: "rebase-limit" }));

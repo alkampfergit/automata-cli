@@ -711,8 +711,15 @@ describe("conductor rebase check", () => {
     expect(mockRunClaude).not.toHaveBeenCalled();
   });
 
+  it("ignores a rebase marker written by an account other than the agent", async () => {
+    watchingPr("CONFLICTING", [...spoke, comment("mallory", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`)]);
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+  });
+
   it("runs at most once per head commit", async () => {
-    watchingPr("CONFLICTING", [...spoke, comment("alice", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`)]);
+    watchingPr("CONFLICTING", [...spoke, comment("bot", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
     await run();
     expect(mockRunClaude).not.toHaveBeenCalled();
     expect(stdout).toMatch(/already requested for head commit abc1234/);
@@ -726,8 +733,9 @@ describe("conductor rebase check", () => {
     expect(mockRunClaude).toHaveBeenCalledOnce();
 
     mockRunClaude.mockClear();
-    const rebases = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${rebaseMark(`old${String(i)}`)}`));
-    watchingPr("CONFLICTING", [...spoke, ...rebases], ["conductor-blocked"], { maxRepliesPerItem: 2 });
+    const rebases = [1, 2].map((i) => comment("bot", `2026-10-02T0${String(i)}:00:00Z`, `r\n${rebaseMark(`old${String(i)}`)}`));
+    const answer = comment("alice", "2026-10-03T00:00:00Z", "ok");
+    watchingPr("CONFLICTING", [...spoke, ...rebases, answer], ["conductor-blocked"], { maxRepliesPerItem: 2 });
     await run();
     expect(mockRunClaude).not.toHaveBeenCalled();
     expect(stdout).toMatch(/already asked for 2 rebases/);
