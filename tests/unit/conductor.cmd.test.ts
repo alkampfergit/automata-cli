@@ -681,7 +681,8 @@ describe("conductor rebase check", () => {
   const comment = (author: string, at: string, body: string) => ({ kind: "pr-comment", author, body, createdAt: at });
 
   function watchingPr(mergeable: string, messages: unknown[], labels: string[] = ["conductor-blocked"], extra: object = {}) {
-    const config = { ...CONFIG, conductor: { watch: [9], ...extra } };
+    watchState = [9];
+    const config = { ...CONFIG, conductor: { ...extra } };
     mockReadConfig.mockReturnValue(config);
     mockRawConfig.mockReturnValue(config);
     mockTarget.mockReturnValue({ ...issue(9), kind: "pr", labels });
