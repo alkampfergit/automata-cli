@@ -323,12 +323,14 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor));
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.agentUser);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
-  const owed = verdict.decisions.find(
+  // A rebase request comes before an ordinary reply, on whichever conversation of the item it is.
+  const eligible = verdict.decisions.filter(
     (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
+  const owed = eligible.find((decision) => decision.kind === "rebase") ?? eligible[0];
   if (owed === undefined) {
     const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
     const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
@@ -548,7 +550,7 @@ function checkWatched(
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
     if (coveredBy !== undefined) return { id, kind: target.kind, state: "open", decisions: [], coveredBy };
     const { conversations, labels } = readWatchedItem(id, linkMap);
-    const loop: LoopState = loopStateOf(conversations, labels, maxReplies);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.agentUser);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };

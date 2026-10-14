@@ -63,7 +63,7 @@ reads `UNKNOWN` again. A pull request that is not watched is not touched.
 
 The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.rebase` as its instructions. The
 model posts that request as a comment to the agent; the agent does the rebase. The comment ends with the marker
-`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. The marker gives two rules:
+`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. Only a comment of the agent account (`agentUser`) counts, and only when the marker is the last line of the comment; a marker from another account is ignored. A rebase request on a linked pull request runs before an ordinary reply on the issue. The marker gives two rules:
 
 | Rule | Skip reason | Effect |
 |------|-------------|--------|
