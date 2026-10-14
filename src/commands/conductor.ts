@@ -567,7 +567,7 @@ function runConductorCheck(): number {
     // the header says "unknown repository"
   }
   const linkMap = onceLinkMap();
-  const watchIds = "problem" in checked ? [] : readWatch();
+  const watchIds = "problem" in checked ? [] : readWatch({ migrate: false });
   const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap);
   const report =
     "problem" in checked
@@ -597,7 +597,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
-  const watchIds = readWatch();
+  const watchIds = readWatch({ migrate: false });
   const covered = coveredOf(watchIds, context.linkMap);
   for (const id of watchIds) {
     try {

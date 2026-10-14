@@ -89,8 +89,8 @@ not change `git status`, and they never write `.automata/config.json`. A missing
 or parsed, is an empty list. Entries that are not positive integers are ignored.
 
 **Migration.** Older versions kept the list in `.automata/config.json` as `conductor.watch`. When
-`.automata/conductor-watch.json` does not exist and `conductor.watch` has entries, the first command that reads the
-list copies them into the new file. `config.json` is not changed. After that the old key is ignored; you can delete it.
+`.automata/conductor-watch.json` does not exist and `conductor.watch` has entries, the first command that can write the
+list copies them into the new file. `config.json` is not changed. After that the old key is ignored; you can delete it. `--check` and `--dry-run` read the old entries but never create the file.
 
 | Subcommand | Effect |
 |------------|--------|

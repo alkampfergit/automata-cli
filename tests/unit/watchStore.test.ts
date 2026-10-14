@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const mockTarget = vi.fn();
 const mockLinks = vi.fn();
@@ -87,6 +87,17 @@ describe("watch store", () => {
     expect(readWatch()).toEqual([7, 8]);
     expect(JSON.parse(readFileSync(watchFile(), "utf8"))).toEqual({ watch: [7, 8] });
     expect(readFileSync(configFile(), "utf8")).toBe(before);
+  });
+
+  it("returns the legacy entries without writing when migration is off", () => {
+    writeConfigFile({ conductor: { watch: [7, 8] } });
+    expect(readWatch({ migrate: false })).toEqual([7, 8]);
+    expect(existsSync(watchFile())).toBe(false);
+  });
+
+  it("leaves no temporary file behind after a write", () => {
+    writeWatch([1]);
+    expect(readdirSync(dirname(watchFile())).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("ignores the old key once the file exists", () => {
