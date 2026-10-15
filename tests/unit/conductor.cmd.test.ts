@@ -770,3 +770,103 @@ describe("conductor rebase check", () => {
     expect(mockRunClaude).not.toHaveBeenCalled();
   });
 });
+
+describe("conductor CI-fix check", () => {
+  const SHA = "abc1234def";
+  const fixMark = (sha: string) => `<!-- automata:conductor-ci-fix head=${sha} -->`;
+  const comment = (author: string, at: string, body: string) => ({ kind: "pr-comment", author, body, createdAt: at });
+  const spoke = [comment("alice", "2026-10-01T09:00:00Z", "go")];
+  const FAILED = [{ name: "build", status: "COMPLETED", conclusion: "FAILURE" }];
+
+  function watchingPr(checks: unknown[], messages: unknown[] = spoke, extra: object = {}, mergeable = "MERGEABLE") {
+    watchState = [9];
+    const config = { ...CONFIG, conductor: { ...extra } };
+    mockReadConfig.mockReturnValue(config);
+    mockRawConfig.mockReturnValue(config);
+    mockTarget.mockReturnValue({ ...issue(9), kind: "pr", labels: ["conductor-blocked"] });
+    mockChecks.mockReturnValue(checks);
+    mockPrSurface.mockImplementation(() => ({
+      pr: { number: 9, title: "T", url: "u", state: "OPEN", isDraft: false, headRefName: "f", baseRefName: "develop", mergeable, headSha: SHA },
+      assignees: [],
+      messages,
+      threads: [],
+    }));
+  }
+
+  it("asks for a fix on a blocked pull request, with the configured prompt and the CI-fix marker", async () => {
+    watchingPr(FAILED, spoke, { prompts: { ciFix: "FIX THE BUILD" } });
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect(mockRunClaude).toHaveBeenCalledOnce();
+    const [prompt] = mockRunClaude.mock.calls[0] as [string];
+    expect(prompt.startsWith("FIX THE BUILD")).toBe(true);
+    expect(prompt).toContain("gh pr comment 9 --body-file -");
+    expect(prompt).toContain(fixMark(SHA));
+    expect(stdout).toMatch(/needs a CI-fix request on pull request #9/);
+  });
+
+  it("uses the default prompt", async () => {
+    watchingPr(FAILED);
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^A check failed on this pull request/);
+  });
+
+  it.each([
+    ["all checks pass", [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }]],
+    ["a check is pending", [...FAILED, { name: "sonar", status: "IN_PROGRESS", conclusion: null }]],
+    ["there are no checks", []],
+  ])("does nothing when %s", async (_name, checks) => {
+    watchingPr(checks);
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when conductor.ciFix.enabled is false", async () => {
+    watchingPr(FAILED, spoke, { ciFix: { enabled: false } });
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("asks for the rebase first on a conflicting pull request", async () => {
+    watchingPr(FAILED, spoke, {}, "CONFLICTING");
+    mockRunClaude.mockResolvedValue(undefined);
+    await run();
+    expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
+  });
+
+  it("runs at most once per head commit", async () => {
+    watchingPr(FAILED, [...spoke, comment("bot", "2026-10-01T10:00:00Z", `fix\n${fixMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/fix was already requested for head commit abc1234/);
+  });
+
+  it("has its own limit", async () => {
+    const fixes = [1, 2].map((i) => comment("bot", `2026-10-02T0${String(i)}:00:00Z`, `f\n${fixMark(`old${String(i)}`)}`));
+    watchingPr(FAILED, [...spoke, ...fixes, comment("alice", "2026-10-03T00:00:00Z", "ok")], { maxRepliesPerItem: 2 });
+    await run();
+    expect(mockRunClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/already asked for 2 fixes/);
+  });
+
+  it("labels the item again and records the head commit when the run needs a human", async () => {
+    mockAddLabel.mockReset();
+    watchingPr(FAILED);
+    mockRunClaude.mockImplementation((_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }) => {
+      options.sink?.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: a secret is missing" }) + "\n");
+      return Promise.resolve();
+    });
+    expect(await run()).toBe(0);
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 9 }), "conductor-blocked", expect.any(String));
+    expect(mockPostMarker).toHaveBeenCalledWith("pr", 9, expect.stringContaining(fixMark(SHA)));
+  });
+
+  it("waits while the do-work lock is held", async () => {
+    watchingPr(FAILED);
+    mockInspectRun.mockReturnValue({ kind: "held", owner: { pid: 1 }, heldForMs: 1 });
+    await run();
+    expect(stdout).toMatch(/has a failed check, but the agent is working/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+});

@@ -17,6 +17,7 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_CONDUCTOR_ISSUE_PROMPT: "default conductor issue prompt",
   DEFAULT_CONDUCTOR_PR_PROMPT: "default conductor pr prompt",
   DEFAULT_CONDUCTOR_REBASE_PROMPT: "default conductor rebase prompt",
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT: "default conductor ci-fix prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {

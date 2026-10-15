@@ -1,7 +1,7 @@
 import { isWorkingMarker } from "../github/workingMarker.js";
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
-import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
+import type { CiCheck, IssueSurface, PrSurface } from "../github/ghWorkService.js";
 import {
   BLOCKED_LABEL,
   REPLY_MARKER,
@@ -10,6 +10,7 @@ import {
 } from "./loopSafety.js";
 import { newestCopilotAt, openCopilotThreads } from "./copilot.js";
 import {
+  countCiFixTurns,
   countRebaseTurns,
   runAlwaysChecks,
   type AlwaysDecision,
@@ -37,7 +38,14 @@ export interface Conversation {
   mergeable?: string;
   /** Pull request only: the commit the head branch points at. */
   headSha?: string;
+  /** Pull request only: the names of the checks that failed. */
+  ciFailed?: string[];
+  /** Pull request only: a check has not finished. */
+  ciPending?: boolean;
 }
+
+/** The conclusions of a finished check that mean the build is broken. */
+const FAILED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 
 export type ConductorSkipReason =
   | "closed"
@@ -48,11 +56,11 @@ export type ConductorSkipReason =
   | "limit"
   | AlwaysSkipReason;
 
-/** `rebase` comes from an always check (see `alwaysChecks.ts`) and ignores the loop-safety stop. */
+/** `rebase` and `ci-fix` come from an always check (see `alwaysChecks.ts`) and ignore the loop-safety stop. */
 export type ConductorDecision =
   | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string; copilot?: true }
   | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string }
-  | Extract<AlwaysDecision, { kind: "rebase" }>;
+  | Extract<AlwaysDecision, { kind: "rebase" | "ci-fix" }>;
 
 /**
  * The one rule for "is this item finished": the pruning of the watch list and
@@ -72,7 +80,7 @@ export function issueConversation(surface: IssueSurface): Conversation {
 }
 
 /** Review-thread comments count: an agent comment in a thread is as unanswered as one in the conversation. */
-export function prConversation(surface: PrSurface): Conversation {
+export function prConversation(surface: PrSurface, checks?: CiCheck[]): Conversation {
   return {
     kind: "pr",
     number: surface.pr.number,
@@ -81,6 +89,12 @@ export function prConversation(surface: PrSurface): Conversation {
     copilotAt: newestCopilotAt(openCopilotThreads(surface)),
     mergeable: surface.pr.mergeable,
     headSha: surface.pr.headSha,
+    ...(checks === undefined
+      ? {}
+      : {
+          ciFailed: checks.filter((check) => check.conclusion !== null && FAILED_CONCLUSIONS.has(check.conclusion)).map((check) => check.name),
+          ciPending: checks.some((check) => check.status !== "COMPLETED"),
+        }),
   };
 }
 
@@ -230,17 +244,24 @@ export function decideConductorReply(
   p: Participants,
   loop?: LoopState,
 ): ConductorVerdict {
-  // The always checks come first and ignore the stop: a rebase request replaces the
+  // The always checks come first and ignore the stop: a rebase or CI-fix request replaces the
   // ordinary decision of its conversation, and a skipped one is listed beside it.
   const always = runAlwaysChecks(
     conversations,
     loop === undefined
-      ? { rebases: 0, maxRebases: Infinity, agentUser: p.agentUser }
-      : { rebases: loop.rebases, maxRebases: loop.maxRebases, agentUser: p.agentUser },
+      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, agentUser: p.agentUser }
+      : {
+          rebases: loop.rebases,
+          maxRebases: loop.maxRebases,
+          ciFixes: loop.ciFixes,
+          maxCiFixes: loop.maxCiFixes,
+          ciFixEnabled: loop.ciFixEnabled,
+          agentUser: p.agentUser,
+        },
   );
   const decided = conversations.map(
     (conversation) =>
-      always.find((decision) => decision.kind === "rebase" && decision.surface === conversation) ??
+      always.find((decision) => decision.kind !== "skip" && decision.surface === conversation) ??
       decideConversation(conversation, p),
   );
   const stop = loop === undefined ? null : loopStop(loop);
@@ -275,15 +296,18 @@ export function loopStateOf(
   labels: string[],
   maxReplies: number,
   agentUser: string,
+,
+  ciFixEnabled = true,
 ): LoopState {
+  const messages = conversations.flatMap((conversation) => conversation.messages);
   return {
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
-    replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
+    replies: countConductorReplies(messages),
     maxReplies,
-    rebases: countRebaseTurns(
-      conversations.flatMap((conversation) => conversation.messages),
-      agentUser,
-    ),
+    rebases: countRebaseTurns(messages, agentUser),
     maxRebases: maxReplies,
+    ciFixes: countCiFixTurns(messages, agentUser),
+    maxCiFixes: maxReplies,
+    ciFixEnabled,
   };
 }

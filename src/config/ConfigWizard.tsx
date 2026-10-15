@@ -16,6 +16,7 @@ import {
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
@@ -78,6 +79,7 @@ const PROMPTS_MENU_OPTIONS = [
   "Conductor — Issue",
   "Conductor — PR",
   "Conductor — Rebase",
+  "Conductor — CI fix",
 ] as const;
 
 function parseAllowedUsers(value: string): string[] {
@@ -116,6 +118,7 @@ type Screen =
   | "conductor-issue-prompt"
   | "conductor-pr-prompt"
   | "conductor-rebase-prompt"
+  | "conductor-ci-fix-prompt"
   | "git-trunk-branch"
   | "git-release-flow";
 
@@ -263,6 +266,7 @@ const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Scr
   "Conductor — Issue": "conductor-issue-prompt",
   "Conductor — PR": "conductor-pr-prompt",
   "Conductor — Rebase": "conductor-rebase-prompt",
+  "Conductor — CI fix": "conductor-ci-fix-prompt",
 };
 
 export function ConfigWizard() {
@@ -340,6 +344,9 @@ export function ConfigWizard() {
   );
   const [conductorRebasePrompt, setConductorRebasePrompt] = useState(
     existing.conductor?.prompts?.rebase ?? DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  );
+  const [conductorCiFixPrompt, setConductorCiFixPrompt] = useState(
+    existing.conductor?.prompts?.ciFix ?? DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   );
   const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
   const initialReleaseFlowIndex = RELEASE_FLOW_OPTIONS.findIndex((o) => o.value === existing.git?.releaseFlow);
@@ -571,6 +578,17 @@ export function ConfigWizard() {
         savePrompt("conductor-rebase.md", conductorRebasePrompt, (value, current) => ({
           ...current,
           conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, rebase: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "conductor-ci-fix-prompt": {
+      setValue: setConductorCiFixPrompt,
+      onSubmit: () => {
+        savePrompt("conductor-ci-fix.md", conductorCiFixPrompt, (value, current) => ({
+          ...current,
+          conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, ciFix: value } },
         }));
         setScreen("prompts-menu");
       },
@@ -842,6 +860,12 @@ export function ConfigWizard() {
       title: "Prompts — Conductor — Rebase",
       label: "Request the conductor sends to the agent when a watched pull request has a merge conflict:",
       value: conductorRebasePrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "conductor-ci-fix-prompt": {
+      title: "Prompts — Conductor — CI fix",
+      label: "Instructions for the request the conductor sends to the agent when a watched pull request has a failed check:",
+      value: conductorCiFixPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
     },
     "git-trunk-branch": {

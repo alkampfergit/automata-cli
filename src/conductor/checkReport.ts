@@ -87,6 +87,8 @@ function decisionLine(decision: ConductorDecision): string {
       return `reply on ${where}: ${decision.reason}`;
     case "rebase":
       return `rebase request on ${where}: ${decision.reason}`;
+    case "ci-fix":
+      return `CI-fix request on ${where}: ${decision.reason}`;
     case "skip":
       return `skip ${where} (${decision.reason}): ${decision.detail}`;
   }

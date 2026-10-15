@@ -6,6 +6,7 @@ import {
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
 } from "../config/configStore.js";
@@ -34,6 +35,7 @@ import {
 } from "../conductor/replyDecision.js";
 import {
   composeConductorPrompt,
+  type AgentRequest,
   type ConductorThread,
   type ReplyTarget,
   type ThreadPr,
@@ -53,7 +55,7 @@ import {
   parseNeedsHuman,
   resolveMaxReplies,
 } from "../conductor/loopSafety.js";
-import { rebaseMarker } from "../conductor/alwaysChecks.js";
+import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
@@ -135,14 +137,14 @@ function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLin
   const target = getWatchTarget(id);
   if (target.kind === "pr") {
     const pr = readPr(id);
-    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)], labels: target.labels };
+    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface, pr.checks)], labels: target.labels };
   }
   const issue = getIssueSurface(id);
   const prs = (linkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
   return {
     target,
     thread: { kind: "issue", issue, prs },
-    conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface))],
+    conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface, pr.checks))],
     labels: target.labels,
   };
 }
@@ -243,18 +245,16 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
 }
 
 /**
- * A rebase turn ended in `NEEDS-HUMAN:`. The rebase check ignores the label, so the turn must leave a
- * trace for its head commit, or the next tick would run the model again. The note carries the rebase marker.
+ * A rebase or CI-fix turn ended in `NEEDS-HUMAN:`. The always checks ignore the label, so the turn must leave
+ * a trace for its head commit, or the next tick would run the model again. The note carries the marker of the turn.
  */
-function noteRebaseStop(replyTo: ReplyTarget, headSha: string, reason: string, label: string): void {
+function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: string, label: string): void {
+  const what = request.kind === "rebase" ? "the rebase" : "the CI fix";
+  const marker = request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
   try {
-    postMarker(
-      replyTo.kind,
-      replyTo.number,
-      `The conductor stopped on the rebase of this pull request and needs a person: ${reason}\n\n${rebaseMarker(headSha)}`,
-    );
+    postMarker(replyTo.kind, replyTo.number, `The conductor stopped on ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
   } catch (err) {
-    process.stderr.write(`Warning: could not record the stopped rebase of ${label}; the next tick tries again: ${(err as Error).message}\n`);
+    process.stderr.write(`Warning: could not record the stopped ${what} of ${label}; the next tick tries again: ${(err as Error).message}\n`);
   }
 }
 
@@ -290,7 +290,7 @@ function agentIsWorking(config: AutomataConfig): boolean {
 }
 
 /** The configured instructions for a turn, or the built-in default. */
-function frameFor(key: "issue" | "pr" | "rebase", config: AutomataConfig): string {
+function frameFor(key: "issue" | "pr" | "rebase" | "ciFix", config: AutomataConfig): string {
   const prompts = config.conductor?.prompts;
   switch (key) {
     case "issue":
@@ -299,6 +299,8 @@ function frameFor(key: "issue" | "pr" | "rebase", config: AutomataConfig): strin
       return prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT;
     case "rebase":
       return prompts?.rebase ?? DEFAULT_CONDUCTOR_REBASE_PROMPT;
+    case "ciFix":
+      return prompts?.ciFix ?? DEFAULT_CONDUCTOR_CI_FIX_PROMPT;
   }
 }
 
@@ -321,33 +323,34 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.agentUser);
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.agentUser, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
-  // A rebase request comes before an ordinary reply, on whichever conversation of the item it is.
+  // A rebase request, then a CI-fix request, come before an ordinary reply, on whichever conversation of the item.
   const eligible = verdict.decisions.filter(
     (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
-  const owed = eligible.find((decision) => decision.kind === "rebase") ?? eligible[0];
+  const owed =
+    eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
   if (owed === undefined) {
     const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
     const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
     process.stdout.write(`${why}\n`);
     return "idle";
   }
-  const rebaseHead = owed.kind === "rebase" ? owed.headSha : undefined;
+  const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
   const copilotTurn = owed.kind === "reply" && owed.copilot === true;
-  if ((copilotTurn || rebaseHead !== undefined) && dryRun === undefined && agentIsWorking(config)) {
-    const what = copilotTurn ? "has open Copilot review threads" : "has a merge conflict";
+  if ((copilotTurn || request !== undefined) && dryRun === undefined && agentIsWorking(config)) {
+    const what = copilotTurn ? "has open Copilot review threads" : request?.kind === "ci-fix" ? "has a failed check" : "has a merge conflict";
     process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
     return "idle";
   }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
-  const frame = frameFor(rebaseHead !== undefined ? "rebase" : thread.kind, config);
-  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, rebaseHead });
+  const frame = frameFor(request === undefined ? thread.kind : request.kind === "ci-fix" ? "ciFix" : "rebase", config);
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, request });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
-  const need = rebaseHead === undefined ? "a reply" : "a rebase request";
+  const need = request === undefined ? "a reply" : request.kind === "rebase" ? "a rebase request" : "a CI-fix request";
   process.stdout.write(`Conductor: ${label} needs ${need} on ${where}; running ${describeConductorExecution(execution)}.\n`);
   if (dryRun) return conductDryRunItem(prompt, execution, label, where, replyTo, dryRun);
   const captured = captureStdout();
@@ -359,7 +362,7 @@ async function conductItem(
   reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
-    if (rebaseHead !== undefined) noteRebaseStop(replyTo, rebaseHead, needsHuman, label);
+    if (request !== undefined) noteRequestStop(replyTo, request, needsHuman, label);
     return blockItem(item, label, needsHuman);
   }
   switch (outcome.kind) {
@@ -540,6 +543,7 @@ function checkWatched(
   id: number,
   participants: Participants,
   maxReplies: number,
+  ciFixEnabled: boolean,
   linkMap: () => OpenPrLinkMap,
   coveredBy?: number,
 ): WatchedCheck {
@@ -548,7 +552,7 @@ function checkWatched(
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
     if (coveredBy !== undefined) return { id, kind: target.kind, state: "open", decisions: [], coveredBy };
     const { conversations, labels } = readWatchedItem(id, linkMap);
-    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.agentUser);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.agentUser, ciFixEnabled);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };
@@ -581,7 +585,7 @@ function runConductorCheck(): number {
           execution: describeConductorExecution(checked.execution),
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
-          watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), linkMap, covered.get(id))),
+          watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), checked.config.conductor?.ciFix?.enabled !== false, linkMap, covered.get(id))),
         });
   process.stdout.write(report.text);
   return report.exitCode;
