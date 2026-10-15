@@ -323,7 +323,7 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.agentUser, config.conductor?.ciFix?.enabled !== false);
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
   // A rebase request, then a CI-fix request, come before an ordinary reply, on whichever conversation of the item.
@@ -552,7 +552,7 @@ function checkWatched(
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
     if (coveredBy !== undefined) return { id, kind: target.kind, state: "open", decisions: [], coveredBy };
     const { conversations, labels } = readWatchedItem(id, linkMap);
-    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.agentUser, ciFixEnabled);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.allowedUsers, ciFixEnabled);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };

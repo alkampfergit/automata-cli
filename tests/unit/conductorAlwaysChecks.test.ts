@@ -25,7 +25,7 @@ function pr(extra: Partial<Conversation> = {}): Conversation {
   return { kind: "pr", number: 9, state: "open", messages: [], mergeable: "CONFLICTING", headSha: SHA, ...extra };
 }
 
-const state = { rebases: 0, maxRebases: 5, ciFixes: 0, maxCiFixes: 5, ciFixEnabled: true, agentUser: "bot" };
+const state = { rebases: 0, maxRebases: 5, ciFixes: 0, maxCiFixes: 5, ciFixEnabled: true, trustedUsers: ["alice"] };
 
 describe("rebaseCheck", () => {
   it("asks for a rebase on a conflicting open pull request", () => {
@@ -43,7 +43,7 @@ describe("rebaseCheck", () => {
   });
 
   it("runs once per head commit and runs again after a push", () => {
-    const messages = [comment("bot", "10:00:00", `please rebase\n${rebaseMarker(SHA)}`)];
+    const messages = [comment("alice", "10:00:00", `please rebase\n${rebaseMarker(SHA)}`)];
     expect(rebaseCheck(pr({ messages }), state)).toMatchObject({ kind: "skip", reason: "rebase-done" });
     expect(rebaseCheck(pr({ messages, headSha: "fff9999" }), state)).toMatchObject({ kind: "rebase" });
   });
@@ -57,30 +57,30 @@ describe("rebaseCheck", () => {
 describe("rebase markers", () => {
   it("are counted apart from the replies", () => {
     const messages = [
-      comment("bot", "10:00:00", `a\n${rebaseMarker(SHA)}`),
-      comment("bot", "10:01:00", `b\n${REPLY_MARKER}`),
-      comment("bot", "10:02:00", `c\n${REPLY_MARKER}`),
+      comment("alice", "10:00:00", `a\n${rebaseMarker(SHA)}`),
+      comment("alice", "10:01:00", `b\n${REPLY_MARKER}`),
+      comment("alice", "10:02:00", `c\n${REPLY_MARKER}`),
     ];
-    expect(countRebaseTurns(messages, "bot")).toBe(1);
+    expect(countRebaseTurns(messages, ["alice"])).toBe(1);
     expect(countConductorReplies(messages)).toBe(2);
-    expect(hasRebaseFor(messages, SHA, "bot")).toBe(true);
-    expect(hasRebaseFor(messages, "other", "bot")).toBe(false);
+    expect(hasRebaseFor(messages, SHA, ["alice"])).toBe(true);
+    expect(hasRebaseFor(messages, "other", ["alice"])).toBe(false);
   });
 
   it("do not count when an account other than the agent wrote them", () => {
     const forged = [comment("mallory", "10:00:00", `x\n${rebaseMarker(SHA)}`)];
-    expect(countRebaseTurns(forged, "bot")).toBe(0);
-    expect(hasRebaseFor(forged, SHA, "bot")).toBe(false);
+    expect(countRebaseTurns(forged, ["alice"])).toBe(0);
+    expect(hasRebaseFor(forged, SHA, ["alice"])).toBe(false);
   });
 
   it("do not count unless the marker is the last line", () => {
-    const quoted = [comment("bot", "10:00:00", `${rebaseMarker(SHA)}\nmore text`)];
-    expect(countRebaseTurns(quoted, "bot")).toBe(0);
+    const quoted = [comment("alice", "10:00:00", `${rebaseMarker(SHA)}\nmore text`)];
+    expect(countRebaseTurns(quoted, ["alice"])).toBe(0);
   });
 
   it("do not count in a review body", () => {
     const review: RawMessage = { kind: "pr-review", author: "alice", body: rebaseMarker(SHA), createdAt: "t" };
-    expect(countRebaseTurns([review], "bot")).toBe(0);
+    expect(countRebaseTurns([review], ["alice"])).toBe(0);
   });
 });
 
@@ -116,7 +116,7 @@ describe("ciFixCheck", () => {
   });
 
   it("runs once per head commit and runs again after a push", () => {
-    const messages = [comment("bot", "10:00:00", `please fix\n${ciFixMarker(SHA)}`)];
+    const messages = [comment("alice", "10:00:00", `please fix\n${ciFixMarker(SHA)}`)];
     expect(ciFixCheck(red({ messages }), state)).toMatchObject({ kind: "skip", reason: "ci-fix-done" });
     expect(ciFixCheck(red({ messages, headSha: "fff9999" }), state)).toMatchObject({ kind: "ci-fix" });
   });
@@ -130,20 +130,20 @@ describe("ciFixCheck", () => {
 describe("CI-fix markers", () => {
   it("are counted apart from the rebases and the replies", () => {
     const messages = [
-      comment("bot", "10:00:00", `a\n${ciFixMarker(SHA)}`),
-      comment("bot", "10:01:00", `b\n${rebaseMarker(SHA)}`),
-      comment("bot", "10:02:00", `c\n${REPLY_MARKER}`),
+      comment("alice", "10:00:00", `a\n${ciFixMarker(SHA)}`),
+      comment("alice", "10:01:00", `b\n${rebaseMarker(SHA)}`),
+      comment("alice", "10:02:00", `c\n${REPLY_MARKER}`),
     ];
-    expect(countCiFixTurns(messages, "bot")).toBe(1);
-    expect(countRebaseTurns(messages, "bot")).toBe(1);
+    expect(countCiFixTurns(messages, ["alice"])).toBe(1);
+    expect(countRebaseTurns(messages, ["alice"])).toBe(1);
     expect(countConductorReplies(messages)).toBe(1);
-    expect(hasCiFixFor(messages, SHA, "bot")).toBe(true);
-    expect(hasCiFixFor(messages, "other", "bot")).toBe(false);
+    expect(hasCiFixFor(messages, SHA, ["alice"])).toBe(true);
+    expect(hasCiFixFor(messages, "other", ["alice"])).toBe(false);
   });
 
   it("do not count when another account wrote them, or when the marker is not the last line", () => {
-    expect(countCiFixTurns([comment("mallory", "10:00:00", `x\n${ciFixMarker(SHA)}`)], "bot")).toBe(0);
-    expect(countCiFixTurns([comment("bot", "10:00:00", `${ciFixMarker(SHA)}\nmore`)], "bot")).toBe(0);
+    expect(countCiFixTurns([comment("mallory", "10:00:00", `x\n${ciFixMarker(SHA)}`)], ["alice"])).toBe(0);
+    expect(countCiFixTurns([comment("alice", "10:00:00", `${ciFixMarker(SHA)}\nmore`)], ["alice"])).toBe(0);
   });
 });
 
@@ -156,7 +156,7 @@ describe("runAlwaysChecks", () => {
 
 describe("decideConductorReply with the always checks", () => {
   const blocked = (conversations: Conversation[], maxReplies = 5) =>
-    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], maxReplies, p.agentUser));
+    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], maxReplies, p.allowedUsers));
 
   it("rebases a blocked item with a conflict, though no reply is owed", () => {
     const verdict = blocked([pr({ messages: [comment("alice", "10:00:00", "ok")] })]);
@@ -173,7 +173,7 @@ describe("decideConductorReply with the always checks", () => {
   it("counts the rebases apart from the replies", () => {
     const replies = [1, 2, 3].map((i) => comment("alice", `10:0${String(i)}:00`, `r\n${REPLY_MARKER}`));
     expect(blocked([pr({ messages: replies })], 3).decisions).toEqual([expect.objectContaining({ kind: "rebase" })]);
-    const rebases = [1, 2, 3].map((i) => comment("bot", `10:0${String(i)}:00`, `r\n${rebaseMarker(`sha${String(i)}`)}`));
+    const rebases = [1, 2, 3].map((i) => comment("alice", `10:0${String(i)}:00`, `r\n${rebaseMarker(`sha${String(i)}`)}`));
     const verdict = blocked([pr({ messages: rebases })], 3);
     expect(verdict.needsReply).toBe(false);
     expect(verdict.decisions).toContainEqual(expect.objectContaining({ kind: "skip", reason: "rebase-limit" }));
@@ -184,12 +184,19 @@ describe("decideConductorReply with the CI-fix check", () => {
   const red = (extra: Partial<Conversation> = {}) =>
     pr({ mergeable: "MERGEABLE", ciFailed: ["build"], ciPending: false, messages: [comment("alice", "10:00:00", "ok")], ...extra });
   const decide = (conversations: Conversation[], enabled = true) =>
-    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], 5, p.agentUser, enabled));
+    decideConductorReply(conversations, p, loopStateOf(conversations, ["conductor-blocked"], 5, p.allowedUsers, enabled));
 
   it("asks for a fix on a blocked item", () => {
     const verdict = decide([red()]);
     expect(verdict.needsReply).toBe(true);
     expect(verdict.decisions).toEqual([expect.objectContaining({ kind: "ci-fix", headSha: SHA })]);
+  });
+
+  it("stops on a consecutive tick once the conductor's request is on the pull request", () => {
+    const request = comment("alice", "10:05:00", `fix it\n${ciFixMarker(SHA)}`);
+    const verdict = decide([red({ messages: [comment("alice", "10:00:00", "ok"), request] })]);
+    expect(verdict.needsReply).toBe(false);
+    expect(verdict.decisions).toContainEqual(expect.objectContaining({ kind: "skip", reason: "ci-fix-done" }));
   });
 
   it("does nothing when switched off in the loop state", () => {
@@ -202,7 +209,7 @@ describe("decideConductorReply with the CI-fix check", () => {
   });
 
   it("counts the fixes apart from the replies and the rebases", () => {
-    const fixes = [1, 2, 3, 4, 5].map((i) => comment("bot", `10:0${String(i)}:00`, `f\n${ciFixMarker(`old${String(i)}`)}`));
+    const fixes = [1, 2, 3, 4, 5].map((i) => comment("alice", `10:0${String(i)}:00`, `f\n${ciFixMarker(`old${String(i)}`)}`));
     const verdict = decide([red({ messages: fixes })]);
     expect(verdict.needsReply).toBe(false);
     expect(verdict.decisions).toContainEqual(expect.objectContaining({ kind: "skip", reason: "ci-fix-limit" }));

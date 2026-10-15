@@ -249,14 +249,14 @@ export function decideConductorReply(
   const always = runAlwaysChecks(
     conversations,
     loop === undefined
-      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, agentUser: p.agentUser }
+      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, trustedUsers: p.allowedUsers }
       : {
           rebases: loop.rebases,
           maxRebases: loop.maxRebases,
           ciFixes: loop.ciFixes,
           maxCiFixes: loop.maxCiFixes,
           ciFixEnabled: loop.ciFixEnabled,
-          agentUser: p.agentUser,
+          trustedUsers: p.allowedUsers,
         },
   );
   const decided = conversations.map(
@@ -295,8 +295,7 @@ export function loopStateOf(
   conversations: Conversation[],
   labels: string[],
   maxReplies: number,
-  agentUser: string,
-,
+  trustedUsers: string[],
   ciFixEnabled = true,
 ): LoopState {
   const messages = conversations.flatMap((conversation) => conversation.messages);
@@ -304,9 +303,9 @@ export function loopStateOf(
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
     replies: countConductorReplies(messages),
     maxReplies,
-    rebases: countRebaseTurns(messages, agentUser),
+    rebases: countRebaseTurns(messages, trustedUsers),
     maxRebases: maxReplies,
-    ciFixes: countCiFixTurns(messages, agentUser),
+    ciFixes: countCiFixTurns(messages, trustedUsers),
     maxCiFixes: maxReplies,
     ciFixEnabled,
   };
