@@ -1,3 +1,4 @@
+import { isWorkingMarker } from "../github/workingMarker.js";
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
 import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
@@ -32,6 +33,7 @@ export type ConductorSkipReason =
   | "closed"
   | "no-agent-message"
   | "answered"
+  | "agent-working"
   | "blocked"
   | "limit"
   | AlwaysSkipReason;
@@ -84,6 +86,8 @@ export function prConversation(surface: PrSurface): Conversation {
 export function decideConversation(conversation: Conversation, p: Participants): ConductorDecision {
   const decision = decideByAgentMessage(conversation, p);
   if (decision.kind === "reply") return decision;
+  // A run in flight owns the item: not even a Copilot thread is passed on meanwhile.
+  if (decision.reason === "agent-working") return decision;
   return copilotTurn(conversation) ?? decision;
 }
 
@@ -121,10 +125,33 @@ function decideByAgentMessage(conversation: Conversation, p: Participants): Cond
     return author === agent || allowed.has(author);
   });
 
+  // The `working…` marker is not a message that waits for an answer: it says the
+  // agent is answering. It is kept apart from the agent's real messages.
   let newest: RawMessage | null = null;
+  let newestMarker: RawMessage | null = null;
   for (const message of relevant) {
     if (message.author.toLowerCase() !== agent) continue;
-    if (newest === null || message.createdAt > newest.createdAt) newest = message;
+    if (isWorkingMarker(message.body)) {
+      if (newestMarker === null || message.createdAt > newestMarker.createdAt) newestMarker = message;
+    } else if (newest === null || message.createdAt > newest.createdAt) {
+      newest = message;
+    }
+  }
+  if (newestMarker !== null && (newest === null || newestMarker.createdAt > newest.createdAt)) {
+    const markerAt = newestMarker.createdAt;
+    const humanAfter = relevant.some(
+      (message) => message.author.toLowerCase() !== agent && message.createdAt > markerAt,
+    );
+    // A human who wrote after the marker has already been answered or will be by the run itself;
+    // the reference stays the agent's real message, as without a marker.
+    if (!humanAfter) {
+      return {
+        kind: "skip",
+        surface: conversation,
+        reason: "agent-working",
+        detail: `a do-work run is in flight (working marker at ${markerAt})`,
+      };
+    }
   }
   if (newest === null) {
     return {
