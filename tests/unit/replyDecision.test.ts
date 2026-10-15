@@ -20,6 +20,47 @@ function convo(messages: RawMessage[], state: Conversation["state"] = "open"): C
   return { kind: "issue", number: 7, state, messages };
 }
 
+function marker(at: string, kind: RawMessage["kind"] = "issue-comment"): RawMessage {
+  return { ...msg("bot", at, kind), body: "automata do-work: working…" };
+}
+
+describe("working marker", () => {
+  it("skips with agent-working when the marker is newer than a human message", () => {
+    const d = decideConversation(convo([msg("alice", "10:00:00"), marker("10:01:00")]), p);
+    expect(d).toMatchObject({ kind: "skip", reason: "agent-working" });
+  });
+
+  it("skips with agent-working when the marker is newer than a real agent message", () => {
+    const d = decideConversation(convo([msg("bot", "10:00:00"), marker("10:01:00")]), p);
+    expect(d).toMatchObject({ kind: "skip", reason: "agent-working" });
+  });
+
+  it("keeps the real agent message as reference once the marker is gone", () => {
+    const d = decideConversation(convo([msg("alice", "10:00:00"), msg("bot", "10:02:00")]), p);
+    expect(d).toMatchObject({ kind: "reply", agentMessageAt: "2026-10-01T10:02:00Z" });
+  });
+
+  it("uses the real agent message when a human wrote after the marker", () => {
+    const d = decideConversation(convo([msg("bot", "10:00:00"), marker("10:01:00"), msg("alice", "10:02:00")]), p);
+    expect(d).toMatchObject({ kind: "skip", reason: "answered" });
+  });
+
+  it("ignores a marker in a review thread", () => {
+    const d = decideConversation(convo([msg("alice", "10:00:00"), marker("10:01:00", "thread-comment")]), p);
+    expect(d).toMatchObject({ kind: "skip", reason: "agent-working" });
+  });
+
+  it("does not raise a Copilot reply while a run is in flight", () => {
+    const c = { ...convo([msg("alice", "10:00:00"), marker("10:01:00")]), copilotAt: "2026-10-01T10:02:00Z" };
+    expect(decideConversation(c, p)).toMatchObject({ kind: "skip", reason: "agent-working" });
+  });
+
+  it("does not treat an interruption explanation as a marker", () => {
+    const explained = { ...msg("bot", "10:01:00"), body: "automata do-work: this run was interrupted" };
+    expect(decideConversation(convo([msg("alice", "10:00:00"), explained]), p)).toMatchObject({ kind: "reply" });
+  });
+});
+
 describe("decideConversation", () => {
   it("replies when the agent spoke last", () => {
     const d = decideConversation(convo([msg("alice", "10:00:00"), msg("bot", "10:05:00")]), p);

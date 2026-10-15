@@ -38,6 +38,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Fixed
 
+- The conductor no longer asks for a reply while a `do-work` run is in flight: the `automata do-work: working…` marker
+  is not counted as an agent message that waits for an answer, and the item is skipped with the new reason
+  `agent-working`. See `docs/conductor.md`
 - The conductor now creates the `conductor-blocked` label when `gh` reports it only as `'conductor-blocked' not found`,
   instead of failing the tick without recording why it stopped
 

@@ -122,6 +122,7 @@ separately, and the item needs a reply when either does. A conversation needs a 
 | reply | `agentUser` wrote and no allowed user wrote after it. Review-thread comments count on a pull request, and an issue description written by `agentUser` counts as its message. |
 | reply (Copilot) | A pull request has an unresolved Copilot review thread newer than the newest conductor reply; see [Copilot review threads](#copilot-review-threads). |
 | skip, `answered` | An allowed user wrote after the newest `agentUser` message. |
+| skip, `agent-working` | The newest `agentUser` comment is the `automata do-work: working…` marker, newer than the newest real `agentUser` message, and no allowed user wrote after it. A `do-work` run is in flight, so the conductor does not reply. The marker is never the message that waits for an answer, in the conversation or in a review thread. A marker left by a crashed run keeps the item quiet in the same way until an allowed user writes again or the next `do-work` tick answers it. There is no timeout, because a conductor reply there would loop. |
 | skip, `no-agent-message` | `agentUser` never wrote there. |
 | skip, `closed` | The issue is closed or the pull request closed or merged — the rule the tick-start prune uses. |
 | skip, `limit` or `blocked` | A reply is owed, but the item reached its [reply limit](#loop-safety) or has the `conductor-blocked` label. |

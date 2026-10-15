@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { WORKING_MARKER } from "../github/workingMarker.js";
 import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
@@ -1706,7 +1707,7 @@ async function processItem(
   let marker: MarkerRef;
   const markerTarget = markerSurfaceTarget(item);
   try {
-    marker = postMarker(markerTarget.surface, markerTarget.number, "automata do-work: working…");
+    marker = postMarker(markerTarget.surface, markerTarget.number, WORKING_MARKER);
   } catch (err) {
     // Without the marker there is no boundary, so a run now would be answered
     // again on every later tick. Skipping leaves the message for the next tick.
