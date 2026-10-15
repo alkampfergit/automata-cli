@@ -106,6 +106,14 @@ export interface ConductorPrompts {
   pr?: string;
   /** Sent to the agent when a watched pull request has a merge conflict. */
   rebase?: string;
+  /** Sent to the agent when a watched pull request has a failed check. */
+  ciFix?: string;
+}
+
+/** Settings of the conductor's CI-fix check. */
+export interface ConductorCiFixConfig {
+  /** False switches the check off. Unset means true. */
+  enabled?: boolean;
 }
 
 /** Settings of `automata conductor`. */
@@ -113,6 +121,7 @@ export interface AutomataConductorConfig {
   /** Legacy key. The watch list lives in `.automata/conductor-watch.json`. Read only to migrate it once. */
   watch?: number[];
   prompts?: ConductorPrompts;
+  ciFix?: ConductorCiFixConfig;
   /** The CLI the conductor runs. Unset means Claude. */
   executor?: Executor;
   /** Model per executor, as `doWork.models`. */
@@ -258,6 +267,20 @@ export const DEFAULT_CONDUCTOR_REBASE_PROMPT =
   "please fetch, update the target branch then rebase the branch on the target branch, resolve conflicts, commit and push, " +
   "then wait for all the checks to report ok, if some check fails, or if you have issues in sonar cloud, please fix them";
 
+/**
+ * Default instructions for a watched pull request that has a failed check.
+ * The conductor turns them into the request it posts, as a comment, to the agent.
+ */
+export const DEFAULT_CONDUCTOR_CI_FIX_PROMPT =
+  "A check failed on this pull request. Write the next message to the agent that asks it to fix the build. " +
+  "Use `gh pr checks` and `gh run view --log-failed` to find the failed check runs and the cause of each failure. " +
+  "Name each failed check and give the error in one line. " +
+  "Tell the agent to: reproduce the failure locally (`npm test && npm run lint`), fix the cause in the code " +
+  "(not the test, unless the test is wrong), commit, push to the pull request branch, and wait for the checks to finish. " +
+  "If a check fails again, the agent fixes it again. If it cannot fix the failure (for example, an outage or a missing secret), " +
+  "it must end with a `NEEDS-HUMAN:` line that gives the reason. " +
+  "Do not change any file, merge, close or push yourself. Write only the message to the agent.";
+
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
 
@@ -348,6 +371,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.conductor?.prompts?.rebase) {
     config.conductor.prompts.rebase = resolvePromptRef(config.conductor.prompts.rebase, dir);
+  }
+  if (config.conductor?.prompts?.ciFix) {
+    config.conductor.prompts.ciFix = resolvePromptRef(config.conductor.prompts.ciFix, dir);
   }
   return config;
 }

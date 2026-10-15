@@ -19,6 +19,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- The conductor has a CI-fix check that runs even on an item with the `conductor-blocked` label: when a watched pull
+  request has a failed check and no check is pending, the conductor asks the agent to fix the build. The instructions
+  are configurable with `conductor.prompts.ciFix` (`automata config set conductor-prompt ciFix`, and a wizard screen),
+  and `conductor.ciFix.enabled` switches the check off. It waits for the rebase check on a conflicting pull request,
+  runs once per head commit, and has its own limit, `conductor.maxRepliesPerItem`. See
+  [docs/conductor.md](docs/conductor.md#ci-fix-check)
 - The conductor has a rebase check that runs even on an item with the `conductor-blocked` label: when GitHub reports
   a merge conflict on a watched pull request, the conductor asks the agent to rebase. The request is configurable
   with `conductor.prompts.rebase` (`automata config set conductor-prompt rebase`, and a wizard screen). It runs once

@@ -54,7 +54,7 @@ each comment, and then resolve the review thread. The conductor run stays read-o
 ## Rebase check
 
 Some checks run on every watched item, even one with the `conductor-blocked` label or one that has used its replies.
-Today there is one: the rebase check (`src/conductor/alwaysChecks.ts`; another check is one more function in
+Today there are two: the rebase check and the [CI-fix check](#ci-fix-check), in that order (`src/conductor/alwaysChecks.ts`; another check is one more function in
 `ALWAYS_CHECKS`). It runs before the [loop-safety rules](#loop-safety).
 
 A watched pull request, or an open pull request linked to a watched issue, is owed a rebase request when GitHub reports
@@ -74,6 +74,31 @@ If the rebase run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-
 conductor posts one short note with the rebase marker, so the check does not run again for the same head commit. As for
 a Copilot turn, the check waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists
 it as `rebase request on PR #<n>`.
+
+## CI-fix check
+
+The second always check asks the agent to fix a build that failed. It has the same shape as the rebase check, and it
+also runs on an item with the `conductor-blocked` label.
+
+A watched pull request, or an open pull request linked to a watched issue, is owed a CI-fix request when at least one
+check has finished with the conclusion `FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED` or `CANCELLED`. The check waits while
+any check is still pending. It does nothing when GitHub reports `mergeable: CONFLICTING`, because the rebase check comes
+first; a push after the rebase re-arms it. Set `conductor.ciFix.enabled` to `false` to switch it off.
+
+The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.ciFix` as its instructions. The
+model finds the failed checks, posts the request as a comment to the agent, and the agent fixes the build and pushes.
+The comment ends with the marker `<!-- automata:conductor-ci-fix head=<sha> -->`. Only a comment of the agent account
+counts, and only when the marker is the last line of the comment. The marker gives two rules:
+
+| Rule | Skip reason | Effect |
+|------|-------------|--------|
+| Once per head commit | `ci-fix-done` | A CI-fix request for the current head commit exists, so the check waits. A new push gives a new commit and arms the check again. |
+| CI-fix limit | `ci-fix-limit` | The item has `conductor.maxRepliesPerItem` CI-fix requests (default 5). They have their own counter, apart from the replies and the rebase requests. |
+
+If the run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-blocked` label again and the conductor posts
+one short note with the CI-fix marker, so the check does not run again for the same head commit. As for the rebase
+check, it waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists it as
+`CI-fix request on PR #<n>`.
 
 ## Watch list
 
@@ -153,10 +178,11 @@ The prompt depends on the kind of the watched item:
 | `conductor.prompts.issue` | A watched issue (and its linked pull requests) |
 | `conductor.prompts.pr` | A watched pull request |
 | `conductor.prompts.rebase` | A [rebase request](#rebase-check) for a watched pull request that has a merge conflict |
+| `conductor.prompts.ciFix` | A [CI-fix request](#ci-fix-check) for a watched pull request that has a failed check |
 
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
 [config.md](config.md#conductor). Without a key, a built-in default applies. The issue and pull request defaults ask the model to write the
-next message to the agent, and forbid file changes, merging, closing and pushing. The rebase default is the request itself: fetch, update the target branch, rebase, resolve conflicts, commit and push, wait for the checks, and fix a failing check or a SonarCloud issue.
+next message to the agent, and forbid file changes, merging, closing and pushing. The rebase default is the request itself: fetch, update the target branch, rebase, resolve conflicts, commit and push, wait for the checks, and fix a failing check or a SonarCloud issue. The CI-fix default is, like the issue and pull request defaults, an instruction for the model: find the failed checks with `gh`, name each one with its error, and tell the agent to reproduce the failure, fix the cause, push, wait for the checks and end with `NEEDS-HUMAN:` if it cannot fix the failure.
 
 After the thread, automata appends the posting instruction itself, so a configured prompt cannot lose it: post one
 comment with `gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input,

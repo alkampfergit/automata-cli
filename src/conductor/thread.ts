@@ -1,6 +1,6 @@
 import { analyzeSurface, formatMessages, type Participants, type RawMessage } from "../github/conversation.js";
 import { NEEDS_HUMAN_PREFIX, REPLY_MARKER } from "./loopSafety.js";
-import { rebaseMarker } from "./alwaysChecks.js";
+import { ciFixMarker, rebaseMarker } from "./alwaysChecks.js";
 import { openCopilotThreads, renderCopilotBlock } from "./copilot.js";
 import type { CiCheck, IssueSurface, PrSurface, ReviewThread } from "../github/ghWorkService.js";
 
@@ -37,10 +37,23 @@ export interface ConductorPromptInput {
   /** `--dry-run`: the prompt asks for the reply as the final message and tells the model nothing can be posted. */
   dryRun?: boolean;
   /**
-   * A rebase turn: the head commit of the conflicting pull request `replyTo` names. `frame` is then
-   * `conductor.prompts.rebase`, the request for the agent, and the comment ends with the rebase marker.
+   * A request turn: the head commit of the pull request `replyTo` names. `frame` is then
+   * `conductor.prompts.rebase` or `conductor.prompts.ciFix`, the request for the agent, and the
+   * comment ends with the marker of that kind.
    */
-  rebaseHead?: string;
+  request?: AgentRequest;
+}
+
+/** A turn that asks the agent to act on a pull request: a rebase, or a fix of the build. */
+export interface AgentRequest {
+  kind: "rebase" | "ci-fix";
+  headSha: string;
+}
+
+const REQUEST_NOUN: Record<AgentRequest["kind"], string> = { rebase: "rebase", "ci-fix": "CI-fix" };
+
+function requestMarker(request: AgentRequest): string {
+  return request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
 }
 
 /** The issue or pull request a reply is posted on. */
@@ -62,16 +75,16 @@ export function defaultReplyTarget(thread: ConductorThread): ReplyTarget {
  * reply that is not posted does not exist. `--body-file -` reads the body from
  * stdin, because a read-only run cannot write a file.
  */
-export function postingInstruction(target: ReplyTarget, rebaseHead?: string): string {
+export function postingInstruction(target: ReplyTarget, request?: AgentRequest): string {
   const command = target.kind === "pr" ? "pr" : "issue";
   const number = String(target.number);
   return [
     `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
       "What you print is discarded; only a posted comment counts.",
     `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
-    rebaseHead === undefined
+    request === undefined
       ? `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`
-      : `End the comment body with the line \`${rebaseMarker(rebaseHead)}\` on its own, and not with any other marker; automata counts the rebase requests with it.`,
+      : `End the comment body with the line \`${requestMarker(request)}\` on its own, and not with any other marker; automata counts the ${REQUEST_NOUN[request.kind]} requests with it.`,
     "Post exactly one comment. Do not approve, merge or close anything.",
     needsHumanInstruction(),
   ].join("\n");
@@ -85,13 +98,20 @@ function needsHumanInstruction(): string {
   );
 }
 
-/** Appended to a rebase turn: what the situation is and what the comment must be. */
-function rebaseInstruction(target: ReplyTarget): string {
-  return [
-    `Pull request #${String(target.number)} has a merge conflict with its base branch.`,
-    "The instructions at the top of this message are the request for the agent. Make the comment that request, " +
-      "in your own words if the thread needs it (for example, name the branches), and do not do the rebase yourself.",
-  ].join("\n");
+/** Appended to a request turn: what the situation is and what the comment must be. */
+function requestInstruction(target: ReplyTarget, request: AgentRequest): string {
+  const number = String(target.number);
+  return request.kind === "rebase"
+    ? [
+        `Pull request #${number} has a merge conflict with its base branch.`,
+        "The instructions at the top of this message are the request for the agent. Make the comment that request, " +
+          "in your own words if the thread needs it (for example, name the branches), and do not do the rebase yourself.",
+      ].join("\n")
+    : [
+        `Pull request #${number} has a failed check.`,
+        "The instructions at the top of this message are the request for the agent. Make the comment that request, " +
+          "in your own words if the thread needs it (for example, name the failed checks), and do not fix the build yourself.",
+      ].join("\n");
 }
 
 /**
@@ -207,8 +227,8 @@ export function composeConductorPrompt(input: ConductorPromptInput): string {
     "Only the messages above exist. Anything from other accounts has been withheld",
     "deliberately — do not ask about it.",
     "",
-    ...(input.rebaseHead === undefined ? [] : [rebaseInstruction(replyTo), ""]),
-    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo, input.rebaseHead),
+    ...(input.request === undefined ? [] : [requestInstruction(replyTo, input.request), ""]),
+    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo, input.request),
   );
   return lines.join("\n");
 }

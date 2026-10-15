@@ -293,10 +293,12 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
 | `prompts.rebase` | built-in | The request the conductor sends to the agent when a watched pull request has a merge conflict. See [conductor.md](conductor.md#rebase-check). Also `automata config set conductor-prompt rebase <text>` and the wizard screen `Prompts → Conductor — Rebase`. |
+| `prompts.ciFix` | built-in | Instructions for the request the conductor sends to the agent when a watched pull request has a failed check. See [conductor.md](conductor.md#ci-fix-check). Also `automata config set conductor-prompt ciFix <text>` and the wizard screen `Prompts → Conductor — CI fix`. |
+| `ciFix.enabled` | `true` | `false` switches the [CI-fix check](conductor.md#ci-fix-check) off. Hand-edited; there is no `config set` key. |
 | `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
-| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). The rebase requests of the [rebase check](conductor.md#rebase-check) have their own counter with the same limit. A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). The requests of the [rebase check](conductor.md#rebase-check) and of the [CI-fix check](conductor.md#ci-fix-check) have their own counters with the same limit. A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
 
 `conductor.watch` is no longer a config key. The watch list is in `.automata/conductor-watch.json`, which is gitignored
 (see [conductor.md](conductor.md#watch-list)). If `config.json` still has `conductor.watch`, the first read copies it
@@ -316,9 +318,10 @@ automata config set conductor-effort claude high
 automata config set conductor-prompt issue conductor-issue.md
 automata config set conductor-prompt pr "Read the checks first."
 automata config set conductor-prompt rebase "Please rebase and push."
+automata config set conductor-prompt ciFix conductor-ci-fix.md
 ```
 
-`conductor-prompt` takes the kind (`issue`, `pr` or `rebase`) followed by prompt text or a `.md` filename. The wizard has the
+`conductor-prompt` takes the kind (`issue`, `pr`, `rebase` or `ciFix`) followed by prompt text or a `.md` filename. The wizard has the
 `conductor-executor`, `conductor-model` and `conductor-effort` set the executor settings; the wizard does not have screens
-for them. The wizard has the same three screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`, `Conductor — Rebase`); they save to
-`.automata/conductor-issue.md`, `.automata/conductor-pr.md` and `.automata/conductor-rebase.md`.
+for them. The wizard has the same four screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`, `Conductor — Rebase`, `Conductor — CI fix`); they save to
+`.automata/conductor-issue.md`, `.automata/conductor-pr.md`, `.automata/conductor-rebase.md` and `.automata/conductor-ci-fix.md`.
