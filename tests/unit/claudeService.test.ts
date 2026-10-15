@@ -295,6 +295,13 @@ describe("buildClaudeArgs readOnly", () => {
     expect(claudeReadOnlyTools().some((tool) => tool.includes("comment"))).toBe(false);
   });
 
+  it("allows `gh run view` to read failed-check logs, but no other `gh run` call", async () => {
+    const { claudeReadOnlyTools } = await import("../../src/claude/claudeService.js");
+    const tools = claudeReadOnlyTools();
+    expect(tools).toContain("Bash(gh run view:*)");
+    expect(tools.some((tool) => tool.startsWith("Bash(gh run") && !tool.startsWith("Bash(gh run view"))).toBe(false);
+  });
+
   it("keeps readOnly through invokeClaudeCode even with yolo", async () => {
     const { invokeClaudeCode } = await import("../../src/claude/claudeService.js");
     mockSpawnSync.mockReturnValue({ status: 0, error: undefined });

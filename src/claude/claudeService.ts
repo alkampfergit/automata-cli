@@ -37,6 +37,7 @@ export function claudeReadOnlyTools(replyTo?: ReadOnlyReplyTarget): string[] {
     "Bash(gh pr view:*)",
     "Bash(gh pr diff:*)",
     "Bash(gh pr checks:*)",
+    "Bash(gh run view:*)",
     "Bash(git status:*)",
   ];
   if (replyTo) {

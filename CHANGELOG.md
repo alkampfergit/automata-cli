@@ -17,6 +17,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   file does not exist, the old `conductor.watch` entries are copied into it once; `config.json` is not rewritten and the
   old key is ignored after that. See `docs/conductor.md` and `docs/config.md`
 
+### Fixed
+
+- The conductor now counts its rebase and CI-fix markers from the allowed users, the accounts it posts as, and not
+  from the agent account. Before, a request was not seen on the next tick and could repeat without reaching the limit.
+  Its read-only run may also use `gh run view`, so the model can read the logs of a failed check
+
 ### Added
 
 - The conductor has a CI-fix check that runs even on an item with the `conductor-blocked` label: when a watched pull

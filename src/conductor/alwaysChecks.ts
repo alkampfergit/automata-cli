@@ -30,37 +30,40 @@ function endingMarker(body: string, prefix: string): string | null {
   return last.startsWith(prefix) && last.endsWith("-->") ? last : null;
 }
 
-/** Only comments of the agent count: another account cannot forge the state of a check. */
-function markerComments(messages: RawMessage[], agentUser: string, prefix: string): string[] {
-  const agent = agentUser.toLowerCase();
+/**
+ * Only comments of a trusted account count: another account cannot forge the state of a check.
+ * The trusted accounts are the allowed users, because the conductor posts the request as one of them.
+ */
+function markerComments(messages: RawMessage[], trustedUsers: string[], prefix: string): string[] {
+  const trusted = new Set(trustedUsers.map((user) => user.toLowerCase()));
   const found: string[] = [];
   for (const message of messages) {
     if (message.kind !== "issue-comment" && message.kind !== "pr-comment") continue;
-    if (message.author.toLowerCase() !== agent) continue;
+    if (!trusted.has(message.author.toLowerCase())) continue;
     const marker = endingMarker(message.body, prefix);
     if (marker !== null) found.push(marker);
   }
   return found;
 }
 
-/** The rebase turns already on the messages. Only comments of the agent count, as for the replies. */
-export function countRebaseTurns(messages: RawMessage[], agentUser: string): number {
-  return markerComments(messages, agentUser, REBASE_MARKER_PREFIX).length;
+/** The rebase turns already on the messages. Only comments of the trusted accounts count. */
+export function countRebaseTurns(messages: RawMessage[], trustedUsers: string[]): number {
+  return markerComments(messages, trustedUsers, REBASE_MARKER_PREFIX).length;
 }
 
 /** True when a rebase turn already ran for this head commit. */
-export function hasRebaseFor(messages: RawMessage[], headSha: string, agentUser: string): boolean {
-  return markerComments(messages, agentUser, REBASE_MARKER_PREFIX).includes(rebaseMarker(headSha));
+export function hasRebaseFor(messages: RawMessage[], headSha: string, trustedUsers: string[]): boolean {
+  return markerComments(messages, trustedUsers, REBASE_MARKER_PREFIX).includes(rebaseMarker(headSha));
 }
 
 /** The CI-fix turns already on the messages. */
-export function countCiFixTurns(messages: RawMessage[], agentUser: string): number {
-  return markerComments(messages, agentUser, CI_FIX_MARKER_PREFIX).length;
+export function countCiFixTurns(messages: RawMessage[], trustedUsers: string[]): number {
+  return markerComments(messages, trustedUsers, CI_FIX_MARKER_PREFIX).length;
 }
 
 /** True when a CI-fix turn already ran for this head commit. */
-export function hasCiFixFor(messages: RawMessage[], headSha: string, agentUser: string): boolean {
-  return markerComments(messages, agentUser, CI_FIX_MARKER_PREFIX).includes(ciFixMarker(headSha));
+export function hasCiFixFor(messages: RawMessage[], headSha: string, trustedUsers: string[]): boolean {
+  return markerComments(messages, trustedUsers, CI_FIX_MARKER_PREFIX).includes(ciFixMarker(headSha));
 }
 
 export type AlwaysSkipReason = "rebase-limit" | "rebase-done" | "ci-fix-limit" | "ci-fix-done";
@@ -80,8 +83,8 @@ export interface AlwaysState {
   maxCiFixes: number;
   /** `conductor.ciFix.enabled`: false switches the CI-fix check off. */
   ciFixEnabled: boolean;
-  /** The only account whose rebase markers count. */
-  agentUser: string;
+  /** The accounts whose markers count: the allowed users, which the conductor posts as. */
+  trustedUsers: string[];
 }
 
 export type AlwaysCheck = (conversation: Conversation, state: AlwaysState) => AlwaysDecision | null;
@@ -95,7 +98,7 @@ export const rebaseCheck: AlwaysCheck = (conversation, state) => {
   if (conversation.kind !== "pr" || conversation.state !== "open") return null;
   const headSha = conversation.headSha;
   if (conversation.mergeable !== "CONFLICTING" || headSha === undefined || headSha.length === 0) return null;
-  if (hasRebaseFor(conversation.messages, headSha, state.agentUser)) {
+  if (hasRebaseFor(conversation.messages, headSha, state.trustedUsers)) {
     return {
       kind: "skip",
       surface: conversation,
@@ -130,7 +133,7 @@ export const ciFixCheck: AlwaysCheck = (conversation, state) => {
   if (conversation.mergeable === "CONFLICTING" || headSha === undefined || headSha.length === 0) return null;
   const failed = conversation.ciFailed ?? [];
   if (failed.length === 0 || conversation.ciPending === true) return null;
-  if (hasCiFixFor(conversation.messages, headSha, state.agentUser)) {
+  if (hasCiFixFor(conversation.messages, headSha, state.trustedUsers)) {
     return {
       kind: "skip",
       surface: conversation,

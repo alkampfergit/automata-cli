@@ -63,7 +63,7 @@ reads `UNKNOWN` again. A pull request that is not watched is not touched.
 
 The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.rebase` as its instructions. The
 model posts that request as a comment to the agent; the agent does the rebase. The comment ends with the marker
-`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. Only a comment of the agent account (`agentUser`) counts, and only when the marker is the last line of the comment; a marker from another account is ignored. A rebase request on a linked pull request runs before an ordinary reply on the issue. The marker gives two rules:
+`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. Only a comment of an allowed user (`allowedUsers`, the accounts the conductor posts as) counts, and only when the marker is the last line of the comment; a marker from another account is ignored. A rebase request on a linked pull request runs before an ordinary reply on the issue. The marker gives two rules:
 
 | Rule | Skip reason | Effect |
 |------|-------------|--------|
@@ -87,8 +87,8 @@ first; a push after the rebase re-arms it. Set `conductor.ciFix.enabled` to `fal
 
 The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.ciFix` as its instructions. The
 model finds the failed checks, posts the request as a comment to the agent, and the agent fixes the build and pushes.
-The comment ends with the marker `<!-- automata:conductor-ci-fix head=<sha> -->`. Only a comment of the agent account
-counts, and only when the marker is the last line of the comment. The marker gives two rules:
+The comment ends with the marker `<!-- automata:conductor-ci-fix head=<sha> -->`. Only a comment of an allowed user
+(`allowedUsers`) counts, and only when the marker is the last line of the comment. The marker gives two rules:
 
 | Rule | Skip reason | Effect |
 |------|-------------|--------|
@@ -206,7 +206,7 @@ the lock is taken.
 The run is **read-only**:
 
 - Claude runs with `--permission-mode dontAsk`, may only read and search inside the working directory, look at a thread with `gh issue view`,
-  `gh pr view`, `gh pr diff` and `gh pr checks`, use `git status`, and post with
+  `gh pr view`, `gh pr diff`, `gh pr checks` and `gh run view` (for the failed-check logs), use `git status`, and post with
   `gh issue comment <n> --body-file -` or `gh pr comment <n> --body-file -` for the one reply target only. Comments on
   any other number are denied. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
   a file. `Edit`, `Write` and `NotebookEdit` are denied. The run sets `GH_REPO` to the watched repository, and `gh`

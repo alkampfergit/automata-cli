@@ -728,7 +728,7 @@ describe("conductor rebase check", () => {
   });
 
   it("runs at most once per head commit", async () => {
-    watchingPr("CONFLICTING", [...spoke, comment("bot", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
+    watchingPr("CONFLICTING", [...spoke, comment("alice", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
     await run();
     expect(mockRunClaude).not.toHaveBeenCalled();
     expect(stdout).toMatch(/already requested for head commit abc1234/);
@@ -742,7 +742,7 @@ describe("conductor rebase check", () => {
     expect(mockRunClaude).toHaveBeenCalledOnce();
 
     mockRunClaude.mockClear();
-    const rebases = [1, 2].map((i) => comment("bot", `2026-10-02T0${String(i)}:00:00Z`, `r\n${rebaseMark(`old${String(i)}`)}`));
+    const rebases = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${rebaseMark(`old${String(i)}`)}`));
     const answer = comment("alice", "2026-10-03T00:00:00Z", "ok");
     watchingPr("CONFLICTING", [...spoke, ...rebases, answer], ["conductor-blocked"], { maxRepliesPerItem: 2 });
     await run();
@@ -836,14 +836,14 @@ describe("conductor CI-fix check", () => {
   });
 
   it("runs at most once per head commit", async () => {
-    watchingPr(FAILED, [...spoke, comment("bot", "2026-10-01T10:00:00Z", `fix\n${fixMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
+    watchingPr(FAILED, [...spoke, comment("alice", "2026-10-01T10:00:00Z", `fix\n${fixMark(SHA)}`), comment("alice", "2026-10-01T11:00:00Z", "ok")]);
     await run();
     expect(mockRunClaude).not.toHaveBeenCalled();
     expect(stdout).toMatch(/fix was already requested for head commit abc1234/);
   });
 
   it("has its own limit", async () => {
-    const fixes = [1, 2].map((i) => comment("bot", `2026-10-02T0${String(i)}:00:00Z`, `f\n${fixMark(`old${String(i)}`)}`));
+    const fixes = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `f\n${fixMark(`old${String(i)}`)}`));
     watchingPr(FAILED, [...spoke, ...fixes, comment("alice", "2026-10-03T00:00:00Z", "ok")], { maxRepliesPerItem: 2 });
     await run();
     expect(mockRunClaude).not.toHaveBeenCalled();
