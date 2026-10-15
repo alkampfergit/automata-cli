@@ -85,7 +85,12 @@ numbers:
 ```
 
 The file is machine state, not configuration. It is in `.gitignore`, so `add`, `remove` and the pruning of a tick do
-not change `git status`, and they never write `.automata/config.json`. A missing file, or a file that cannot be read
+not change `git status`, and they never write `.automata/config.json`.
+
+**Add `.automata/conductor-watch.json` to your repository's ignore rules.** This repository ignores it in its own
+`.gitignore`, but that does nothing for a repository where automata is installed. `AUTOMATA_OWN_PATHS` only keeps
+automata's own cleanliness checks from counting the file. Without the ignore rule, `add` or the migration leaves an
+untracked file in `git status`. A missing file, or a file that cannot be read
 or parsed, is an empty list. Entries that are not positive integers are ignored.
 
 **Migration.** Older versions kept the list in `.automata/config.json` as `conductor.watch`. When
