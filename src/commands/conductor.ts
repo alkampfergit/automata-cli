@@ -341,16 +341,16 @@ async function conductItem(
   const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
   const copilotTurn = owed.kind === "reply" && owed.copilot === true;
   if ((copilotTurn || request !== undefined) && dryRun === undefined && agentIsWorking(config)) {
-    const what = copilotTurn ? "has open Copilot review threads" : request?.kind === "ci-fix" ? "has a failed check" : "has a merge conflict";
+    const what = waitingReason(copilotTurn, request);
     process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
     return "idle";
   }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
-  const frame = frameFor(request === undefined ? thread.kind : request.kind === "ci-fix" ? "ciFix" : "rebase", config);
+  const frame = frameFor(frameKey(thread.kind, request), config);
   const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, request });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
-  const need = request === undefined ? "a reply" : request.kind === "rebase" ? "a rebase request" : "a CI-fix request";
+  const need = needLabel(request);
   process.stdout.write(`Conductor: ${label} needs ${need} on ${where}; running ${describeConductorExecution(execution)}.\n`);
   if (dryRun) return conductDryRunItem(prompt, execution, label, where, replyTo, dryRun);
   const captured = captureStdout();
@@ -789,3 +789,21 @@ conductorCommand
   .action(() => {
     exitWith(runWatchList());
   });
+
+/** Why a turn waits for the agent: an open Copilot thread, a failed check or a merge conflict. */
+function waitingReason(copilotTurn: boolean, request: AgentRequest | undefined): string {
+  if (copilotTurn) return "has open Copilot review threads";
+  return request?.kind === "ci-fix" ? "has a failed check" : "has a merge conflict";
+}
+
+/** The prompt frame of a turn: the thread kind, or the kind of the request to the agent. */
+function frameKey(threadKind: "issue" | "pr", request: AgentRequest | undefined): "issue" | "pr" | "rebase" | "ciFix" {
+  if (request === undefined) return threadKind;
+  return request.kind === "ci-fix" ? "ciFix" : "rebase";
+}
+
+/** What the item is owed, for the progress line. */
+function needLabel(request: AgentRequest | undefined): string {
+  if (request === undefined) return "a reply";
+  return request.kind === "rebase" ? "a rebase request" : "a CI-fix request";
+}
