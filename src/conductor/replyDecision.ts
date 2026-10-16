@@ -2,9 +2,19 @@ import { isWorkingMarker } from "../github/workingMarker.js";
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
 import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
-import { BLOCKED_LABEL, REPLY_MARKER, countConductorReplies, type LoopState } from "./loopSafety.js";
+import {
+  BLOCKED_LABEL,
+  REPLY_MARKER,
+  countConductorReplies,
+  type LoopState,
+} from "./loopSafety.js";
 import { newestCopilotAt, openCopilotThreads } from "./copilot.js";
-import { countRebaseTurns, runAlwaysChecks, type AlwaysDecision, type AlwaysSkipReason } from "./alwaysChecks.js";
+import {
+  countRebaseTurns,
+  runAlwaysChecks,
+  type AlwaysDecision,
+  type AlwaysSkipReason,
+} from "./alwaysChecks.js";
 
 /**
  * Pure rule for the conductor: does a watched item need a reply from an allowed
@@ -101,7 +111,8 @@ function copilotTurn(conversation: Conversation): ConductorDecision | null {
   if (copilotAt === null || isWatchClosed(conversation.state)) return null;
   let lastReply = "";
   for (const message of conversation.messages) {
-    if (message.body.includes(REPLY_MARKER) && message.createdAt > lastReply) lastReply = message.createdAt;
+    if (message.body.includes(REPLY_MARKER) && message.createdAt > lastReply)
+      lastReply = message.createdAt;
   }
   if (copilotAt <= lastReply) return null;
   return {
@@ -113,9 +124,46 @@ function copilotTurn(conversation: Conversation): ConductorDecision | null {
   };
 }
 
+/**
+ * The `working…` marker is not a message that waits for an answer: it says the agent
+ * is answering. It is kept apart from the agent's real messages. `workingSince` is the
+ * marker time when a marker is newer than every real agent message and no human wrote
+ * after it; a human who wrote after it has been answered, or will be by the run itself,
+ * so the reference stays the agent's real message, as without a marker.
+ */
+function splitAgentMessages(
+  relevant: RawMessage[],
+  agent: string,
+): { newest: RawMessage | null; workingSince: string | null } {
+  let newest: RawMessage | null = null;
+  let newestMarker: RawMessage | null = null;
+  for (const message of relevant) {
+    if (message.author.toLowerCase() !== agent) continue;
+    if (isWorkingMarker(message.body)) {
+      if (newestMarker === null || message.createdAt > newestMarker.createdAt)
+        newestMarker = message;
+    } else if (newest === null || message.createdAt > newest.createdAt) {
+      newest = message;
+    }
+  }
+  if (newestMarker === null || (newest !== null && newestMarker.createdAt <= newest.createdAt)) {
+    return { newest, workingSince: null };
+  }
+  const markerAt = newestMarker.createdAt;
+  const humanAfter = relevant.some(
+    (message) => message.author.toLowerCase() !== agent && message.createdAt > markerAt,
+  );
+  return { newest, workingSince: humanAfter ? null : markerAt };
+}
+
 function decideByAgentMessage(conversation: Conversation, p: Participants): ConductorDecision {
   if (isWatchClosed(conversation.state)) {
-    return { kind: "skip", surface: conversation, reason: "closed", detail: "the item is closed or merged" };
+    return {
+      kind: "skip",
+      surface: conversation,
+      reason: "closed",
+      detail: "the item is closed or merged",
+    };
   }
 
   const agent = p.agentUser.toLowerCase();
@@ -125,33 +173,14 @@ function decideByAgentMessage(conversation: Conversation, p: Participants): Cond
     return author === agent || allowed.has(author);
   });
 
-  // The `working…` marker is not a message that waits for an answer: it says the
-  // agent is answering. It is kept apart from the agent's real messages.
-  let newest: RawMessage | null = null;
-  let newestMarker: RawMessage | null = null;
-  for (const message of relevant) {
-    if (message.author.toLowerCase() !== agent) continue;
-    if (isWorkingMarker(message.body)) {
-      if (newestMarker === null || message.createdAt > newestMarker.createdAt) newestMarker = message;
-    } else if (newest === null || message.createdAt > newest.createdAt) {
-      newest = message;
-    }
-  }
-  if (newestMarker !== null && (newest === null || newestMarker.createdAt > newest.createdAt)) {
-    const markerAt = newestMarker.createdAt;
-    const humanAfter = relevant.some(
-      (message) => message.author.toLowerCase() !== agent && message.createdAt > markerAt,
-    );
-    // A human who wrote after the marker has already been answered or will be by the run itself;
-    // the reference stays the agent's real message, as without a marker.
-    if (!humanAfter) {
-      return {
-        kind: "skip",
-        surface: conversation,
-        reason: "agent-working",
-        detail: `a do-work run is in flight (working marker at ${markerAt})`,
-      };
-    }
+  const { newest, workingSince } = splitAgentMessages(relevant, agent);
+  if (workingSince !== null) {
+    return {
+      kind: "skip",
+      surface: conversation,
+      reason: "agent-working",
+      detail: `a do-work run is in flight (working marker at ${workingSince})`,
+    };
   }
   if (newest === null) {
     return {
@@ -209,8 +238,10 @@ export function decideConductorReply(
       ? { rebases: 0, maxRebases: Infinity, agentUser: p.agentUser }
       : { rebases: loop.rebases, maxRebases: loop.maxRebases, agentUser: p.agentUser },
   );
-  const decided = conversations.map((conversation) =>
-    always.find((decision) => decision.kind === "rebase" && decision.surface === conversation) ?? decideConversation(conversation, p),
+  const decided = conversations.map(
+    (conversation) =>
+      always.find((decision) => decision.kind === "rebase" && decision.surface === conversation) ??
+      decideConversation(conversation, p),
   );
   const stop = loop === undefined ? null : loopStop(loop);
   const decisions = decided.map((decision): ConductorDecision =>
@@ -224,7 +255,10 @@ export function decideConductorReply(
 
 function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: string } | null {
   if (loop.blocked) {
-    return { reason: "blocked", detail: `the item has the ${BLOCKED_LABEL} label; remove it to resume` };
+    return {
+      reason: "blocked",
+      detail: `the item has the ${BLOCKED_LABEL} label; remove it to resume`,
+    };
   }
   if (loop.replies >= loop.maxReplies) {
     return {
@@ -236,12 +270,20 @@ function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: strin
 }
 
 /** The loop-safety state of an item from its conversations, its labels and the configured limit. */
-export function loopStateOf(conversations: Conversation[], labels: string[], maxReplies: number, agentUser: string): LoopState {
+export function loopStateOf(
+  conversations: Conversation[],
+  labels: string[],
+  maxReplies: number,
+  agentUser: string,
+): LoopState {
   return {
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
     replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
     maxReplies,
-    rebases: countRebaseTurns(conversations.flatMap((conversation) => conversation.messages), agentUser),
+    rebases: countRebaseTurns(
+      conversations.flatMap((conversation) => conversation.messages),
+      agentUser,
+    ),
     maxRebases: maxReplies,
   };
 }
