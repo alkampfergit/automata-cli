@@ -1118,3 +1118,54 @@ describe("addLabel", () => {
     expect(() => addLabel({ number: 7, kind: "issue" }, "x", "d")).toThrow(/403/);
   });
 });
+
+describe("getStorySource and closeIssue", () => {
+  const issueJson = (number: number, extra: object = {}) => ({ number, state: "open", title: `T${String(number)}`, ...extra });
+
+  it("reads the native sub-issues of this repository, in order", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json(issueJson(1, { body: "- [ ] #9" })))
+      .mockReturnValueOnce(
+        json([
+          issueJson(4, { repository_url: "https://api.github.com/repos/acme/widget", labels: [{ name: "x" }], assignees: [{ login: "bot" }] }),
+          issueJson(5, { repository_url: "https://api.github.com/repos/other/repo" }),
+          issueJson(6, { state: "closed", repository_url: "https://api.github.com/repos/acme/widget" }),
+        ]),
+      );
+    const { getStorySource } = await import("../../src/github/ghWorkService.js");
+    const source = getStorySource(1);
+    expect(source.via).toBe("sub-issues");
+    expect(source.children.map((c) => [c.number, c.state])).toEqual([[4, "open"], [6, "closed"]]);
+    expect(source.children[0]).toMatchObject({ labels: ["x"], assignees: ["bot"] });
+    expect(calls()[2].args[1]).toBe("repos/acme/widget/issues/1/sub_issues?per_page=100&page=1");
+  });
+
+  it("falls back to the task list, skipping the parent and pull requests", async () => {
+    mockSpawnSync
+      .mockReturnValueOnce(REMOTE)
+      .mockReturnValueOnce(json(issueJson(1, { body: "- [ ] #1\n- [x] #8\n- [ ] #9" })))
+      .mockReturnValueOnce(json([]))
+      .mockReturnValueOnce(json(issueJson(8, { state: "closed" })))
+      .mockReturnValueOnce(json(issueJson(9, { pull_request: {} })));
+    const { getStorySource } = await import("../../src/github/ghWorkService.js");
+    const source = getStorySource(1);
+    expect(source.via).toBe("task-list");
+    expect(source.children.map((c) => c.number)).toEqual([8]);
+  });
+
+  it("reports no children for an issue with neither, and for a pull request", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(json(issueJson(1, { body: "" }))).mockReturnValueOnce(json([]));
+    const { getStorySource } = await import("../../src/github/ghWorkService.js");
+    expect(getStorySource(1)).toMatchObject({ via: "none", children: [] });
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(json(issueJson(2, { pull_request: {} })));
+    expect(getStorySource(2).via).toBe("none");
+  });
+
+  it("closes an issue with one call that carries the comment", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { closeIssue } = await import("../../src/github/ghWorkService.js");
+    closeIssue(3, "done");
+    expect(calls().map((c) => c.args)).toEqual([["issue", "close", "3", "--comment", "done"]]);
+  });
+});
