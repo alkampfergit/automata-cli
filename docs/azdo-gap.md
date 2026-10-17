@@ -11,6 +11,7 @@ Status legend: ✅ supported by azdo-cli · ⚠️ partial · ❌ missing in azd
 |---|---|
 | `automata git get-pr-info` | `azdo pr status --json` (current branch), `azdo pr list --branch` + `azdo pipeline get-runs --pr` (other branches); see [git.md](git.md#azure-devops-mode) |
 | `automata git finish-feature` | `azdo pr status --json`, `status: "completed"` confirms the merge |
+| `automata implement-next` | `azdo list-items`, `azdo assign`, `azdo comments add/edit`, PR wiring through the write adapter; see [implement-next.md](implement-next.md#azure-devops-mode) (azdo-cli 0.22.0 or newer) |
 
 Everything else short-circuits when `remoteType` is `azdo`. The epic tracked in issue #89 closes the gaps below.
 
@@ -35,7 +36,7 @@ Everything else short-circuits when `remoteType` is `azdo`. The epic tracked in 
 | Draft PR, explicit base | `gh pr create --draft --base` | `pr open` always targets `develop` | ❌ |
 | PRs → closing issues, bulk | GraphQL `closingIssuesReferences` | none | ❌ |
 
-Commands blocked by a ❌ row (`implement-next`, `do-work`, `execute-prompt check-issue`) stay unavailable in
+Commands blocked by a ❌ row (`do-work`, `execute-prompt check-issue`) stay unavailable in
 Azure DevOps mode until their child issue lands. `execute-prompt fix-comments` and `git get-pr-comments` work in
 Azure DevOps mode through `azdo pr comments` (✅ above; see [git.md](git.md#azure-devops-mode-1)).
 
