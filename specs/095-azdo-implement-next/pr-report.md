@@ -22,3 +22,11 @@ to the work item. The GitHub path is unchanged.
 
 - **Unit**: discovery mapping and closed-state filter, comment edit, command flow in Azure DevOps mode, wizard labels.
 - **Regression**: the existing GitHub `implement-next` tests run unchanged.
+
+## Notes
+
+- Needs azdo-cli 0.22.0 or newer for `list-items` and `comments edit`; the prerequisite check still accepts 0.20.0 so
+  `git get-pr-info` is unaffected. An older `azdo` fails with its own "unknown command" message.
+- `postIssueComment` now returns an edit reference (comment id for Azure DevOps, URL for GitHub) and
+  `editIssueComment` was added to `RemoteWriteService`.
+- `do-work` prompts are not changed here (#99).

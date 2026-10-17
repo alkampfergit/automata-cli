@@ -304,3 +304,7 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 ## Conductor loop safety (#122)
 
 - The conductor's run is read-only; anything it must change on GitHub (labels) is signalled in its output and applied by automata. Replies are counted from a body marker, not from a state file.
+
+- **Wiring a command to the Azure DevOps backend: go through `selectWriteService`, not a second code path**: the GitHub
+  branch of `RemoteWriteService` calls the same `gh` helpers as before, so the existing `spawnSync`-mocked GitHub tests
+  keep passing unchanged and the Azure DevOps tests dispatch on `args[0]` in one `mockImplementation`. Confirmed: 2026-10-17.

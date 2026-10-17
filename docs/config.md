@@ -15,6 +15,11 @@ Launch the interactive configuration wizard. Use arrow keys to move between menu
 | Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue`, `doWork.prompts.*`, `conductor.prompts.*` |
 | Issue Watch | `allowedUsers`, `agentUser` |
 
+When the remote is Azure DevOps, the Implement-Next screens read "Work Item Discovery Technique" and offer **By Tag**,
+**By Assigned To** and **By Title Contains**. They store the same values as GitHub's **By Label**, **By Assignee** and
+**By Title Contains** (`label`, `assignee`, `title-contains`): `label` is matched against the work item tag and
+`assignee` against Assigned To. See [Azure DevOps mode](implement-next.md#azure-devops-mode).
+
 ```bash
 automata config
 ```

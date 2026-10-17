@@ -138,14 +138,14 @@ describe("requestReview", () => {
 });
 
 describe("postIssueComment", () => {
-  it("posts markdown and returns the url when reported", () => {
+  it("posts markdown and returns the comment id as the edit reference", () => {
     mockSpawnSync.mockReturnValue(ok(JSON.stringify({ commentId: 3, url: "https://x/3" })));
-    expect(svc.postIssueComment(42, "hi")).toBe("https://x/3");
+    expect(svc.postIssueComment(42, "hi")).toBe("3");
     expect(calls()[0]).toEqual(["comments", "add", "42", "hi", "--markdown", "--json", "--no-update-check"]);
   });
 
-  it("returns undefined without a url or with unparseable output", () => {
-    mockSpawnSync.mockReturnValue(ok(JSON.stringify({ commentId: 3 })));
+  it("returns undefined without a comment id or with unparseable output", () => {
+    mockSpawnSync.mockReturnValue(ok(JSON.stringify({ url: "https://x/3" })));
     expect(svc.postIssueComment(42, "hi")).toBeUndefined();
     mockSpawnSync.mockReturnValue(ok("nope"));
     expect(svc.postIssueComment(42, "hi")).toBeUndefined();
@@ -154,6 +154,20 @@ describe("postIssueComment", () => {
   it("refuses an oversized body instead of truncating it", () => {
     expect(() => svc.postIssueComment(42, "x".repeat(AZDO_MAX_ARGV_COMMENT_CHARS + 1))).toThrow(/limited to/);
     expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("editIssueComment", () => {
+  it("sends the new text on stdin as markdown", () => {
+    mockSpawnSync.mockReturnValue(ok());
+    svc.editIssueComment(42, "3", "Working on this in PR #7");
+    expect(calls()[0]).toEqual(["comments", "edit", "42", "3", "--file", "-", "--markdown", "--no-update-check"]);
+    expect(mockSpawnSync.mock.calls[0][2].input).toBe("Working on this in PR #7");
+  });
+
+  it("throws azdo's stderr on failure", () => {
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "denied", status: 1 });
+    expect(() => svc.editIssueComment(42, "3", "x")).toThrow("denied");
   });
 });
 

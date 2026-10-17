@@ -110,11 +110,19 @@ export const azdoWriteService: RemoteWriteService = {
       `Failed to post a comment on work item #${String(issueNumber)}.`,
     );
     try {
-      const url = (JSON.parse(stdout) as { url?: unknown }).url;
-      return typeof url === "string" ? url : undefined;
+      const commentId = (JSON.parse(stdout) as { commentId?: unknown }).commentId;
+      return typeof commentId === "number" && commentId > 0 ? String(commentId) : undefined;
     } catch {
       return undefined;
     }
+  },
+
+  editIssueComment(issueNumber, commentId, body) {
+    runAzdo(
+      ["comments", "edit", String(issueNumber), commentId, "--file", "-", "--markdown"],
+      `Failed to edit comment ${commentId} on work item #${String(issueNumber)}.`,
+      body,
+    );
   },
 
   postPrComment(prNumber, body) {
