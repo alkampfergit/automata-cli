@@ -19,9 +19,11 @@ import {
   getPrChecks,
   getPrSurface,
   getRepoSlug,
+  getStorySource,
   getWatchTarget,
   addLabel,
   postMarker,
+  type StorySource,
   type WatchTarget,
 } from "../github/ghWorkService.js";
 import type { Participants } from "../github/conversation.js";
@@ -62,7 +64,8 @@ import type { LoopState } from "../conductor/loopSafety.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
-import { readWatch, writeWatch } from "../conductor/watchStore.js";
+import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
+import { checkStories, conductStories, listStoryLines } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -412,6 +415,10 @@ export function runWatchAdd(rawId: string): number {
   try {
     const target = getWatchTarget(id);
     if (target.state === "closed") return fail(`${describe(target)} is closed; nothing to watch.`);
+    if (target.kind === "issue") {
+      const story = getStorySource(id);
+      if (story.children.length > 0) return addStory(id, story, technique);
+    }
     // Resolve the linked PRs first: a failure here must leave GitHub untouched.
     const followed =
       target.kind === "issue"
@@ -427,10 +434,30 @@ export function runWatchAdd(rawId: string): number {
   }
 }
 
+/** The parent has children: store it as a story. Only the children are given to `do-work`, one at a time. */
+function addStory(id: number, story: StorySource, technique: string): number {
+  if (technique === "title-contains") {
+    return fail("issueDiscoveryTechnique `title-contains` cannot be applied to an existing item; use `label` or `assignee`.");
+  }
+  const stories = readStories();
+  writeStories(stories.includes(id) ? stories : [...stories, id]);
+  const first = story.children.find((child) => child.state === "open");
+  process.stdout.write(
+    `Watching story #${String(id)} (${story.title}): ${String(story.children.length)} children via ${story.via}; ` +
+      `${first === undefined ? "all are closed, so a tick closes it" : `first open child is #${String(first.number)}`}.\n`,
+  );
+  return 0;
+}
+
 export function runWatchRemove(rawId: string): number {
   const id = parseWatchId(rawId);
   if (id === null) return fail(`"${rawId}" is not an issue or pull request number.`);
   const before = readWatch();
+  if (readStories().includes(id)) {
+    writeStories(withoutWatched(readStories(), id));
+    process.stdout.write(`Stopped watching story #${String(id)}.\n`);
+    return 0;
+  }
   if (!before.includes(id)) return fail(`#${String(id)} is not on the watch list.`);
   updateWatch((current) => withoutWatched(current, id));
   process.stdout.write(`Stopped watching #${String(id)}.\n`);
@@ -441,10 +468,12 @@ export function runWatchList(): number {
   const config = loadGitHubConfig();
   if (typeof config === "number") return config;
   const watch = readWatch();
-  if (watch.length === 0) {
+  const storyLines = listStoryLines(config, onceLinkMap());
+  if (watch.length === 0 && storyLines.length === 0) {
     process.stdout.write("The watch list is empty.\n");
     return 0;
   }
+  for (const line of storyLines) process.stdout.write(`${line}\n`);
   for (const id of watch) {
     try {
       process.stdout.write(`${describe(getWatchTarget(id))}\n`);
@@ -577,7 +606,7 @@ function runConductorCheck(): number {
     "problem" in checked
       ? buildConductorCheck({
           generatedAt, repo, configProblem: checked.problem, identity: "", execution: "",
-          lock: { kind: "free" }, staleMinutes: DEFAULT_DO_WORK.lockStaleMinutes, watched: [],
+          lock: { kind: "free" }, staleMinutes: DEFAULT_DO_WORK.lockStaleMinutes, watched: [], stories: [],
         })
       : buildConductorCheck({
           generatedAt, repo, configProblem: null,
@@ -586,6 +615,7 @@ function runConductorCheck(): number {
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
           watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), checked.config.conductor?.ciFix?.enabled !== false, linkMap, covered.get(id))),
+          stories: checkStories(checked.config, linkMap),
         });
   process.stdout.write(report.text);
   return report.exitCode;
@@ -625,6 +655,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
       failed++;
     }
   }
+  failed += conductStories(config, context.linkMap, true).failed;
   return failed > 0 ? 1 : 0;
 }
 
@@ -747,7 +778,8 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
         failed++;
       }
     }
-    return { code: failed > 0 ? 1 : 0, open: watch.length };
+    const stories = conductStories(config, linkMap, false);
+    return { code: failed + stories.failed > 0 ? 1 : 0, open: watch.length + stories.open };
   } finally {
     lock.handle.release();
   }
@@ -771,7 +803,7 @@ export const conductorCommand = new Command("conductor")
 
 conductorCommand
   .command("add <id>")
-  .description("Watch an issue or pull request and make do-work pick it up (an issue also follows its linked PR)")
+  .description("Watch an issue or pull request and make do-work pick it up (an issue also follows its linked PR; a parent with children becomes a story)")
   .action((id: string) => {
     exitWith(runWatchAdd(id));
   });

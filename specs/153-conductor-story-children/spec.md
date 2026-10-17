@@ -27,7 +27,7 @@ request, or was started, the conductor waits. When the child is closed, the next
 ### User Story 3 - Finish and stop (Priority: P2)
 
 When all children are closed, the conductor comments on the parent, closes it and drops it from the stories. If the
-first open child, or its open pull request, has the `conductor-blocked` label, the story stops and the conductor does
+first open child has the `conductor-blocked` label, the story stops and the conductor does
 nothing on GitHub until a person removes the label.
 
 ### User Story 4 - See the state (Priority: P2)
@@ -44,8 +44,7 @@ next, which is waiting and which is blocked. A closed parent is pruned from the 
 - **FR-003**: Each child has one state: `closed`, `blocked`, `in review` (open pull request), `started` (discovery
   applied, no pull request), `next` (to be started), `queued` (after the first open child).
 - **FR-004**: A tick applies the discovery setting only to a `next` child. The tick never runs a model for a story.
-- **FR-005**: A blocked first open child stops the story silently. A pull request with the label blocks its child,
-  and the conductor applies the label to the child too.
+- **FR-005**: A first open child with the `conductor-blocked` label stops the story silently.
 - **FR-006**: When all children are closed, one `gh issue close --comment` closes the parent; it is dropped from the stories.
 - **FR-007**: `--dry-run` and `--check` change nothing. `--automatic` counts the stories as open items.
 - **FR-008**: Documented in `docs/conductor.md`; entry in `CHANGELOG.md` under `Unreleased`.
@@ -57,8 +56,8 @@ next, which is waiting and which is blocked. A closed parent is pruned from the 
 - [AUTO] Children are not stored: reading them each tick keeps the story true when a person edits the parent.
 - [AUTO] The parent is not given the discovery label: only its children are implemented.
 - [AUTO] Sub-issues of other repositories are ignored: `do-work` works on this repository only.
-- [AUTO] "Blocked" means the label `conductor-blocked` on the child or its open pull request; a person sets it, or the
-  conductor does when a watched item stops.
+- [AUTO] "Blocked" means the label `conductor-blocked` on the child; a person sets it, or the conductor does when it
+  stops on that child as a watched item. A label on a pull request alone does not block: the story already waits for it.
 - [AUTO] Discovery technique `title-contains` cannot be applied; `add` fails for a story as it does for an item.
 - [AUTO] A story with zero children after enrolment is never completed: with no children, nothing is a story.
 
