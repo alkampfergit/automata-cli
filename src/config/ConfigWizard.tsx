@@ -41,6 +41,19 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
   { label: "By Title Contains", value: "title-contains" },
 ];
 
+/** Azure DevOps names for the same three techniques: the stored keys do not change. */
+const AZDO_TECHNIQUE_LABELS: Record<IssueDiscoveryTechnique, string> = {
+  label: "By Tag",
+  assignee: "By Assigned To",
+  "title-contains": "By Title Contains",
+};
+
+function techniqueOptions(remote: RemoteType): { label: string; value: IssueDiscoveryTechnique }[] {
+  return remote === "azdo"
+    ? TECHNIQUE_OPTIONS.map((o) => ({ ...o, label: AZDO_TECHNIQUE_LABELS[o.value] }))
+    : TECHNIQUE_OPTIONS;
+}
+
 const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
   { label: "Claude Code", value: "claude" },
   { label: "Codex", value: "codex" },
@@ -728,7 +741,7 @@ export function ConfigWizard() {
     }
   });
 
-  const techLabel = TECHNIQUE_OPTIONS.find((o) => o.value === pendingTechnique)?.label ?? pendingTechnique;
+  const techLabel = techniqueOptions(pendingRemote).find((o) => o.value === pendingTechnique)?.label ?? pendingTechnique;
 
   /**
    * The text-entry screens as data. Sixteen near-identical JSX blocks were what
@@ -890,8 +903,8 @@ export function ConfigWizard() {
       hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
     },
     technique: {
-      title: "Implement-Next — Issue Discovery Technique",
-      options: TECHNIQUE_OPTIONS.map((o) => o.label),
+      title: `Implement-Next — ${pendingRemote === "azdo" ? "Work Item" : "Issue"} Discovery Technique`,
+      options: techniqueOptions(pendingRemote).map((o) => o.label),
       index: selectedTechIndex,
       hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
     },

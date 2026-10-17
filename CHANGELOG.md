@@ -10,6 +10,14 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- `implement-next` works in Azure DevOps mode (`remoteType: azdo`, azdo-cli 0.22.0 or newer). It finds work items with
+  `azdo list-items` (`label` is a tag, `assignee` is Assigned To), assigns the chosen one, posts a `working` comment,
+  and after the run edits that comment, links the pull request with `AB#<id>` and, with `--ask-copilot-review`, adds
+  `agentUser` as reviewer. The prompt tells the agent to open the pull request with `azdo pr open`. The `automata config`
+  wizard shows Azure DevOps wording for the discovery technique. See `docs/implement-next.md`
+
 ### Changed
 
 - The conductor watch list moved from `conductor.watch` in `.automata/config.json` to `.automata/conductor-watch.json`,

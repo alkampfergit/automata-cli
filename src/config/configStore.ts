@@ -151,6 +151,19 @@ export const DEFAULT_CLAUDE_SYSTEM_PROMPT =
   "Make minimal, targeted changes that satisfy the requirements. " +
   "Run tests and linting before finishing.";
 
+/**
+ * Appended to the `implement-next` prompt when `remoteType` is `azdo`: the default system prompt names no host, but a
+ * custom one may, and the pull request must still be opened and linked the Azure DevOps way.
+ */
+export function azdoPrInstructions(workItemId: number): string {
+  return (
+    "This repository is hosted on Azure DevOps. " +
+    `When the work is done, open the pull request with \`azdo pr open --work-item ${String(workItemId)}\` ` +
+    `and put \`AB#${String(workItemId)}\` in its description. ` +
+    "Do not use `gh pr create`, and do not write `Closes #N`: Azure DevOps ignores both."
+  );
+}
+
 export const DEFAULT_FIX_COMMENTS_PROMPT =
   "You are an expert software engineer reviewing a pull request. " +
   "Below are the open review comments left by reviewers on this PR. " +
