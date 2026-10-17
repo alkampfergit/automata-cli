@@ -12,6 +12,7 @@ const base: ConductorCheckInput = {
   lock: { kind: "free" },
   staleMinutes: 30,
   watched: [],
+  stories: [],
 };
 
 describe("buildConductorCheck", () => {
@@ -70,5 +71,27 @@ describe("extractDryRunReply", () => {
   it("returns null for no reply", () => {
     expect(extractDryRunReply("claude", JSON.stringify({ type: "assistant" }))).toBeNull();
     expect(extractDryRunReply("codex", "  \n")).toBeNull();
+  });
+});
+
+describe("buildConductorCheck stories", () => {
+  it("shows no Stories section without a story", () => {
+    expect(buildConductorCheck(base).text).not.toMatch(/Stories/);
+  });
+
+  it("lists each story, and a story that cannot be read is a problem", () => {
+    const check = buildConductorCheck({
+      ...base,
+      stories: [
+        { id: 3, title: "Epic", state: "open", lines: ["child #4 is next; a tick starts it", "  #4 next: A"] },
+        { id: 8, state: "closed", title: "Old", lines: [] },
+        { id: 9, unavailable: "boom" },
+      ],
+    });
+    expect(check.text).toMatch(/Stories \(3\)/);
+    expect(check.text).toMatch(/story #3 \(Epic\): child #4 is next/);
+    expect(check.text).toMatch(/story #8: closed, a tick would drop it/);
+    expect(check.exitCode).toBe(1);
+    expect(check.problems[0].summary).toMatch(/story #9 could not be read: boom/);
   });
 });

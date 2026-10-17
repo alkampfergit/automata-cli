@@ -11,6 +11,9 @@ let watchState: number[] = [];
 const mockWriteWatch = vi.fn((list: number[]) => {
   watchState = list;
 });
+let storyState: number[] = [];
+const mockStorySource = vi.fn();
+const mockCloseIssue = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
@@ -33,10 +36,16 @@ vi.mock("../../src/config/configStore.js", async (importOriginal) => {
 vi.mock("../../src/conductor/watchStore.js", () => ({
   readWatch: () => watchState,
   writeWatch: (list: number[]) => mockWriteWatch(list),
+  readStories: () => storyState,
+  writeStories: (list: number[]) => {
+    storyState = list;
+  },
 }));
 vi.mock("../../src/github/ghWorkService.js", () => ({
   getAuthenticatedLogin: () => mockLogin(),
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
+  getStorySource: (...a: unknown[]) => mockStorySource(...a),
+  closeIssue: (...a: unknown[]) => mockCloseIssue(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
   postMarker: (...a: unknown[]) => mockPostMarker(...a),
@@ -75,6 +84,8 @@ beforeEach(() => {
   stdout = "";
   stderr = "";
   watchState = [];
+  storyState = [];
+  mockStorySource.mockReturnValue({ via: "none", state: "open", title: "", children: [] });
   vi.spyOn(process.stdout, "write").mockImplementation((s) => ((stdout += String(s)), true));
   vi.spyOn(process.stderr, "write").mockImplementation((s) => ((stderr += String(s)), true));
   mockReadConfig.mockReturnValue(CONFIG);
@@ -868,5 +879,118 @@ describe("conductor CI-fix check", () => {
     await run();
     expect(stdout).toMatch(/has a failed check, but the agent is working/);
     expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+});
+
+describe("conductor stories", () => {
+  const sub = (number: number, patch: Record<string, unknown> = {}) => ({
+    number, title: `C${String(number)}`, state: "open", labels: [], assignees: [], ...patch,
+  });
+  const story = (children: unknown[], state = "open") => ({ via: "sub-issues", state, title: "Epic", children });
+
+  beforeEach(() => {
+    mockApply.mockReset();
+    mockReadConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "automata" });
+  });
+
+  async function runWith(options: { check?: boolean; dryRun?: boolean } = {}): Promise<number> {
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    return runConductor(options);
+  }
+
+  it("add stores a parent with children as a story and does not label the parent", async () => {
+    mockTarget.mockReturnValue(issue(10));
+    mockStorySource.mockReturnValue(story([sub(11, { state: "closed" }), sub(12)]));
+    const { runWatchAdd } = await import("../../src/commands/conductor.js");
+    expect(runWatchAdd("10")).toBe(0);
+    expect(storyState).toEqual([10]);
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockWriteWatch).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/story #10 \(Epic\): 2 children via sub-issues; first open child is #12/);
+  });
+
+  it("add refuses title-contains for a story and stores nothing", async () => {
+    mockRawConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "title-contains" });
+    mockTarget.mockReturnValue(issue(10));
+    mockStorySource.mockReturnValue(story([sub(11)]));
+    const { runWatchAdd } = await import("../../src/commands/conductor.js");
+    expect(runWatchAdd("10")).toBe(1);
+    expect(storyState).toEqual([]);
+  });
+
+  it("remove drops a story", async () => {
+    storyState = [10, 20];
+    const { runWatchRemove } = await import("../../src/commands/conductor.js");
+    expect(runWatchRemove("10")).toBe(0);
+    expect(storyState).toEqual([20]);
+  });
+
+  it("a tick starts the first open child with the discovery label", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(11, { state: "closed" }), sub(12), sub(13)]));
+    expect(await runWith()).toBe(0);
+    expect(mockApply).toHaveBeenCalledOnce();
+    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ number: 12, kind: "issue" }), "label", "automata");
+    expect(storyState).toEqual([10]);
+  });
+
+  it("a tick waits while the child has an open pull request, or was started", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(12)]));
+    mockLinks.mockReturnValue({ byIssue: new Map([[12, [{ number: 40 }]]]) });
+    expect(await runWith()).toBe(0);
+    mockLinks.mockReturnValue({ byIssue: new Map() });
+    mockStorySource.mockReturnValue(story([sub(12, { labels: ["automata"] })]));
+    expect(await runWith()).toBe(0);
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockPostMarker).not.toHaveBeenCalled();
+  });
+
+  it("a tick leaves a blocked story alone, silently", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(12, { labels: ["conductor-blocked"] }), sub(13)]));
+    expect(await runWith()).toBe(0);
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockCloseIssue).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/child #12 is blocked/);
+  });
+
+  it("a tick closes a finished story with a comment and drops it", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(11, { state: "closed" })]));
+    expect(await runWith()).toBe(0);
+    expect(mockCloseIssue).toHaveBeenCalledWith(10, expect.stringMatching(/All 1 child issues are closed/));
+    expect(storyState).toEqual([]);
+  });
+
+  it("a tick drops a closed parent and keeps a story that cannot be read", async () => {
+    storyState = [10, 20];
+    mockStorySource.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    expect(await runWith()).toBe(1);
+    expect(storyState).toEqual([10, 20]);
+    mockStorySource.mockReturnValue(story([sub(11)], "closed"));
+    expect(await runWith()).toBe(0);
+    expect(storyState).toEqual([]);
+  });
+
+  it("a dry run and --check change nothing", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(12)]));
+    expect(await runWith({ dryRun: true })).toBe(0);
+    expect(stdout).toMatch(/a tick would start child #12/);
+    expect(await runWith({ check: true })).toBe(0);
+    expect(stdout).toMatch(/Stories \(1\)[\s\S]*child #12 is next/);
+    expect(mockApply).not.toHaveBeenCalled();
+    expect(mockCloseIssue).not.toHaveBeenCalled();
+  });
+
+  it("list shows a story with its children", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(11, { state: "closed" }), sub(12), sub(13)]));
+    const { runWatchList } = await import("../../src/commands/conductor.js");
+    expect(runWatchList()).toBe(0);
+    expect(stdout).toMatch(/story #10 \(open, 3 children via sub-issues\): Epic\n  #11 closed: C11\n  #12 next: C12\n  #13 queued: C13/);
   });
 });

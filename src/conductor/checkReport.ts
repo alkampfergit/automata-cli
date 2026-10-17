@@ -25,6 +25,11 @@ export type WatchedCheck =
   | { id: number; kind: "issue" | "pr"; state: "open" | "closed"; decisions: ConductorDecision[]; coveredBy?: number }
   | { id: number; unavailable: string };
 
+/** One story as the check read it; `lines` come from `storyLines`. */
+export type StoryCheck =
+  | { id: number; title: string; state: "open" | "closed"; lines: string[] }
+  | { id: number; unavailable: string };
+
 export interface ConductorCheckInput {
   generatedAt: Date;
   repo: string | null;
@@ -35,6 +40,7 @@ export interface ConductorCheckInput {
   lock: LockStatus;
   staleMinutes: number;
   watched: WatchedCheck[];
+  stories: StoryCheck[];
 }
 
 export interface ConductorCheck {
@@ -122,6 +128,23 @@ export function watchSections(watched: WatchedCheck[]): CheckSection[] {
   ];
 }
 
+export function storySection(stories: StoryCheck[]): CheckSection {
+  const lines: string[] = [];
+  const problems: Problem[] = [];
+  for (const story of stories) {
+    if ("unavailable" in story) {
+      lines.push(`story #${String(story.id)}: unavailable (${story.unavailable}); a tick keeps it and skips it`);
+      problems.push({ section: "stories", summary: `story #${String(story.id)} could not be read: ${story.unavailable}` });
+    } else if (story.state === "closed") {
+      lines.push(`story #${String(story.id)}: closed, a tick would drop it from the stories`);
+    } else {
+      const [summary, ...children] = story.lines;
+      lines.push(`story #${String(story.id)} (${story.title}): ${summary}`, ...children);
+    }
+  }
+  return section(`Stories (${String(stories.length)})`, lines, problems);
+}
+
 export function buildConductorCheck(input: ConductorCheckInput): ConductorCheck {
   const sections: CheckSection[] =
     input.configProblem === null
@@ -129,6 +152,7 @@ export function buildConductorCheck(input: ConductorCheckInput): ConductorCheck 
           section("Configuration", [`running as ${input.identity}`, `executor: ${input.execution}`]),
           lockSection(input.lock, input.staleMinutes),
           ...watchSections(input.watched),
+          ...(input.stories.length > 0 ? [storySection(input.stories)] : []),
         ]
       : [
           section(
