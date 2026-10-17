@@ -308,3 +308,5 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
 - **Wiring a command to the Azure DevOps backend: go through `selectWriteService`, not a second code path**: the GitHub
   branch of `RemoteWriteService` calls the same `gh` helpers as before, so the existing `spawnSync`-mocked GitHub tests
   keep passing unchanged and the Azure DevOps tests dispatch on `args[0]` in one `mockImplementation`. Confirmed: 2026-10-17.
+
+- **New conductor state that is not a watched item goes beside `watch` in the watch file, not into it**: 153 added `stories` there, written only when non-empty so the old file shape is unchanged, and `writeWatch`/`writeStories` each keep the other list. Children are read from GitHub at each tick, never stored. Why: every reader of `watch` treats an id as an item to answer. Test mocks of `watchStore.js` and `ghWorkService.js` are explicit factories, so a new export must be added to each mock (`conductor.cmd.test.ts`, `watchStore.test.ts`). Confirmed: 2026-10-17.
