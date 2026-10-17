@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   addClosesRefToPr,
   addCopilotReviewer,
+  editComment,
   getCurrentBranchPr as ghGetCurrentBranchPr,
   postComment,
 } from "../config/githubService.js";
@@ -25,8 +26,10 @@ export interface RemoteWriteService {
   linkPrToIssue(prNumber: number, issueNumber: number): void;
   /** `reviewer` is required in Azure DevOps; GitHub always asks Copilot. */
   requestReview(prNumber: number, reviewer?: string): void;
-  /** Returns the comment URL when the backend reports one. */
+  /** Returns a reference to hand to `editIssueComment` (a URL on GitHub, a comment id in Azure DevOps), when known. */
   postIssueComment(issueNumber: number, body: string): string | undefined;
+  /** Rewrites a comment that `postIssueComment` created; `commentRef` is its return value. */
+  editIssueComment(issueNumber: number, commentRef: string, body: string): void;
   postPrComment(prNumber: number, body: string): void;
   assignIssue(issueNumber: number, user: string): void;
   assignPr(prNumber: number, user: string): void;
@@ -46,6 +49,7 @@ const githubWriteService: RemoteWriteService = {
   linkPrToIssue: addClosesRefToPr,
   requestReview: (prNumber) => addCopilotReviewer(prNumber),
   postIssueComment: postComment,
+  editIssueComment: (_issueNumber, commentUrl, body) => editComment(commentUrl, body),
   postPrComment(prNumber, body) {
     postMarker("pr", prNumber, body);
   },

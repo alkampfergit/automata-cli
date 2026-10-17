@@ -1,13 +1,14 @@
 # `automata implement-next`
 
-Find the next open GitHub issue matching the configured filter, claim it by posting a comment, and invoke an AI code assistant to implement it.
+Find the next open GitHub issue (or Azure DevOps work item) matching the configured filter, claim it by posting a comment, and invoke an AI code assistant to implement it.
 
 ## Prerequisites
 
 - `gh` CLI installed and authenticated
 - `claude` CLI installed (unless `--no-claude` or `--with codex` is used)
 - `codex` CLI installed (only when `--with codex` is used)
-- Remote type set to `gh` via `automata config`
+- Remote type set to `gh` or `azdo` via `automata config`
+- For `azdo`: `azdo` CLI 0.22.0 or newer, authenticated (see [Azure DevOps mode](#azure-devops-mode))
 - Issue discovery technique and value configured
 
 ## Usage
@@ -56,6 +57,29 @@ automata implement-next [options]
    - If a PR exists **and has no assignee at all**, assigns it via `gh pr edit --add-assignee` so the PR list shows who is on it. The claimant is the configured `agentUser`, or `@me` (the account `gh` is authenticated as) when `agentUser` is not set. A PR that already has any assignee is left untouched.
    - If `--ask-copilot-review` is passed and a PR exists, runs `gh pr edit --add-reviewer @copilot` to request a Copilot review.
    - All post-AI operations are best-effort: failures are warned on stderr but do not change the exit code.
+
+## Azure DevOps mode
+
+With `remoteType` set to `azdo`, the command works on work items. The options, the list, the overflow hint,
+`--query-only`, `--take-first` and `--json` (`number`, `title`, `body`, `url`) behave as in GitHub mode. The body is the
+markdown description of the work item.
+
+| Step | GitHub | Azure DevOps |
+|---|---|---|
+| Discovery `label` | `gh issue list --label` | `azdo list-items --tag` |
+| Discovery `assignee` | `--assignee` | `--assigned-to` |
+| Discovery `title-contains` | `--search "x in:title"` | `--title-contains` |
+| Claim | `working` comment | `azdo assign <id> <agentUser or @me>`, then a `working` comment |
+| After the run | edit the comment, `Closes #N`, assign the PR | edit the comment (`azdo comments edit`), `AB#<id>` in the description and a work item link |
+| `--ask-copilot-review` | adds `@copilot` as reviewer | adds `agentUser` as reviewer; with no `agentUser` a warning is printed |
+
+- Closed, Done, Removed and Completed work items are not listed. `azdo list-items` has no "open" filter, so the command
+  asks for four times `--limit` items (at least 50) and cuts the list after the filter.
+- The prompt starts with `Resolving work item #<id>` and tells the agent to open the pull request with
+  `azdo pr open --work-item <id>`, to write `AB#<id>` in the description, and not to use `gh pr create` or `Closes #N`.
+- Azure DevOps pull requests have no assignee, so the PR assignment step does nothing.
+- `automata config` shows "By Tag", "By Assigned To" and "By Title Contains" when the remote is Azure DevOps. The stored
+  values stay `label`, `assignee` and `title-contains`.
 
 ## Exit codes
 
