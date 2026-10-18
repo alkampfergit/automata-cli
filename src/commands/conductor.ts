@@ -65,7 +65,7 @@ import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
-import { checkStories, conductStories, listStoryLines } from "../conductor/storyRunner.js";
+import { checkStories, conductStories, listStoryLines, storyCovered } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -217,8 +217,11 @@ async function runModelForText(prompt: string, execution: ConductorExecution): P
 }
 
 /** The watched pull requests an issue of the same watch list already covers, with that issue. */
-function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap): Map<number, number> {
-  return coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number));
+function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig): Map<number, number> {
+  const covered = coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number));
+  // The current child of a story owns its pull requests, also when it is blocked.
+  for (const [pr, child] of storyCovered(config, linkMap)) if (!covered.has(pr)) covered.set(pr, child);
+  return covered;
 }
 
 function coveredNote(id: number, issue: number): string {
@@ -601,7 +604,7 @@ function runConductorCheck(): number {
   }
   const linkMap = onceLinkMap();
   const watchIds = "problem" in checked ? [] : readWatch({ migrate: false });
-  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap);
+  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap, checked.config);
   const report =
     "problem" in checked
       ? buildConductorCheck({
@@ -621,6 +624,16 @@ function runConductorCheck(): number {
   return report.exitCode;
 }
 
+/** Conduct one item and report whether it failed; an error is printed, not thrown, so the other items still run. */
+async function conductSafely(id: number, conduct: () => Promise<string>): Promise<boolean> {
+  try {
+    return (await conduct()) === "failed";
+  } catch (err) {
+    process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+    return true;
+  }
+}
+
 /** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
 async function runConductorDryRun(checked: Preflight): Promise<number> {
   const { config, login, participants, execution } = checked;
@@ -632,7 +645,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
-  const covered = coveredOf(watchIds, context.linkMap);
+  const covered = coveredOf(watchIds, context.linkMap, config);
   for (const id of watchIds) {
     try {
       if (isWatchClosed(getWatchTarget(id).state)) {
@@ -647,23 +660,12 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
       process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
       continue;
     }
-    try {
-      // One item at a time on purpose, as in a real tick.
-      if ((await conductItem(id, config, login, participants, execution, context)) === "failed") failed++; // NOSONAR
-    } catch (err) {
-      process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-      failed++;
-    }
+    if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, context))) failed++;
   }
   const stories = conductStories(config, context.linkMap, true);
   failed += stories.failed;
   for (const id of stories.active.filter((child) => !watchIds.includes(child))) {
-    try {
-      if ((await conductItem(id, config, login, participants, execution, context)) === "failed") failed++; // NOSONAR
-    } catch (err) {
-      process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-      failed++;
-    }
+    if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, context))) failed++;
   }
   return failed > 0 ? 1 : 0;
 }
@@ -772,30 +774,20 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
     const watch = pruneWatchList();
     let failed = 0;
     const linkMap = onceLinkMap();
-    const covered = coveredOf(watch, linkMap);
+    const covered = coveredOf(watch, linkMap, config);
     for (const id of watch) {
       const coveredBy = covered.get(id);
       if (coveredBy !== undefined) {
         process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
         continue;
       }
-      try {
-        // One item at a time on purpose: each run reads and writes the same account's conversations.
-        if ((await conductItem(id, config, login, participants, execution, undefined, linkMap)) === "failed") failed++; // NOSONAR
-      } catch (err) {
-        process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-        failed++;
-      }
+      // One item at a time on purpose: each run reads and writes the same account's conversations.
+      if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap))) failed++;
     }
     const stories = conductStories(config, linkMap, false);
     for (const id of stories.active.filter((child) => !watch.includes(child))) {
-      try {
-        // The active child and its linked pull requests get the ordinary conductor processing.
-        if ((await conductItem(id, config, login, participants, execution, undefined, linkMap)) === "failed") failed++; // NOSONAR
-      } catch (err) {
-        process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-        failed++;
-      }
+      // The active child and its linked pull requests get the ordinary conductor processing.
+      if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap))) failed++;
     }
     return { code: failed + stories.failed > 0 ? 1 : 0, open: watch.length + stories.open };
   } finally {

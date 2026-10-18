@@ -68,8 +68,10 @@ function startChild(story: number, label: string, current: StoryChild, discovery
     process.stdout.write(`Conductor: ${label}: a tick would start child #${String(current.number)}.\n`);
     return "kept";
   }
-  applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
+  // The comment comes first: if the label then fails, the child is still `next` and the next tick tries both again.
+  // The other order would leave a labelled child that no authorized message ever reaches `do-work`.
   commentOnIssue(current.number, startComment(story));
+  applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
   process.stdout.write(`Conductor: ${label}: started child #${String(current.number)}.\n`);
   return "kept";
 }
@@ -135,6 +137,24 @@ export function conductStories(config: AutomataConfig, linkMap: () => OpenPrLink
     failed: results.filter((r) => r === "failed").length,
     open: results.filter((r) => r !== "dropped").length,
   };
+}
+
+/**
+ * Read-only: the open pull requests of the current child of each open story, with that child.
+ * They are not processed on their own: the story owns them, also when the child is blocked.
+ */
+export function storyCovered(config: AutomataConfig, linkMap: () => OpenPrLinkMap): Map<number, number> {
+  const discovery = discoveryOf(config);
+  const covered = new Map<number, number>();
+  for (const id of readStories()) {
+    try {
+      const { source, plan } = readStory(id, discovery, linkMap);
+      if (source.state === "open" && plan.current !== null) for (const pr of plan.current.openPrs) covered.set(pr, plan.current.number);
+    } catch {
+      // An unreadable story covers nothing; conductStory reports the read failure.
+    }
+  }
+  return covered;
 }
 
 /** Read-only: what `--check` reports for each story. */
