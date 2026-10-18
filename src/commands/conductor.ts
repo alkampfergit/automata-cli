@@ -32,6 +32,7 @@ import {
   loopStateOf,
   prConversation,
   type Conversation,
+  type ConductorDecision,
 } from "../conductor/replyDecision.js";
 import {
   composeConductorPrompt,
@@ -304,6 +305,17 @@ function frameFor(key: "issue" | "pr" | "rebase" | "ciFix", config: AutomataConf
   }
 }
 
+/** The decision to act on: a rebase request, then a CI-fix request, then the first ordinary reply. */
+function pickOwedDecision(eligible: ConductorDecision[]): ConductorDecision | undefined {
+  return eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
+}
+
+/** The line that tells why an item gets no reply this tick. */
+function idleMessage(decisions: ConductorDecision[], label: string): string {
+  const stopped = decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
+  return stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -330,12 +342,9 @@ async function conductItem(
   const eligible = verdict.decisions.filter(
     (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
-  const owed =
-    eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
+  const owed = pickOwedDecision(eligible);
   if (owed === undefined) {
-    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
-    const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
-    process.stdout.write(`${why}\n`);
+    process.stdout.write(`${idleMessage(verdict.decisions, label)}\n`);
     return "idle";
   }
   const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;

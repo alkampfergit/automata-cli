@@ -142,7 +142,8 @@ const skipped = [];
 const note = (eslintRule, sonarKey, options = []) => {
   const severity = HOTSPOT_RULES.has(eslintRule) ? "warn" : "error";
   enabled[eslintRule] = options.length > 0 ? [severity, ...options] : severity;
-  (sonarKeys[eslintRule] ??= []).push(sonarKey);
+  sonarKeys[eslintRule] ??= [];
+  sonarKeys[eslintRule].push(sonarKey);
 };
 
 await Promise.all(
@@ -157,7 +158,9 @@ await Promise.all(
       const result = await wrappedRules(number);
       // With several wrapped rules, the options of the Sonar rule do not tell which one takes them.
       const options = result.names?.length === 1 ? await optionsFor(number, parameters) : [];
-      if (result.names) result.names.forEach((name) => note(name, sonarKey, options));
+      if (result.names) {
+        for (const name of result.names) note(name, sonarKey, options);
+      }
       else skipped.push({ key: sonarKey, reason: result.skipped });
     }
   }),
@@ -168,7 +171,7 @@ const output = {
   profile: { name: profile.name, key: profile.key, language: "ts", activeRuleCount: rules.length },
   rules: sorted(enabled),
   sonarKeys: sorted(sonarKeys),
-  skipped: skipped.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })),
+  skipped: skipped.toSorted((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })),
 };
 writeFileSync(OUTPUT, `${JSON.stringify(output, null, 2)}\n`);
 
