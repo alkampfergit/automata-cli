@@ -634,6 +634,14 @@ async function conductSafely(id: number, conduct: () => Promise<string>): Promis
   }
 }
 
+/**
+ * Run `step` for each id, one after the other, and count the failures. The chain is sequential on purpose: each step
+ * reads and writes the same account's conversations.
+ */
+function conductInOrder(ids: readonly number[], step: (id: number) => Promise<boolean>): Promise<number> {
+  return ids.reduce(async (previous, id) => (await previous) + ((await step(id)) ? 1 : 0), Promise.resolve(0));
+}
+
 /** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
 async function runConductorDryRun(checked: Preflight): Promise<number> {
   const { config, login, participants, execution } = checked;
@@ -642,15 +650,16 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     process.stderr.write(`Warning: a conductor is running here (pid ${String(lock.owner.pid)}); the dry run does not take the lock.\n`);
   }
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
-  let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
   const covered = coveredOf(watchIds, context.linkMap, config);
-  for (const id of watchIds) {
+  const conduct = (id: number): Promise<boolean> =>
+    conductSafely(id, () => conductItem(id, config, login, participants, execution, context));
+  let failed = await conductInOrder(watchIds, async (id) => {
     try {
       if (isWatchClosed(getWatchTarget(id).state)) {
         process.stdout.write(`Conductor: #${String(id)} is closed; a tick would drop it from the watch list.\n`);
-        continue;
+        return false;
       }
     } catch {
       // As in the prune: an id that cannot be looked up stays, and conductItem reports the read failure.
@@ -658,15 +667,16 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     const coveredBy = covered.get(id);
     if (coveredBy !== undefined) {
       process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
-      continue;
+      return false;
     }
-    if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, context))) failed++;
-  }
+    return conduct(id);
+  });
   const stories = conductStories(config, context.linkMap, true);
   failed += stories.failed;
-  for (const id of stories.active.filter((child) => !watchIds.includes(child))) {
-    if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, context))) failed++;
-  }
+  failed += await conductInOrder(
+    stories.active.filter((child) => !watchIds.includes(child)),
+    conduct,
+  );
   return failed > 0 ? 1 : 0;
 }
 
@@ -772,23 +782,23 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
     const watch = pruneWatchList();
-    let failed = 0;
     const linkMap = onceLinkMap();
     const covered = coveredOf(watch, linkMap, config);
-    for (const id of watch) {
+    const conduct = (id: number): Promise<boolean> =>
+      conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap));
+    // One item at a time on purpose: each run reads and writes the same account's conversations.
+    let failed = await conductInOrder(watch, (id) => {
       const coveredBy = covered.get(id);
-      if (coveredBy !== undefined) {
-        process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
-        continue;
-      }
-      // One item at a time on purpose: each run reads and writes the same account's conversations.
-      if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap))) failed++;
-    }
+      if (coveredBy === undefined) return conduct(id);
+      process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
+      return Promise.resolve(false);
+    });
     const stories = conductStories(config, linkMap, false);
-    for (const id of stories.active.filter((child) => !watch.includes(child))) {
-      // The active child and its linked pull requests get the ordinary conductor processing.
-      if (await conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap))) failed++;
-    }
+    // The active child and its linked pull requests get the ordinary conductor processing.
+    failed += await conductInOrder(
+      stories.active.filter((child) => !watch.includes(child)),
+      conduct,
+    );
     return { code: failed + stories.failed > 0 ? 1 : 0, open: watch.length + stories.open };
   } finally {
     lock.handle.release();
