@@ -290,3 +290,10 @@ The order to work through when the next refresh starts. Each row points at the s
 distinguish a lone `Esc` from the start of a longer escape sequence, then flushes it after 20 ms. A test helper that only
 drains microtasks will never observe the keypress. `tests/unit/ConfigWizard.test.tsx` handles this by having `tick()`
 wait 30 ms of real time; reuse that helper rather than writing a new one.
+
+## Local SonarCloud check
+
+SonarCloud runs as Automatic Analysis, which you cannot start from your machine. Run `npm run sonar:local` to check
+your changes against the rules of the SonarCloud quality profile before you push. It needs no build, no token and no
+network. Run `npm run sonar:sync` when the profile changes. The setup, the way it works, how to copy it to another
+repository, and its limits are in [`docs/local-sonar.md`](local-sonar.md).
