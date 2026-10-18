@@ -15,6 +15,8 @@ import {
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT,
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
+  DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   type RemoteType,
   type IssueDiscoveryTechnique,
   type Executor,
@@ -38,6 +40,19 @@ const TECHNIQUE_OPTIONS: { label: string; value: IssueDiscoveryTechnique }[] = [
   { label: "By Assignee", value: "assignee" },
   { label: "By Title Contains", value: "title-contains" },
 ];
+
+/** Azure DevOps names for the same three techniques: the stored keys do not change. */
+const AZDO_TECHNIQUE_LABELS: Record<IssueDiscoveryTechnique, string> = {
+  label: "By Tag",
+  assignee: "By Assigned To",
+  "title-contains": "By Title Contains",
+};
+
+function techniqueOptions(remote: RemoteType): { label: string; value: IssueDiscoveryTechnique }[] {
+  return remote === "azdo"
+    ? TECHNIQUE_OPTIONS.map((o) => ({ ...o, label: AZDO_TECHNIQUE_LABELS[o.value] }))
+    : TECHNIQUE_OPTIONS;
+}
 
 const EXECUTOR_OPTIONS: { label: string; value: Executor }[] = [
   { label: "Claude Code", value: "claude" },
@@ -76,6 +91,8 @@ const PROMPTS_MENU_OPTIONS = [
   "Do Work — Orphan PR",
   "Conductor — Issue",
   "Conductor — PR",
+  "Conductor — Rebase",
+  "Conductor — CI fix",
 ] as const;
 
 function parseAllowedUsers(value: string): string[] {
@@ -113,6 +130,8 @@ type Screen =
   | "do-work-pr-orphan-prompt"
   | "conductor-issue-prompt"
   | "conductor-pr-prompt"
+  | "conductor-rebase-prompt"
+  | "conductor-ci-fix-prompt"
   | "git-trunk-branch"
   | "git-release-flow";
 
@@ -259,6 +278,8 @@ const PROMPT_SCREEN_BY_OPTION: Record<(typeof PROMPTS_MENU_OPTIONS)[number], Scr
   "Do Work — Orphan PR": "do-work-pr-orphan-prompt",
   "Conductor — Issue": "conductor-issue-prompt",
   "Conductor — PR": "conductor-pr-prompt",
+  "Conductor — Rebase": "conductor-rebase-prompt",
+  "Conductor — CI fix": "conductor-ci-fix-prompt",
 };
 
 export function ConfigWizard() {
@@ -333,6 +354,12 @@ export function ConfigWizard() {
   );
   const [conductorPrPrompt, setConductorPrPrompt] = useState(
     existing.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT,
+  );
+  const [conductorRebasePrompt, setConductorRebasePrompt] = useState(
+    existing.conductor?.prompts?.rebase ?? DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  );
+  const [conductorCiFixPrompt, setConductorCiFixPrompt] = useState(
+    existing.conductor?.prompts?.ciFix ?? DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   );
   const [gitTrunkBranch, setGitTrunkBranch] = useState(existing.git?.trunkBranch ?? "");
   const initialReleaseFlowIndex = RELEASE_FLOW_OPTIONS.findIndex((o) => o.value === existing.git?.releaseFlow);
@@ -558,6 +585,28 @@ export function ConfigWizard() {
       },
       onBack: () => setScreen("prompts-menu"),
     },
+    "conductor-rebase-prompt": {
+      setValue: setConductorRebasePrompt,
+      onSubmit: () => {
+        savePrompt("conductor-rebase.md", conductorRebasePrompt, (value, current) => ({
+          ...current,
+          conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, rebase: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
+    "conductor-ci-fix-prompt": {
+      setValue: setConductorCiFixPrompt,
+      onSubmit: () => {
+        savePrompt("conductor-ci-fix.md", conductorCiFixPrompt, (value, current) => ({
+          ...current,
+          conductor: { ...current.conductor, prompts: { ...current.conductor?.prompts, ciFix: value } },
+        }));
+        setScreen("prompts-menu");
+      },
+      onBack: () => setScreen("prompts-menu"),
+    },
     "git-trunk-branch": {
       setValue: setGitTrunkBranch,
       onSubmit: () => setScreen("git-release-flow"),
@@ -692,7 +741,7 @@ export function ConfigWizard() {
     }
   });
 
-  const techLabel = TECHNIQUE_OPTIONS.find((o) => o.value === pendingTechnique)?.label ?? pendingTechnique;
+  const techLabel = techniqueOptions(pendingRemote).find((o) => o.value === pendingTechnique)?.label ?? pendingTechnique;
 
   /**
    * The text-entry screens as data. Sixteen near-identical JSX blocks were what
@@ -820,6 +869,18 @@ export function ConfigWizard() {
       value: conductorPrPrompt,
       hint: `Type prompt · Enter to save · ${BACK}`,
     },
+    "conductor-rebase-prompt": {
+      title: "Prompts — Conductor — Rebase",
+      label: "Request the conductor sends to the agent when a watched pull request has a merge conflict:",
+      value: conductorRebasePrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
+    "conductor-ci-fix-prompt": {
+      title: "Prompts — Conductor — CI fix",
+      label: "Instructions for the request the conductor sends to the agent when a watched pull request has a failed check:",
+      value: conductorCiFixPrompt,
+      hint: `Type prompt · Enter to save · ${BACK}`,
+    },
     "git-trunk-branch": {
       title: "Git — Trunk Branch",
       label: "Branch publish-release releases to (blank = detect it from the remote):",
@@ -842,8 +903,8 @@ export function ConfigWizard() {
       hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
     },
     technique: {
-      title: "Implement-Next — Issue Discovery Technique",
-      options: TECHNIQUE_OPTIONS.map((o) => o.label),
+      title: `Implement-Next — ${pendingRemote === "azdo" ? "Work Item" : "Issue"} Discovery Technique`,
+      options: techniqueOptions(pendingRemote).map((o) => o.label),
       index: selectedTechIndex,
       hint: `↑/↓ to move · Enter to confirm · ${BACK}`,
     },

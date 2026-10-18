@@ -82,9 +82,16 @@ export function lockSection(status: LockStatus, staleMinutes: number): CheckSect
 
 function decisionLine(decision: ConductorDecision): string {
   const where = label(decision.surface.number, decision.surface.kind);
-  return decision.kind === "reply"
-    ? `reply on ${where}: ${decision.reason}`
-    : `skip ${where} (${decision.reason}): ${decision.detail}`;
+  switch (decision.kind) {
+    case "reply":
+      return `reply on ${where}: ${decision.reason}`;
+    case "rebase":
+      return `rebase request on ${where}: ${decision.reason}`;
+    case "ci-fix":
+      return `CI-fix request on ${where}: ${decision.reason}`;
+    case "skip":
+      return `skip ${where} (${decision.reason}): ${decision.detail}`;
+  }
 }
 
 export function watchSections(watched: WatchedCheck[]): CheckSection[] {

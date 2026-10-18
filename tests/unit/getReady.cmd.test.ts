@@ -113,9 +113,9 @@ describe("getReady command: config validation", () => {
     rmSync(TEST_CWD, { recursive: true, force: true });
   });
 
-  it("exits 1 with error when remoteType is azdo", async () => {
+  it("exits 1 with error when no remoteType is configured", async () => {
     const { writeConfig } = await import("../../src/config/configStore.js");
-    writeConfig({ remoteType: "azdo" });
+    writeConfig({ issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready" });
 
     const stderrLines: string[] = [];
     vi.spyOn(process.stderr, "write").mockImplementation((msg: unknown) => {
@@ -131,8 +131,7 @@ describe("getReady command: config validation", () => {
       // expected
     }
 
-    expect(stderrLines.join("")).toContain("implement-next is not supported for Azure DevOps");
-    expect(stderrLines.join("")).toContain("docs/azdo-gap.md");
+    expect(stderrLines.join("")).toContain("No remote type configured");
     expect(exitSpy).toHaveBeenCalledWith(1);
 
     vi.restoreAllMocks();
@@ -1296,5 +1295,163 @@ describe("getReady command: pull request claim", () => {
     expect(stderr).toMatch(/could not assign PR #21 to automata-bot/);
     expect(stderr).toMatch(/not a collaborator/);
     vi.restoreAllMocks();
+  });
+});
+
+// ── Azure DevOps mode ─────────────────────────────────────────────────────────
+
+describe("getReady command: Azure DevOps mode", () => {
+  const workItem = (id: number, state = "Active") => ({
+    id, title: `Item ${id}`, description: `Body ${id}.`, url: `https://dev.azure.com/o/p/_workitems/edit/${id}`, state,
+    tags: [], assignedTo: null,
+  });
+
+  /** Answers every `azdo` call by its first argument(s); `claude` and anything else succeed silently. */
+  function stubAzdo(items: unknown[], pr: unknown[] = []) {
+    mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+      const ok = (stdout = "") => ({ stdout, stderr: "", status: 0 });
+      if (cmd !== "azdo") return ok();
+      if (args[0] === "--version") return ok("0.23.0\n");
+      if (args[0] === "auth") return ok(JSON.stringify({ identity: { displayName: "Me", uniqueName: "me@example.com" } }));
+      if (args[0] === "list-items") return ok(JSON.stringify(items));
+      if (args[0] === "comments" && args[1] === "add") return ok(JSON.stringify({ commentId: 77, url: "u" }));
+      if (args[0] === "pr" && args[1] === "status") return ok(JSON.stringify({ pullRequests: pr }));
+      if (args[0] === "pr" && args[1] === "list") return ok(JSON.stringify({ pullRequests: pr }));
+      return ok();
+    });
+  }
+  const azdoCalls = (): string[][] =>
+    mockSpawnSync.mock.calls.filter((c) => c[0] === "azdo").map((c) => c[1] as string[]);
+
+  beforeEach(() => {
+    mkdirSync(TEST_CWD, { recursive: true });
+    process.cwd = () => TEST_CWD;
+    mockSpawnSync.mockReset();
+    mockSpawn.mockReset();
+    mockReadlineQuestion.mockReset();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    process.cwd = ORIG_CWD;
+    rmSync(TEST_CWD, { recursive: true, force: true });
+  });
+
+  async function configure(extra: Record<string, unknown> = {}) {
+    const { writeConfig } = await import("../../src/config/configStore.js");
+    writeConfig({ remoteType: "azdo", issueDiscoveryTechnique: "label", issueDiscoveryValue: "ready", ...extra });
+  }
+
+  it("--query-only lists matching work items through azdo list-items and drops closed ones", async () => {
+    await configure();
+    stubAzdo([workItem(1), workItem(2, "Closed"), workItem(3, "Done"), workItem(4)]);
+    const out: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((m: unknown) => { out.push(String(m)); return true; });
+    vi.spyOn(process, "exit").mockImplementation((() => { throw new Error("exit"); }) as never);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await expect(implementNextCommand.parseAsync(["--query-only"], { from: "user" })).rejects.toThrow("exit");
+
+    expect(out.join("")).toContain("[1] #1 - Item 1");
+    expect(out.join("")).toContain("[2] #4 - Item 4");
+    expect(out.join("")).not.toContain("#2 -");
+    expect(azdoCalls().find((a) => a[0] === "list-items")).toEqual(
+      ["list-items", "--tag", "ready", "--top", "50", "--json", "--no-update-check"],
+    );
+  });
+
+  it.each([
+    ["assignee", "--assigned-to"],
+    ["title-contains", "--title-contains"],
+  ])("maps the %s technique to %s", async (technique, flag) => {
+    await configure({ issueDiscoveryTechnique: technique, issueDiscoveryValue: "v" });
+    stubAzdo([workItem(1)]);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+    expect(azdoCalls().find((a) => a[0] === "list-items")).toContain(flag);
+  });
+
+  it("--json prints number, title, body and url of the work item", async () => {
+    await configure();
+    stubAzdo([workItem(9)]);
+    const out: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((m: unknown) => { out.push(String(m)); return true; });
+    vi.spyOn(process, "exit").mockImplementation((() => { throw new Error("exit"); }) as never);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await expect(implementNextCommand.parseAsync(["--json", "--query-only"], { from: "user" })).rejects.toThrow("exit");
+
+    expect(JSON.parse(out.join(""))).toEqual({
+      number: 9, title: "Item 9", body: "Body 9.", url: "https://dev.azure.com/o/p/_workitems/edit/9",
+    });
+  });
+
+  it("claims with assign and a working comment, then wires the PR", async () => {
+    await configure({ agentUser: "bot@example.com" });
+    stubAzdo([workItem(5)], [{ id: 12, url: "https://dev.azure.com/o/p/_git/r/pullrequest/12", description: "d" }]);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude", "--ask-copilot-review"], { from: "user" });
+
+    const calls = azdoCalls();
+    const find = (...head: string[]) => calls.find((a) => head.every((h, i) => a[i] === h));
+    expect(find("assign", "5")).toEqual(["assign", "5", "bot@example.com", "--no-update-check"]);
+    expect(find("comments", "add")).toContain("working");
+    expect(find("comments", "edit")).toEqual(
+      ["comments", "edit", "5", "77", "--file", "-", "--markdown", "--no-update-check"],
+    );
+    const edit = mockSpawnSync.mock.calls.find((c) => c[0] === "azdo" && c[1][1] === "edit");
+    expect(edit![2].input).toBe("Working on this in PR #12 \u2014 https://dev.azure.com/o/p/_git/r/pullrequest/12");
+    expect(find("pr", "work-items", "link", "5")).toBeDefined();
+    expect(find("pr", "reviewers", "add", "bot@example.com")).toBeDefined();
+    // Azure DevOps pull requests have no assignee.
+    expect(calls.some((a) => a.includes("--add-assignee"))).toBe(false);
+    expect(mockSpawnSync.mock.calls.some((c) => c[0] === "gh")).toBe(false);
+  });
+
+  it("assigns to the resolved account when no agentUser is configured", async () => {
+    await configure();
+    stubAzdo([workItem(6)]);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
+    expect(azdoCalls().find((a) => a[0] === "assign")).toEqual(["assign", "6", "me@example.com", "--no-update-check"]);
+  });
+
+  it("tells the agent to use azdo pr open and AB#<id>, not gh or Closes", async () => {
+    await configure();
+    stubAzdo([workItem(8)]);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await implementNextCommand.parseAsync(["--silent"], { from: "user" });
+
+    const claude = mockSpawnSync.mock.calls.find((c) => String(c[0]).endsWith("claude"));
+    const prompt = (claude![1] as string[])[1];
+    expect(prompt).toContain("Resolving work item #8");
+    expect(prompt).toContain("azdo pr open --work-item 8");
+    expect(prompt).toContain("AB#8");
+    expect(prompt).toContain("Body 8.");
+  });
+
+  it("exits 1 when azdo fails to list", async () => {
+    await configure();
+    mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (args[0] === "--version") return { stdout: "0.23.0", stderr: "", status: 0 };
+      if (args[0] === "auth") return { stdout: JSON.stringify({ identity: { displayName: "Me" } }), stderr: "", status: 0 };
+      return { stdout: "", stderr: "boom", status: 1 };
+    });
+    const err: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((m: unknown) => { err.push(String(m)); return true; });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => { throw new Error("exit"); }) as never);
+    const { implementNextCommand } = await import("../../src/commands/getReady.js");
+    await expect(implementNextCommand.parseAsync([], { from: "user" })).rejects.toThrow("exit");
+    expect(err.join("")).toContain("boom");
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

@@ -25,6 +25,10 @@ export interface PullRequestRef {
   state: "OPEN" | "CLOSED" | "MERGED";
   isDraft: boolean;
   updatedAt: string;
+  /** GitHub's lazily computed merge state: `CONFLICTING` means a merge conflict; `UNKNOWN` means not computed yet. */
+  mergeable?: string;
+  /** The commit the head branch points at. */
+  headSha?: string;
 }
 
 export interface ReviewThread {
@@ -97,6 +101,8 @@ interface RawPrView {
   isCrossRepository?: boolean;
   state?: string;
   isDraft?: boolean;
+  mergeable?: string;
+  headRefOid?: string;
   body: string;
   author?: RawAuthor;
   createdAt: string;
@@ -609,7 +615,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -648,6 +654,8 @@ export function getPrSurface(prNumber: number): PrSurface {
       state,
       isDraft: raw.isDraft ?? false,
       updatedAt: raw.updatedAt ?? raw.createdAt,
+      mergeable: raw.mergeable,
+      headSha: raw.headRefOid,
     },
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
@@ -759,7 +767,7 @@ export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: str
   const edit = target.kind === "pr" ? "pr" : "issue";
   const args = [edit, "edit", String(target.number), "--add-label", name];
   let result = run("gh", args);
-  if (result.status !== 0 && isMissingLabelError(result.stderr)) {
+  if (result.status !== 0 && isMissingLabelError(result.stderr, name)) {
     const created = run("gh", ["label", "create", name, "--description", description]);
     // Two ticks can race to create it; "already exists" is the label we need.
     if (created.status !== 0 && !/already exists/i.test(created.stderr)) {
@@ -940,9 +948,18 @@ const MISSING_LABEL_PATTERNS = [
   /\blabels?\b[^\n]*\b(?:not found|does not exist)\b/i,
 ];
 
-/** True when stderr says the label is missing, and nothing else went wrong. */
-export function isMissingLabelError(stderr: string): boolean {
-  return MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr));
+/**
+ * True when stderr says the label is missing, and nothing else went wrong.
+ *
+ * Some gh versions say only `failed to update <url>: 'rescue' not found`, with no
+ * word `label`. That wording is accepted only when the quoted name is the label
+ * that was requested, so a missing issue or branch does not trigger a retry.
+ */
+export function isMissingLabelError(stderr: string, name?: string): boolean {
+  if (MISSING_LABEL_PATTERNS.some((pattern) => pattern.test(stderr))) {
+    return true;
+  }
+  return name !== undefined && stderr.includes(`'${name}' not found`);
 }
 
 /**
@@ -974,7 +991,7 @@ export function createDraftPullRequest(input: DraftPullRequestInput): { number: 
   if (input.label !== undefined && input.label.length > 0) {
     const labelled = run("gh", [...base, "--label", input.label]);
     if (labelled.status === 0) return parseCreatedPrUrl(labelled.stdout, input.head);
-    if (!isMissingLabelError(labelled.stderr)) {
+    if (!isMissingLabelError(labelled.stderr, input.label)) {
       throw new Error(
         labelled.stderr.trim() || `Failed to open a draft pull request for ${input.head}.`,
       );

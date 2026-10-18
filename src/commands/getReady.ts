@@ -1,13 +1,14 @@
 import { createInterface } from "node:readline";
 import { Command } from "commander";
-import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
-import { readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT } from "../config/configStore.js";
+import { isAzdo, isExplicitGitHub } from "../remote/backend.js";
+import { assertAzdoReady, resolveAzdoUser } from "../remote/azdoPrerequisites.js";
+import { listWorkItems } from "../remote/azdoWorkItems.js";
+import { selectWriteService, type RemoteWriteService } from "../remote/writeService.js";
 import {
-  listIssues, postComment, editComment,
-  getCurrentBranchPr, addClosesRefToPr, addCopilotReviewer,
-  type GitHubIssue,
-} from "../config/githubService.js";
-import { assignPrToAgent } from "../github/ghWorkService.js";
+  readConfig, DEFAULT_CLAUDE_SYSTEM_PROMPT, azdoPrInstructions,
+  type AutomataConfig,
+} from "../config/configStore.js";
+import { listIssues, type GitHubIssue } from "../config/githubService.js";
 import { invokeClaudeCode } from "../claude/claudeService.js";
 import { invokeCodexCode } from "../codex/codexService.js";
 import { resolveEffortOption } from "../cli/spawnUtils.js";
@@ -47,11 +48,9 @@ async function promptSelection(
   return issues[n - 1];
 }
 
-function validateConfig(config: ReturnType<typeof readConfig>): void {
-  if (!isExplicitGitHub(config)) {
-    process.stderr.write(
-      `Error: ${azdoUnsupportedMessage("implement-next", "Work item discovery is not available in azdo-cli.")}\n`,
-    );
+function validateConfig(config: AutomataConfig): void {
+  if (!isExplicitGitHub(config) && !isAzdo(config)) {
+    process.stderr.write("Error: No remote type configured. Run `automata config` to set one.\n");
     process.exit(1);
   }
 
@@ -102,7 +101,7 @@ async function resolveIssue(
 }
 
 export const implementNextCommand = new Command("implement-next")
-  .description("Find the next open GitHub issue matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
+  .description("Find the next open GitHub issue (or Azure DevOps work item) matching the configured filter, claim it, and invoke the AI code assistant (Claude or Codex)")
   .option("--json", "Output issue details as JSON")
   .option("--no-claude", "Skip all AI invocation (Claude or Codex) after claiming the issue")
   .option("--with <executor>", "Executor to use: claude or codex", "claude")
@@ -136,13 +135,7 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(1);
     }
 
-    let issues: GitHubIssue[];
-    try {
-      issues = listIssues(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
+    const issues = discoverIssues(config, limit);
 
     const issue = await resolveIssue(issues, options, limit);
 
@@ -158,19 +151,13 @@ export const implementNextCommand = new Command("implement-next")
 
     const executor = options.claude === false ? undefined : resolveExecutor(options.with);
 
-    let commentUrl: string | undefined;
-    try {
-      commentUrl = postComment(issue.number, "working");
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
+    const remote = selectWriteService(config);
+    const commentRef = claimIssue(remote, config, issue.number);
 
     const effort = resolveEffortOption(options.effort);
 
     if (options.claude !== false) {
-      const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
-      const prompt = `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
+      const prompt = buildPrompt(config, issue);
       if (executor === "codex") {
         if (options.silent) {
           process.stderr.write("Warning: --silent is only supported with Claude and has no effect when used with Codex.\n");
@@ -187,8 +174,35 @@ export const implementNextCommand = new Command("implement-next")
     }
 
     // ── Post-claim: link PR to issue ───────────────────────────────────────
-    linkPrToIssue(issue.number, commentUrl, options.askCopilotReview === true, config.agentUser);
+    linkPrToIssue(remote, issue.number, commentRef, options.askCopilotReview === true, config.agentUser);
   });
+
+function discoverIssues(config: AutomataConfig, limit: number): GitHubIssue[] {
+  try {
+    if (!isAzdo(config)) return listIssues(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
+    assertAzdoReady();
+    return listWorkItems(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return process.exit(1);
+  }
+}
+
+function buildPrompt(config: AutomataConfig, issue: GitHubIssue): string {
+  const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
+  if (!isAzdo(config)) return `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
+  return `Resolving work item #${issue.number}:\n\n${systemPrompt}\n\n${azdoPrInstructions(issue.number)}\n\n${issue.body}`;
+}
+
+function claimIssue(remote: RemoteWriteService, config: AutomataConfig, issueNumber: number): string | undefined {
+  try {
+    if (isAzdo(config)) remote.assignIssue(issueNumber, (config.agentUser ?? "").trim() || resolveAzdoUser());
+    return remote.postIssueComment(issueNumber, "working");
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return process.exit(1);
+  }
+}
 
 function resolveExecutor(requested: string): "claude" | "codex" {
   const executor = requested.toLowerCase();
@@ -210,41 +224,43 @@ function warnOnFailure(what: string, action: () => void): void {
 }
 
 function linkPrToIssue(
+  remote: RemoteWriteService,
   issueNumber: number,
-  commentUrl: string | undefined,
-  askCopilotReview: boolean,
+  commentRef: string | undefined,
+  askReview: boolean,
   agentUser: string | undefined,
 ): void {
-  let pr: ReturnType<typeof getCurrentBranchPr>;
+  let pr: ReturnType<RemoteWriteService["getCurrentBranchPr"]>;
   try {
-    pr = getCurrentBranchPr();
+    pr = remote.getCurrentBranchPr();
   } catch (err) {
     process.stderr.write(`Warning: could not detect current branch PR: ${(err as Error).message}\n`);
     return;
   }
   if (!pr) return;
 
-  if (commentUrl) {
+  if (commentRef) {
     warnOnFailure("update issue comment", () => {
-      editComment(commentUrl, `Working on this in PR #${pr.number} — ${pr.url}`);
+      remote.editIssueComment(issueNumber, commentRef, `Working on this in PR #${pr.number} — ${pr.url}`);
     });
   }
-  warnOnFailure(`add Closes #${String(issueNumber)} to PR`, () => {
-    addClosesRefToPr(pr.number, issueNumber);
+  warnOnFailure(`link PR to #${String(issueNumber)}`, () => {
+    remote.linkPrToIssue(pr.number, issueNumber);
   });
   // Only when nobody is assigned. `agentUser` is optional for this command —
   // unlike `do-work`, which refuses to run without it — so `@me` stands in: the
   // person running `implement-next` is the identity doing the work, and `gh`
   // resolves `@me` to the authenticated account without an extra lookup.
+  // Azure DevOps pull requests have no assignee, so its `assignPr` does nothing.
   if (pr.assignees.length === 0) {
     const claimant = (agentUser ?? "").trim() || "@me";
     warnOnFailure(`assign PR #${String(pr.number)} to ${claimant}`, () => {
-      assignPrToAgent(pr.number, claimant);
+      remote.assignPr(pr.number, claimant);
     });
   }
-  if (askCopilotReview) {
-    warnOnFailure("request Copilot review", () => {
-      addCopilotReviewer(pr.number);
+  if (askReview) {
+    warnOnFailure("request review", () => {
+      remote.requestReview(pr.number, agentUser?.trim() || undefined);
     });
   }
 }

@@ -23,7 +23,9 @@
     "prepublishOnly": "npm run audit:prod",
     "test": "npm run build && vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "npm run build && vitest run tests/integration"
+    "test:integration": "npm run build && vitest run tests/integration",
+    "sonar:local": "bash scripts/sonar-local.sh",
+    "sonar:sync": "node scripts/sonar-profile-sync.mjs"
   },
   "repository": {
     "type": "git",
@@ -40,7 +42,10 @@
     "@types/node": "^26.6.1",
     "@types/react": "^19.3.0",
     "eslint": "^10.10.0",
+    "eslint-plugin-sonarjs": "^4.2.2",
+    "eslint-plugin-unicorn": "^78.0.0",
     "ink-testing-library": "^4.0.0",
+    "jscpd": "^5.4.1",
     "prettier": "^3.9.7",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",

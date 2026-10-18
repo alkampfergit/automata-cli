@@ -16,6 +16,8 @@ vi.mock("../../src/config/configStore.js", () => ({
   DEFAULT_DO_WORK_PR_ORPHAN_PROMPT: "default do-work orphan pr prompt",
   DEFAULT_CONDUCTOR_ISSUE_PROMPT: "default conductor issue prompt",
   DEFAULT_CONDUCTOR_PR_PROMPT: "default conductor pr prompt",
+  DEFAULT_CONDUCTOR_REBASE_PROMPT: "default conductor rebase prompt",
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT: "default conductor ci-fix prompt",
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -909,5 +911,41 @@ describe("ConfigWizard — Git section", () => {
     stdin.write(ESC);
     await tick();
     expect(lastFrame()).toContain("Configure Automata");
+  });
+});
+
+describe("ConfigWizard: discovery technique wording", () => {
+  async function openTechniqueScreen(remoteType?: "gh" | "azdo") {
+    const { readConfig } = await import("../../src/config/configStore.js");
+    vi.mocked(readConfig).mockReturnValue(remoteType ? { remoteType } : {});
+    const view = render(<ConfigWizard />);
+    // Implement-Next is the second main menu entry.
+    view.stdin.write(DOWN);
+    await tick();
+    view.stdin.write(ENTER);
+    await tick();
+    return view;
+  }
+
+  afterEach(async () => {
+    const { readConfig } = await import("../../src/config/configStore.js");
+    vi.mocked(readConfig).mockReturnValue({});
+  });
+
+  it("uses Azure DevOps wording when the remote is azdo", async () => {
+    const { lastFrame } = await openTechniqueScreen("azdo");
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Work Item Discovery Technique");
+    expect(frame).toContain("By Tag");
+    expect(frame).toContain("By Assigned To");
+    expect(frame).not.toContain("By Label");
+  });
+
+  it("keeps the GitHub wording otherwise", async () => {
+    const { lastFrame } = await openTechniqueScreen("gh");
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Issue Discovery Technique");
+    expect(frame).toContain("By Label");
+    expect(frame).not.toContain("By Tag");
   });
 });

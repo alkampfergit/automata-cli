@@ -3,9 +3,10 @@ import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
   readRawConfig,
-  writeConfig,
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
+  DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
 } from "../config/configStore.js";
@@ -20,6 +21,7 @@ import {
   getRepoSlug,
   getWatchTarget,
   addLabel,
+  postMarker,
   type WatchTarget,
 } from "../github/ghWorkService.js";
 import type { Participants } from "../github/conversation.js";
@@ -33,6 +35,7 @@ import {
 } from "../conductor/replyDecision.js";
 import {
   composeConductorPrompt,
+  type AgentRequest,
   type ConductorThread,
   type ReplyTarget,
   type ThreadPr,
@@ -43,6 +46,7 @@ import {
   resolveConductorExecution,
   type ConductorExecution,
 } from "../conductor/execution.js";
+import { parseInterval, runAutomatic, type TickResult } from "../conductor/automatic.js";
 import { conductReply } from "../conductor/reply.js";
 import {
   BLOCKED_LABEL,
@@ -51,14 +55,18 @@ import {
   parseNeedsHuman,
   resolveMaxReplies,
 } from "../conductor/loopSafety.js";
+import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
-import { normalizeWatch, parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
+import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
+import { readWatch, writeWatch } from "../conductor/watchStore.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
-import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock } from "../run/runLock.js";
+import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
+import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
+import { acquireConductorLock, CONDUCTOR_LOCK_RELATIVE_PATH, inspectConductorLock, inspectRunLock } from "../run/runLock.js";
 
 function fail(message: string): number {
   process.stderr.write(`Error: ${message}\n`);
@@ -66,16 +74,14 @@ function fail(message: string): number {
 }
 
 /**
- * Apply a change to the watch list against the config as it is on disk right
- * now, so a concurrent `add`/`remove`/prune is not overwritten by a stale
+ * Apply a change to the watch list as it is on disk right now, so a concurrent `add`/`remove`/prune is not overwritten by a stale
  * snapshot taken earlier in the command (the network calls in between are slow).
  */
 function updateWatch(change: (current: number[]) => number[]): void {
-  const raw = readRawConfig();
-  const current = normalizeWatch(raw.conductor?.watch);
+  const current = readWatch();
   const next = change(current);
   if (next.length === current.length && next.every((id, i) => id === current[i])) return;
-  writeConfig({ ...raw, conductor: { ...raw.conductor, watch: next } });
+  writeWatch(next);
 }
 
 function describe(target: WatchTarget): string {
@@ -83,12 +89,12 @@ function describe(target: WatchTarget): string {
 }
 
 /**
- * Drop closed issues and closed/merged pull requests from `conductor.watch`,
+ * Drop closed issues and closed/merged pull requests from the watch list,
  * logging each removal. An id that cannot be looked up stays: a network error
  * must not empty the list.
  */
-export function pruneWatchList(config: AutomataConfig): number[] {
-  const watch = normalizeWatch(config.conductor?.watch);
+export function pruneWatchList(): number[] {
+  const watch = readWatch();
   const dropped: number[] = [];
   for (const id of watch) {
     try {
@@ -131,14 +137,14 @@ function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLin
   const target = getWatchTarget(id);
   if (target.kind === "pr") {
     const pr = readPr(id);
-    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface)], labels: target.labels };
+    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface, pr.checks)], labels: target.labels };
   }
   const issue = getIssueSurface(id);
   const prs = (linkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
   return {
     target,
     thread: { kind: "issue", issue, prs },
-    conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface))],
+    conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface, pr.checks))],
     labels: target.labels,
   };
 }
@@ -153,7 +159,33 @@ function readTargetMessages(target: ReplyTarget) {
 /** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
 function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink });
+  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun, echoResult: false });
+}
+
+/**
+ * Set for the length of one `--verbose` invocation. Process-wide like the command trace,
+ * so the item functions need no extra parameter; `runConductor` always clears it.
+ */
+let verboseRun = false;
+
+/** `--verbose`: the tool calls the permission mode refused, which the model's own summary leaves out. */
+function reportDenials(stdout: string, label: string): void {
+  if (!verboseRun || stdout.length === 0) return;
+  const lines = describePermissionDenials(parsePermissionDenials(stdout));
+  if (lines.length === 0) {
+    process.stderr.write(`Conductor: the run for ${label} reported no denied tool call.\n`);
+    return;
+  }
+  process.stderr.write(`Conductor: the run for ${label} was denied ${String(lines.length)} tool call(s):\n`);
+  for (const line of lines) process.stderr.write(`  - ${line}\n`);
+}
+
+/** `--verbose`: every `git` and `gh` call the tick made, with its duration and exit code. */
+function reportCommandTrace(): void {
+  const trace = takeCommandTrace();
+  if (trace === null) return;
+  process.stderr.write(`Commands (${String(trace.length)})\n`);
+  for (const traced of trace) process.stderr.write(`  ${describeTracedCommand(traced)}\n`);
 }
 
 /** A sink that keeps what the run printed on stdout. */
@@ -172,8 +204,12 @@ function captureStdout(): { sink: RunSink; text: () => string } {
 async function runModelForText(prompt: string, execution: ConductorExecution): Promise<string | null> {
   const { owner, repo } = getRepoSlug();
   const captured = captureStdout();
-  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink };
-  await runClaude(prompt, options);
+  const options = { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun, echoResult: false };
+  try {
+    await runClaude(prompt, options);
+  } finally {
+    reportDenials(captured.text(), "the dry run");
+  }
   return extractDryRunReply(execution.executor, captured.text());
 }
 
@@ -208,6 +244,20 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
   return "idle";
 }
 
+/**
+ * A rebase or CI-fix turn ended in `NEEDS-HUMAN:`. The always checks ignore the label, so the turn must leave
+ * a trace for its head commit, or the next tick would run the model again. The note carries the marker of the turn.
+ */
+function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: string, label: string): void {
+  const what = request.kind === "rebase" ? "the rebase" : "the CI fix";
+  const marker = request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
+  try {
+    postMarker(replyTo.kind, replyTo.number, `The conductor stopped on ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
+  } catch (err) {
+    process.stderr.write(`Warning: could not record the stopped ${what} of ${label}; the next tick tries again: ${(err as Error).message}\n`);
+  }
+}
+
 type ItemResult = "replied" | "idle" | "failed";
 
 async function conductDryRunItem(
@@ -233,6 +283,27 @@ async function conductDryRunItem(
   return "replied";
 }
 
+/** The agent is working while its `do-work` run lock is held; a conductor must not start a second turn on its items. */
+function agentIsWorking(config: AutomataConfig): boolean {
+  const status = inspectRunLock(config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes);
+  return status.kind === "held" || status.kind === "suspect";
+}
+
+/** The configured instructions for a turn, or the built-in default. */
+function frameFor(key: "issue" | "pr" | "rebase" | "ciFix", config: AutomataConfig): string {
+  const prompts = config.conductor?.prompts;
+  switch (key) {
+    case "issue":
+      return prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT;
+    case "pr":
+      return prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT;
+    case "rebase":
+      return prompts?.rebase ?? DEFAULT_CONDUCTOR_REBASE_PROMPT;
+    case "ciFix":
+      return prompts?.ciFix ?? DEFAULT_CONDUCTOR_CI_FIX_PROMPT;
+  }
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -252,27 +323,35 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor));
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
-  const owed = verdict.decisions.find(
-    (decision) => decision.kind === "reply" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
+  // A rebase request, then a CI-fix request, come before an ordinary reply, on whichever conversation of the item.
+  const eligible = verdict.decisions.filter(
+    (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
+  const owed =
+    eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
   if (owed === undefined) {
-    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && (decision.reason === "blocked" || decision.reason === "limit"));
+    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
     const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
     process.stdout.write(`${why}\n`);
     return "idle";
   }
+  const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
+  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
+  if ((copilotTurn || request !== undefined) && dryRun === undefined && agentIsWorking(config)) {
+    const what = waitingReason(copilotTurn, request);
+    process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
+    return "idle";
+  }
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
-  const frame =
-    thread.kind === "issue"
-      ? (config.conductor?.prompts?.issue ?? DEFAULT_CONDUCTOR_ISSUE_PROMPT)
-      : (config.conductor?.prompts?.pr ?? DEFAULT_CONDUCTOR_PR_PROMPT);
-  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined });
+  const frame = frameFor(frameKey(thread.kind, request), config);
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, request });
   const where = `${replyTo.kind === "pr" ? "pull request" : "issue"} #${String(replyTo.number)}`;
 
-  process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  const need = needLabel(request);
+  process.stdout.write(`Conductor: ${label} needs ${need} on ${where}; running ${describeConductorExecution(execution)}.\n`);
   if (dryRun) return conductDryRunItem(prompt, execution, label, where, replyTo, dryRun);
   const captured = captureStdout();
   const outcome = await conductReply({
@@ -280,8 +359,10 @@ async function conductItem(
     read: () => readTargetMessages(replyTo),
     run: () => runModel(prompt, execution, replyTo, captured.sink),
   });
+  reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
+    if (request !== undefined) noteRequestStop(replyTo, request, needsHuman, label);
     return blockItem(item, label, needsHuman);
   }
   switch (outcome.kind) {
@@ -349,7 +430,7 @@ export function runWatchAdd(rawId: string): number {
 export function runWatchRemove(rawId: string): number {
   const id = parseWatchId(rawId);
   if (id === null) return fail(`"${rawId}" is not an issue or pull request number.`);
-  const before = normalizeWatch(readRawConfig().conductor?.watch);
+  const before = readWatch();
   if (!before.includes(id)) return fail(`#${String(id)} is not on the watch list.`);
   updateWatch((current) => withoutWatched(current, id));
   process.stdout.write(`Stopped watching #${String(id)}.\n`);
@@ -359,7 +440,7 @@ export function runWatchRemove(rawId: string): number {
 export function runWatchList(): number {
   const config = loadGitHubConfig();
   if (typeof config === "number") return config;
-  const watch = normalizeWatch(config.conductor?.watch);
+  const watch = readWatch();
   if (watch.length === 0) {
     process.stdout.write("The watch list is empty.\n");
     return 0;
@@ -447,6 +528,10 @@ function preflight(): Preflight | { problem: string } {
 export interface ConductorOptions {
   check?: boolean;
   dryRun?: boolean;
+  verbose?: boolean;
+  automatic?: boolean;
+  /** Seconds, as typed; only with `automatic`. */
+  interval?: string;
 }
 
 function staleMinutesOf(config: AutomataConfig): number {
@@ -458,6 +543,7 @@ function checkWatched(
   id: number,
   participants: Participants,
   maxReplies: number,
+  ciFixEnabled: boolean,
   linkMap: () => OpenPrLinkMap,
   coveredBy?: number,
 ): WatchedCheck {
@@ -466,7 +552,7 @@ function checkWatched(
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
     if (coveredBy !== undefined) return { id, kind: target.kind, state: "open", decisions: [], coveredBy };
     const { conversations, labels } = readWatchedItem(id, linkMap);
-    const loop: LoopState = loopStateOf(conversations, labels, maxReplies);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.allowedUsers, ciFixEnabled);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };
@@ -485,7 +571,7 @@ function runConductorCheck(): number {
     // the header says "unknown repository"
   }
   const linkMap = onceLinkMap();
-  const watchIds = "problem" in checked ? [] : normalizeWatch(checked.config.conductor?.watch);
+  const watchIds = "problem" in checked ? [] : readWatch({ migrate: false });
   const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap);
   const report =
     "problem" in checked
@@ -499,7 +585,7 @@ function runConductorCheck(): number {
           execution: describeConductorExecution(checked.execution),
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
-          watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), linkMap, covered.get(id))),
+          watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), checked.config.conductor?.ciFix?.enabled !== false, linkMap, covered.get(id))),
         });
   process.stdout.write(report.text);
   return report.exitCode;
@@ -515,7 +601,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
-  const watchIds = normalizeWatch(config.conductor?.watch);
+  const watchIds = readWatch({ migrate: false });
   const covered = coveredOf(watchIds, context.linkMap);
   for (const id of watchIds) {
     try {
@@ -567,21 +653,83 @@ function reportHeldLock(held: { pid: number; host: string; startedAt: string }, 
  * the reply a tick would post for each watched item, but posts nothing, and changes nothing: no lock, no prune.
  */
 export async function runConductor(options: ConductorOptions = {}): Promise<number> {
-  if (options.check === true && options.dryRun === true) {
-    return fail("--check and --dry-run cannot be used together.");
+  verboseRun = options.verbose === true;
+  if (verboseRun) startCommandTrace();
+  try {
+    return await runConductorTick(options);
+  } finally {
+    // In `finally` so an unexpected failure still prints the trace.
+    reportCommandTrace();
+    verboseRun = false;
+    stopCommandTrace();
   }
+}
+
+async function runConductorTick(options: ConductorOptions): Promise<number> {
+  const problem = optionsProblem(options);
+  if (problem !== null) return fail(problem);
+  if (options.automatic === true) return runConductorAutomatic(options.interval);
   if (options.check === true) return runConductorCheck();
+  return (await runTick(options)).code;
+}
+
+function optionsProblem(options: ConductorOptions): string | null {
+  if (options.check === true && options.dryRun === true) return "--check and --dry-run cannot be used together.";
+  if (options.automatic !== true) {
+    return options.interval === undefined ? null : "--interval needs --automatic.";
+  }
+  if (options.check === true || options.dryRun === true) return "--automatic cannot be used with --check or --dry-run.";
+  const interval = parseInterval(options.interval);
+  return typeof interval === "string" ? interval : null;
+}
+
+/** `--automatic`: ticks until no open item is watched, or until SIGINT/SIGTERM. */
+async function runConductorAutomatic(rawInterval: string | undefined): Promise<number> {
+  const intervalSeconds = parseInterval(rawInterval) as number;
+  let stop = false;
+  let wake: (() => void) | null = null;
+  const onSignal = (): void => {
+    if (stop) process.exit(130);
+    stop = true;
+    process.stdout.write("Conductor: stopping after the current tick.\n");
+    wake?.();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    process.stdout.write(`Conductor: automatic mode, one tick every ${String(intervalSeconds)} s. Press Ctrl+C to stop.\n`);
+    return await runAutomatic({
+      intervalSeconds,
+      tick: () => runTick({}),
+      stopped: () => stop,
+      log: (line) => process.stdout.write(`${line}\n`),
+      sleep: (seconds) =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, seconds * 1000);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        }),
+    });
+  } finally {
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+  }
+}
+
+async function runTick(options: ConductorOptions): Promise<TickResult> {
   const checked = preflight();
-  if ("problem" in checked) return fail(checked.problem);
-  if (options.dryRun === true) return runConductorDryRun(checked);
+  if ("problem" in checked) return { code: fail(checked.problem), open: null };
+  if (options.dryRun === true) return { code: await runConductorDryRun(checked), open: null };
   const { config, login, participants, execution } = checked;
   const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
   const lock = acquireConductorLock(staleMinutes);
-  if (!lock.ok) return reportHeldLock(lock.heldBy, lock.suspect, staleMinutes);
+  if (!lock.ok) return { code: reportHeldLock(lock.heldBy, lock.suspect, staleMinutes), open: null };
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
-    const watch = pruneWatchList(config);
+    const watch = pruneWatchList();
     let failed = 0;
     const linkMap = onceLinkMap();
     const covered = coveredOf(watch, linkMap);
@@ -599,7 +747,7 @@ export async function runConductor(options: ConductorOptions = {}): Promise<numb
         failed++;
       }
     }
-    return failed > 0 ? 1 : 0;
+    return { code: failed > 0 ? 1 : 0, open: watch.length };
   } finally {
     lock.handle.release();
   }
@@ -611,6 +759,12 @@ export const conductorCommand = new Command("conductor")
   )
   .option("--check", "Report what a tick would do, including pending prunes, and change nothing; exit 1 on a problem")
   .option("--dry-run", "Run the model for each owed reply and print it instead of posting; no lock, no prune")
+  .option(
+    "--verbose",
+    "Trace every `git` and `gh` call with its duration and exit code, show the model's steps, and list the tool calls the run was denied",
+  )
+  .option("--automatic", "Run a tick every --interval seconds until no open item is watched (Ctrl+C stops it)")
+  .option("--interval <seconds>", "Seconds between two ticks with --automatic (default 60)")
   .action(async (options: ConductorOptions) => {
     exitWith(await runConductor(options));
   });
@@ -635,3 +789,21 @@ conductorCommand
   .action(() => {
     exitWith(runWatchList());
   });
+
+/** Why a turn waits for the agent: an open Copilot thread, a failed check or a merge conflict. */
+function waitingReason(copilotTurn: boolean, request: AgentRequest | undefined): string {
+  if (copilotTurn) return "has open Copilot review threads";
+  return request?.kind === "ci-fix" ? "has a failed check" : "has a merge conflict";
+}
+
+/** The prompt frame of a turn: the thread kind, or the kind of the request to the agent. */
+function frameKey(threadKind: "issue" | "pr", request: AgentRequest | undefined): "issue" | "pr" | "rebase" | "ciFix" {
+  if (request === undefined) return threadKind;
+  return request.kind === "ci-fix" ? "ciFix" : "rebase";
+}
+
+/** What the item is owed, for the progress line. */
+function needLabel(request: AgentRequest | undefined): string {
+  if (request === undefined) return "a reply";
+  return request.kind === "rebase" ? "a rebase request" : "a CI-fix request";
+}

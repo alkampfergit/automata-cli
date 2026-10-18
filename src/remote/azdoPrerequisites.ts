@@ -51,14 +51,17 @@ function formatVersion(v: ParsedVersion): string {
   return v.parts.join(".") + (v.prerelease ? `-${v.prerelease}` : "");
 }
 
-function extractIdentity(stdout: string): string | null {
+const DISPLAY_KEYS = ["displayName", "uniqueName", "providerDisplayName", "id"];
+const ACCOUNT_KEYS = ["uniqueName", "displayName", "providerDisplayName", "id"];
+
+function extractIdentity(stdout: string, keys: string[] = DISPLAY_KEYS): string | null {
   try {
     const parsed = JSON.parse(stdout) as { identity?: unknown };
     const id = parsed.identity;
     if (typeof id === "string" && id) return id;
     if (id && typeof id === "object") {
       const o = id as Record<string, unknown>;
-      for (const key of ["displayName", "uniqueName", "providerDisplayName", "id"]) {
+      for (const key of keys) {
         if (typeof o[key] === "string" && o[key]) return o[key] as string;
       }
     }
@@ -96,6 +99,19 @@ export function checkAzdoPrerequisites(run: Runner = defaultRunner): AzdoPrerequ
     };
   }
   return { ok: true, version: formatVersion(version), identity };
+}
+
+/**
+ * The account name of the authenticated user (the unique name, for example an email address), which
+ * `azdo assign` accepts. `azdo assign` does not resolve `@me`, so the claim needs this name.
+ */
+export function resolveAzdoUser(run: Runner = defaultRunner): string {
+  const auth = run(["auth", "diagnose", "--json", AZDO_NO_UPDATE_CHECK]);
+  const user = auth.status === 0 ? extractIdentity(auth.stdout, ACCOUNT_KEYS) : null;
+  if (!user) {
+    throw new Error("Could not resolve the authenticated Azure DevOps user. Set `agentUser` with `automata config`.");
+  }
+  return user;
 }
 
 let verified: AzdoPrerequisite | null = null;

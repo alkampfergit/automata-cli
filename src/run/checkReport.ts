@@ -1,4 +1,5 @@
 import type { ExecutionTick, LogDirectoryStatus, LogReadResult, WorkRecord } from "./operationLog.js";
+import { CLAUDE_AUTH_REASON, CLAUDE_AUTH_REMEDY } from "./claudeAuth.js";
 import type { LockStatus } from "./runLock.js";
 import type { Heartbeat } from "./heartbeat.js";
 import { describeTracedCommand, type TracedCommand } from "./commandTrace.js";
@@ -502,6 +503,15 @@ function describeTickHistory(
       finding(
         `the last tick exited ${String(ticks[0].exitCode)} — see \`Last work\` below and the work log for the item that failed`,
         "automata do-work --check --verbose",
+      ),
+    );
+  }
+
+  if (ticks[0].note === "claude-auth") {
+    problems.push(
+      finding(
+        `${CLAUDE_AUTH_REASON}, so the last tick stopped before it answered; ${CLAUDE_AUTH_REMEDY}`,
+        "claude /login",
       ),
     );
   }

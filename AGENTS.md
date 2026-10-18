@@ -20,8 +20,14 @@ A command-line interface tool built with TypeScript and commander.js.
 ## Working Defaults
 
 - Run `npm test && npm run lint` before wrapping up when the change warrants it.
+- Code is not good, and you must not commit it, until all checks pass with no open finding. Before each commit, run
+  `npm run lint`, `npm run typecheck`, `npm test` and `npm run sonar:local`. Fix every error that they report. Fix
+  every warning too, or state in the commit message why you keep it. Do not suppress a rule, lower a threshold or
+  skip a test to get a pass. `sonar:local` is an approximation, so also check the SonarCloud result of the pull
+  request. See `docs/maintenance.md`.
 - After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
+- This project uses GitFlow for its branch strategy.
 - A user-visible change (command, flag, config key, output format, install requirement) gets a bullet under `## [Unreleased]` in `CHANGELOG.md`, in the same commit. Internal refactors, test-only changes and spec-kit artifacts do not. The format, the categories and what a release does to `Unreleased` are in `docs/maintenance.md`.
 
 ## Documentation Convention

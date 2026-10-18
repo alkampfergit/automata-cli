@@ -9,21 +9,118 @@ reply as a comment. Comment only: the conductor never approves or merges.
 automata conductor              # one tick
 automata conductor --check      # report what a tick would do; change nothing
 automata conductor --dry-run    # write the replies, but do not post them
+automata conductor --verbose    # trace the work behind a tick or a run of the options above
+automata conductor --automatic  # run a tick every 60 seconds until nothing open is watched
+automata conductor --automatic --interval 30
 automata conductor add <id>     # watch an issue or pull request
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
 ```
 
-The tick has no options.
+| Option | Effect |
+|--------|--------|
+| `--check` | Report what a tick would do; change nothing. |
+| `--dry-run` | Write the replies, but do not post them. |
+| `--automatic` | Run the tick in a loop; see [Automatic mode](#automatic-mode). |
+| `--interval <seconds>` | Seconds between two ticks. A positive whole number, default 60. Needs `--automatic`. |
+
+## Automatic mode
+
+`--automatic` replaces an external cron. The command stays in the foreground and prints the output of every tick in
+the terminal, so that terminal cannot take other commands. Each iteration is a whole tick: it takes the conductor lock,
+prunes the watch list, conducts each item and releases the lock. Then the command waits `--interval` seconds.
+
+- A tick that exits 1, or that finds the lock held, does not stop the loop. The next tick runs after the interval.
+- The loop exits with code 0 when the watch list is empty after the prune, also when it is empty at the start. A
+  watched item that cannot be read stays on the list, so a network error does not end the loop.
+- Ctrl+C (SIGINT) or SIGTERM stops the loop after the current tick has released its lock. A second signal exits at once.
+- `--automatic` cannot be used with `--check` or `--dry-run`. `--interval` without `--automatic` is an error. Both
+  errors exit 1 before any tick.
+
+## Copilot review threads
+
+A pull request (a watched one, or the one linked to a watched issue) with an unresolved review thread that Copilot
+started is owed a reply, also when the agent did not speak last. The prompt then gets a block that lists each thread
+(file, line, URL and Copilot's comment) and tells the model to write, in its reply, an instruction to the agent: fix
+each comment, and then resolve the review thread. The conductor run stays read-only; it does not resolve threads.
+
+- A Copilot account is a login that contains `copilot`, for example `Copilot`.
+- The turn is owed only when Copilot wrote after the newest conductor reply (the reply marker) on that conversation.
+  Open threads therefore do not draw a new reply on every tick.
+- While the `do-work` run lock is held the agent is working, and the conductor starts no Copilot turn; it logs this and
+  tries again on the next tick.
+- [Loop safety](#loop-safety) applies: the reply limit and the `conductor-blocked` label stop a Copilot turn too.
+
+## Rebase check
+
+Some checks run on every watched item, even one with the `conductor-blocked` label or one that has used its replies.
+Today there are two: the rebase check and the [CI-fix check](#ci-fix-check), in that order (`src/conductor/alwaysChecks.ts`; another check is one more function in
+`ALWAYS_CHECKS`). It runs before the [loop-safety rules](#loop-safety).
+
+A watched pull request, or an open pull request linked to a watched issue, is owed a rebase request when GitHub reports
+`mergeable: CONFLICTING`. `MERGEABLE` and `UNKNOWN` do nothing; GitHub computes the value lazily, and the next tick
+reads `UNKNOWN` again. A pull request that is not watched is not touched.
+
+The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.rebase` as its instructions. The
+model posts that request as a comment to the agent; the agent does the rebase. The comment ends with the marker
+`<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. Only a comment of an allowed user (`allowedUsers`, the accounts the conductor posts as) counts, and only when the marker is the last line of the comment; a marker from another account is ignored. A rebase request on a linked pull request runs before an ordinary reply on the issue. The marker gives two rules:
+
+| Rule | Skip reason | Effect |
+|------|-------------|--------|
+| Once per head commit | `rebase-done` | A rebase request for the current head commit exists, so the check waits. A new push gives a new commit and arms the check again. |
+| Rebase limit | `rebase-limit` | The item has `conductor.maxRepliesPerItem` rebase requests (default 5). The rebase requests have their own counter: they do not use up the replies, and the replies do not use up the rebase requests. |
+
+If the rebase run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-blocked` label again and the
+conductor posts one short note with the rebase marker, so the check does not run again for the same head commit. As for
+a Copilot turn, the check waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists
+it as `rebase request on PR #<n>`.
+
+## CI-fix check
+
+The second always check asks the agent to fix a build that failed. It has the same shape as the rebase check, and it
+also runs on an item with the `conductor-blocked` label.
+
+A watched pull request, or an open pull request linked to a watched issue, is owed a CI-fix request when at least one
+check has finished with the conclusion `FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED` or `CANCELLED`. The check waits while
+any check is still pending. It does nothing when GitHub reports `mergeable: CONFLICTING`, because the rebase check comes
+first; a push after the rebase re-arms it. Set `conductor.ciFix.enabled` to `false` to switch it off.
+
+The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.ciFix` as its instructions. The
+model finds the failed checks, posts the request as a comment to the agent, and the agent fixes the build and pushes.
+The comment ends with the marker `<!-- automata:conductor-ci-fix head=<sha> -->`. Only a comment of an allowed user
+(`allowedUsers`) counts, and only when the marker is the last line of the comment. The marker gives two rules:
+
+| Rule | Skip reason | Effect |
+|------|-------------|--------|
+| Once per head commit | `ci-fix-done` | A CI-fix request for the current head commit exists, so the check waits. A new push gives a new commit and arms the check again. |
+| CI-fix limit | `ci-fix-limit` | The item has `conductor.maxRepliesPerItem` CI-fix requests (default 5). They have their own counter, apart from the replies and the rebase requests. |
+
+If the run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-blocked` label again and the conductor posts
+one short note with the CI-fix marker, so the check does not run again for the same head commit. As for the rebase
+check, it waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists it as
+`CI-fix request on PR #<n>`.
 
 ## Watch list
 
-The items the conductor follows are stored in `.automata/config.json` as `conductor.watch`, an array of issue and pull
-request numbers (see [config.md](config.md)):
+The items the conductor follows are stored in `.automata/conductor-watch.json`, an array of issue and pull request
+numbers:
 
 ```json
-{ "conductor": { "watch": [114, 120] } }
+{ "watch": [114, 120] }
 ```
+
+The file is machine state, not configuration. It is in `.gitignore`, so `add`, `remove` and the pruning of a tick do
+not change `git status`, and they never write `.automata/config.json`.
+
+**Add `.automata/conductor-watch.json` to your repository's ignore rules.** This repository ignores it in its own
+`.gitignore`, but that does nothing for a repository where automata is installed. `AUTOMATA_OWN_PATHS` only keeps
+automata's own cleanliness checks from counting the file. Without the ignore rule, `add` or the migration leaves an
+untracked file in `git status`. A missing file, or a file that cannot be read
+or parsed, is an empty list. Entries that are not positive integers are ignored.
+
+**Migration.** Older versions kept the list in `.automata/config.json` as `conductor.watch`. When
+`.automata/conductor-watch.json` does not exist and `conductor.watch` has entries, the first command that can write the
+list copies them into the new file. `config.json` is not changed. After that the old key is ignored; you can delete it. `--check` and `--dry-run` read the old entries but never create the file.
 
 | Subcommand | Effect |
 |------------|--------|
@@ -48,7 +145,9 @@ separately, and the item needs a reply when either does. A conversation needs a 
 | Outcome | When |
 |---------|------|
 | reply | `agentUser` wrote and no allowed user wrote after it. Review-thread comments count on a pull request, and an issue description written by `agentUser` counts as its message. |
+| reply (Copilot) | A pull request has an unresolved Copilot review thread newer than the newest conductor reply; see [Copilot review threads](#copilot-review-threads). |
 | skip, `answered` | An allowed user wrote after the newest `agentUser` message. |
+| skip, `agent-working` | The newest `agentUser` comment is the `automata do-work: working…` marker, newer than the newest real `agentUser` message, and no allowed user wrote after it. A `do-work` run is in flight, so the conductor does not reply. The marker is never the message that waits for an answer, in the conversation or in a review thread. A marker left by a crashed run keeps the item quiet in the same way until an allowed user writes again or the next `do-work` tick answers it. There is no timeout, because a conductor reply there would loop. |
 | skip, `no-agent-message` | `agentUser` never wrote there. |
 | skip, `closed` | The issue is closed or the pull request closed or merged — the rule the tick-start prune uses. |
 | skip, `limit` or `blocked` | A reply is owed, but the item reached its [reply limit](#loop-safety) or has the `conductor-blocked` label. |
@@ -78,10 +177,12 @@ The prompt depends on the kind of the watched item:
 |-----|----------|
 | `conductor.prompts.issue` | A watched issue (and its linked pull requests) |
 | `conductor.prompts.pr` | A watched pull request |
+| `conductor.prompts.rebase` | A [rebase request](#rebase-check) for a watched pull request that has a merge conflict |
+| `conductor.prompts.ciFix` | A [CI-fix request](#ci-fix-check) for a watched pull request that has a failed check |
 
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
-[config.md](config.md#conductor). Without a key, a built-in default applies. Both defaults ask the model to write the
-next message to the agent, and forbid file changes, merging, closing and pushing.
+[config.md](config.md#conductor). Without a key, a built-in default applies. The issue and pull request defaults ask the model to write the
+next message to the agent, and forbid file changes, merging, closing and pushing. The rebase default is the request itself: fetch, update the target branch, rebase, resolve conflicts, commit and push, wait for the checks, and fix a failing check or a SonarCloud issue. The CI-fix default is, like the issue and pull request defaults, an instruction for the model: find the failed checks with `gh`, name each one with its error, and tell the agent to reproduce the failure, fix the cause, push, wait for the checks and end with `NEEDS-HUMAN:` if it cannot fix the failure.
 
 After the thread, automata appends the posting instruction itself, so a configured prompt cannot lose it: post one
 comment with `gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input,
@@ -105,7 +206,7 @@ the lock is taken.
 The run is **read-only**:
 
 - Claude runs with `--permission-mode dontAsk`, may only read and search inside the working directory, look at a thread with `gh issue view`,
-  `gh pr view`, `gh pr diff` and `gh pr checks`, use `git status`, and post with
+  `gh pr view`, `gh pr diff`, `gh pr checks` and `gh run view` (for the failed-check logs), use `git status`, and post with
   `gh issue comment <n> --body-file -` or `gh pr comment <n> --body-file -` for the one reply target only. Comments on
   any other number are denied. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
   a file. `Edit`, `Write` and `NotebookEdit` are denied. The run sets `GH_REPO` to the watched repository, and `gh`
@@ -223,6 +324,21 @@ item; `--check` lists all of them) and prints the reply instead of posting it:
 - The `codex` executor is refused (exit 1), as for a tick: it has no command allow-list, so it cannot be limited.
 - The [loop-safety rules](#loop-safety) apply. A reply of `NEEDS-HUMAN: <reason>` is printed as such; no label is applied.
 - The exit code is 1 when a model run fails or prints no reply text, otherwise 0.
+
+## `--verbose`
+
+Add `--verbose` to a tick, to `--check` or to `--dry-run` to see the work behind the result. It writes to stderr, so
+stdout is the same as without it. It changes no behaviour.
+
+- `Commands (N)` lists every `git` and `gh` call that automata made, with its duration and exit code. It is printed
+  after the tick, in the format of [`do-work --verbose`](do-work.md).
+- The steps of the model run are printed as they happen (`[step N] running: …`).
+- After each model run, the tool calls that the permission mode refused are listed, for example
+  `Bash gh issue comment 94 --body "…"`. The model's own summary does not give this. A run that did not
+  report a refusal prints `the run for #94 reported no denied tool call`.
+
+Use it when a tick says `needs a human (… denied by permissions)`: the denied command shows which call is outside the
+allow-list described in [Running the model](#running-the-model).
 
 ## Configuration
 

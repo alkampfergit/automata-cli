@@ -1,7 +1,21 @@
+import { isWorkingMarker } from "../github/workingMarker.js";
 import { agentAnsweredAfter } from "../github/workDetection.js";
 import { type Participants, type RawMessage } from "../github/conversation.js";
-import type { IssueSurface, PrSurface } from "../github/ghWorkService.js";
-import { BLOCKED_LABEL, countConductorReplies, type LoopState } from "./loopSafety.js";
+import type { CiCheck, IssueSurface, PrSurface } from "../github/ghWorkService.js";
+import {
+  BLOCKED_LABEL,
+  REPLY_MARKER,
+  countConductorReplies,
+  type LoopState,
+} from "./loopSafety.js";
+import { newestCopilotAt, openCopilotThreads } from "./copilot.js";
+import {
+  countCiFixTurns,
+  countRebaseTurns,
+  runAlwaysChecks,
+  type AlwaysDecision,
+  type AlwaysSkipReason,
+} from "./alwaysChecks.js";
 
 /**
  * Pure rule for the conductor: does a watched item need a reply from an allowed
@@ -18,18 +32,35 @@ export interface Conversation {
   /** `closed` covers a merged pull request too, as in `WatchTarget`. */
   state: "open" | "closed";
   messages: RawMessage[];
+  /** Pull request only: the newest comment of Copilot in an unresolved review thread, if any. */
+  copilotAt?: string | null;
+  /** Pull request only: GitHub's merge state (`CONFLICTING`, `MERGEABLE`, `UNKNOWN`). */
+  mergeable?: string;
+  /** Pull request only: the commit the head branch points at. */
+  headSha?: string;
+  /** Pull request only: the names of the checks that failed. */
+  ciFailed?: string[];
+  /** Pull request only: a check has not finished. */
+  ciPending?: boolean;
 }
+
+/** The conclusions of a finished check that mean the build is broken. */
+const FAILED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 
 export type ConductorSkipReason =
   | "closed"
   | "no-agent-message"
   | "answered"
+  | "agent-working"
   | "blocked"
-  | "limit";
+  | "limit"
+  | AlwaysSkipReason;
 
+/** `rebase` and `ci-fix` come from an always check (see `alwaysChecks.ts`) and ignore the loop-safety stop. */
 export type ConductorDecision =
-  | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string }
-  | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string };
+  | { kind: "reply"; surface: Conversation; agentMessageAt: string; reason: string; copilot?: true }
+  | { kind: "skip"; surface: Conversation; reason: ConductorSkipReason; detail: string }
+  | Extract<AlwaysDecision, { kind: "rebase" | "ci-fix" }>;
 
 /**
  * The one rule for "is this item finished": the pruning of the watch list and
@@ -49,12 +80,21 @@ export function issueConversation(surface: IssueSurface): Conversation {
 }
 
 /** Review-thread comments count: an agent comment in a thread is as unanswered as one in the conversation. */
-export function prConversation(surface: PrSurface): Conversation {
+export function prConversation(surface: PrSurface, checks?: CiCheck[]): Conversation {
   return {
     kind: "pr",
     number: surface.pr.number,
     state: surface.pr.state === "OPEN" ? "open" : "closed",
     messages: [...surface.messages, ...surface.threads.flatMap((thread) => thread.comments)],
+    copilotAt: newestCopilotAt(openCopilotThreads(surface)),
+    mergeable: surface.pr.mergeable,
+    headSha: surface.pr.headSha,
+    ...(checks === undefined
+      ? {}
+      : {
+          ciFailed: checks.filter((check) => check.conclusion !== null && FAILED_CONCLUSIONS.has(check.conclusion)).map((check) => check.name),
+          ciPending: checks.some((check) => check.status !== "COMPLETED"),
+        }),
   };
 }
 
@@ -68,8 +108,76 @@ export function prConversation(surface: PrSurface): Conversation {
  * unanswered.
  */
 export function decideConversation(conversation: Conversation, p: Participants): ConductorDecision {
+  const decision = decideByAgentMessage(conversation, p);
+  if (decision.kind === "reply") return decision;
+  // A run in flight owns the item: not even a Copilot thread is passed on meanwhile.
+  if (decision.reason === "agent-working") return decision;
+  return copilotTurn(conversation) ?? decision;
+}
+
+/**
+ * An open Copilot thread is work owed when Copilot wrote after the conductor's
+ * newest reply: the conductor has then not yet passed it on. Without that test an
+ * open thread would draw a new reply on every tick until the agent resolves it.
+ */
+function copilotTurn(conversation: Conversation): ConductorDecision | null {
+  const copilotAt = conversation.copilotAt ?? null;
+  if (copilotAt === null || isWatchClosed(conversation.state)) return null;
+  let lastReply = "";
+  for (const message of conversation.messages) {
+    if (message.body.includes(REPLY_MARKER) && message.createdAt > lastReply)
+      lastReply = message.createdAt;
+  }
+  if (copilotAt <= lastReply) return null;
+  return {
+    kind: "reply",
+    surface: conversation,
+    agentMessageAt: copilotAt,
+    copilot: true,
+    reason: `an unresolved Copilot review thread has a comment at ${copilotAt} that no conductor reply follows`,
+  };
+}
+
+/**
+ * The `working…` marker is not a message that waits for an answer: it says the agent
+ * is answering. It is kept apart from the agent's real messages. `workingSince` is the
+ * marker time when a marker is newer than every real agent message and no human wrote
+ * after it; a human who wrote after it has been answered, or will be by the run itself,
+ * so the reference stays the agent's real message, as without a marker.
+ */
+function splitAgentMessages(
+  relevant: RawMessage[],
+  agent: string,
+): { newest: RawMessage | null; workingSince: string | null } {
+  let newest: RawMessage | null = null;
+  let newestMarker: RawMessage | null = null;
+  for (const message of relevant) {
+    if (message.author.toLowerCase() !== agent) continue;
+    if (isWorkingMarker(message.body)) {
+      if (newestMarker === null || message.createdAt > newestMarker.createdAt)
+        newestMarker = message;
+    } else if (newest === null || message.createdAt > newest.createdAt) {
+      newest = message;
+    }
+  }
+  if (newestMarker === null || (newest !== null && newestMarker.createdAt <= newest.createdAt)) {
+    return { newest, workingSince: null };
+  }
+  const markerAt = newestMarker.createdAt;
+  const humanAfter = relevant.some(
+    (message) => message.author.toLowerCase() !== agent && message.createdAt > markerAt,
+  );
+  return { newest, workingSince: humanAfter ? null : markerAt };
+}
+
+function decideByAgentMessage(conversation: Conversation, p: Participants): ConductorDecision {
   if (isWatchClosed(conversation.state)) {
-    return { kind: "skip", surface: conversation, reason: "closed", detail: "the item is closed or merged" };
+    return {
+      kind: "skip",
+      surface: conversation,
+      reason: "closed",
+      detail: "the item is closed or merged",
+    };
   }
 
   const agent = p.agentUser.toLowerCase();
@@ -79,10 +187,14 @@ export function decideConversation(conversation: Conversation, p: Participants):
     return author === agent || allowed.has(author);
   });
 
-  let newest: RawMessage | null = null;
-  for (const message of relevant) {
-    if (message.author.toLowerCase() !== agent) continue;
-    if (newest === null || message.createdAt > newest.createdAt) newest = message;
+  const { newest, workingSince } = splitAgentMessages(relevant, agent);
+  if (workingSince !== null) {
+    return {
+      kind: "skip",
+      surface: conversation,
+      reason: "agent-working",
+      detail: `a do-work run is in flight (working marker at ${workingSince})`,
+    };
   }
   if (newest === null) {
     return {
@@ -132,19 +244,42 @@ export function decideConductorReply(
   p: Participants,
   loop?: LoopState,
 ): ConductorVerdict {
-  const decided = conversations.map((conversation) => decideConversation(conversation, p));
+  // The always checks come first and ignore the stop: a rebase or CI-fix request replaces the
+  // ordinary decision of its conversation, and a skipped one is listed beside it.
+  const always = runAlwaysChecks(
+    conversations,
+    loop === undefined
+      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, trustedUsers: p.allowedUsers }
+      : {
+          rebases: loop.rebases,
+          maxRebases: loop.maxRebases,
+          ciFixes: loop.ciFixes,
+          maxCiFixes: loop.maxCiFixes,
+          ciFixEnabled: loop.ciFixEnabled,
+          trustedUsers: p.allowedUsers,
+        },
+  );
+  const decided = conversations.map(
+    (conversation) =>
+      always.find((decision) => decision.kind !== "skip" && decision.surface === conversation) ??
+      decideConversation(conversation, p),
+  );
   const stop = loop === undefined ? null : loopStop(loop);
   const decisions = decided.map((decision): ConductorDecision =>
     decision.kind === "reply" && stop !== null
       ? { kind: "skip", surface: decision.surface, reason: stop.reason, detail: stop.detail }
       : decision,
   );
-  return { needsReply: decisions.some((decision) => decision.kind === "reply"), decisions };
+  decisions.push(...always.filter((decision) => decision.kind === "skip"));
+  return { needsReply: decisions.some((decision) => decision.kind !== "skip"), decisions };
 }
 
 function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: string } | null {
   if (loop.blocked) {
-    return { reason: "blocked", detail: `the item has the ${BLOCKED_LABEL} label; remove it to resume` };
+    return {
+      reason: "blocked",
+      detail: `the item has the ${BLOCKED_LABEL} label; remove it to resume`,
+    };
   }
   if (loop.replies >= loop.maxReplies) {
     return {
@@ -156,10 +291,22 @@ function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: strin
 }
 
 /** The loop-safety state of an item from its conversations, its labels and the configured limit. */
-export function loopStateOf(conversations: Conversation[], labels: string[], maxReplies: number): LoopState {
+export function loopStateOf(
+  conversations: Conversation[],
+  labels: string[],
+  maxReplies: number,
+  trustedUsers: string[],
+  ciFixEnabled = true,
+): LoopState {
+  const messages = conversations.flatMap((conversation) => conversation.messages);
   return {
     blocked: labels.some((label) => label.toLowerCase() === BLOCKED_LABEL),
-    replies: countConductorReplies(conversations.flatMap((conversation) => conversation.messages)),
+    replies: countConductorReplies(messages),
     maxReplies,
+    rebases: countRebaseTurns(messages, trustedUsers),
+    maxRebases: maxReplies,
+    ciFixes: countCiFixTurns(messages, trustedUsers),
+    maxCiFixes: maxReplies,
+    ciFixEnabled,
   };
 }

@@ -151,3 +151,5 @@ vite.config.ts.timestamp-*
 # automata run lock and its heartbeat (transient per-tick state)
 .automata/automata.lock
 .automata/automata-heartbeat.json
+# the conductor watch list (machine state, not configuration)
+.automata/conductor-watch.json

@@ -15,6 +15,11 @@ Launch the interactive configuration wizard. Use arrow keys to move between menu
 | Prompts | `prompts.sonar`, `prompts.fixComments`, `prompts.checkIssue`, `doWork.prompts.*`, `conductor.prompts.*` |
 | Issue Watch | `allowedUsers`, `agentUser` |
 
+When the remote is Azure DevOps, the Implement-Next screens read "Work Item Discovery Technique" and offer **By Tag**,
+**By Assigned To** and **By Title Contains**. They store the same values as GitHub's **By Label**, **By Assignee** and
+**By Title Contains** (`label`, `assignee`, `title-contains`): `label` is matched against the work item tag and
+`assignee` against Assigned To. See [Azure DevOps mode](implement-next.md#azure-devops-mode).
+
 ```bash
 automata config
 ```
@@ -277,7 +282,6 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 ```json
 {
   "conductor": {
-    "watch": [114, 120],
     "prompts": {
       "issue": "conductor-issue.md",
       "pr": "conductor-pr.md"
@@ -291,13 +295,19 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 
 | Key | Default | Meaning |
 |---|---|---|
-| `watch` | `[]` | The list of issue and pull request numbers [`automata conductor`](conductor.md#watch-list) follows. Manage it with the `conductor add`, `remove` and `list` subcommands, not by hand. Entries that are not positive integers are ignored. |
 | `prompts.issue` | built-in | Instructions for the conductor on a watched issue. See [conductor.md](conductor.md#the-thread-and-its-prompts). |
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
+| `prompts.rebase` | built-in | The request the conductor sends to the agent when a watched pull request has a merge conflict. See [conductor.md](conductor.md#rebase-check). Also `automata config set conductor-prompt rebase <text>` and the wizard screen `Prompts → Conductor — Rebase`. |
+| `prompts.ciFix` | built-in | Instructions for the request the conductor sends to the agent when a watched pull request has a failed check. See [conductor.md](conductor.md#ci-fix-check). Also `automata config set conductor-prompt ciFix <text>` and the wizard screen `Prompts → Conductor — CI fix`. |
+| `ciFix.enabled` | `true` | `false` switches the [CI-fix check](conductor.md#ci-fix-check) off. Hand-edited; there is no `config set` key. |
 | `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
 | `effort.claude`, `effort.codex` | unset | Reasoning effort passed to that executor, forwarded unchanged. |
-| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+| `maxRepliesPerItem` | `5` | The most replies the conductor posts on one watched item (an issue and its linked pull requests together). The requests of the [rebase check](conductor.md#rebase-check) and of the [CI-fix check](conductor.md#ci-fix-check) have their own counters with the same limit. A positive integer; any other value exits 1 before the lock is taken. Hand-edited; there is no `config set` key. See [conductor.md](conductor.md#loop-safety). |
+
+`conductor.watch` is no longer a config key. The watch list is in `.automata/conductor-watch.json`, which is gitignored
+(see [conductor.md](conductor.md#watch-list)). If `config.json` still has `conductor.watch`, the first read copies it
+into the new file once, and the old key is ignored after that. You can delete it from `config.json`.
 
 `models` and `effort` are keyed per executor for the reason `doWork.models` is: a value valid for one CLI is not valid for
 the other. The conductor reads only its own keys, never `doWork.executor`.
@@ -312,9 +322,11 @@ automata config set conductor-model claude opus
 automata config set conductor-effort claude high
 automata config set conductor-prompt issue conductor-issue.md
 automata config set conductor-prompt pr "Read the checks first."
+automata config set conductor-prompt rebase "Please rebase and push."
+automata config set conductor-prompt ciFix conductor-ci-fix.md
 ```
 
-`conductor-prompt` takes the kind (`issue` or `pr`) followed by prompt text or a `.md` filename. The wizard has the
+`conductor-prompt` takes the kind (`issue`, `pr`, `rebase` or `ciFix`) followed by prompt text or a `.md` filename. The wizard has the
 `conductor-executor`, `conductor-model` and `conductor-effort` set the executor settings; the wizard does not have screens
-for them. The wizard has the same two screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`); they save to `.automata/conductor-issue.md`
-and `.automata/conductor-pr.md`.
+for them. The wizard has the same four screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`, `Conductor — Rebase`, `Conductor — CI fix`); they save to
+`.automata/conductor-issue.md`, `.automata/conductor-pr.md`, `.automata/conductor-rebase.md` and `.automata/conductor-ci-fix.md`.

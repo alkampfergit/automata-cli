@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { WORKING_MARKER } from "../github/workingMarker.js";
 import { azdoUnsupportedMessage, isExplicitGitHub } from "../remote/backend.js";
 import {
   readConfig,
@@ -78,8 +79,21 @@ import {
   type RunSink,
 } from "../run/runTranscript.js";
 import { scrubExcerpt } from "../run/secondOpinion.js";
+import {
+  CLAUDE_AUTH_MARKER,
+  CLAUDE_AUTH_REASON,
+  CLAUDE_AUTH_REMEDY,
+  ClaudeAuthTail,
+  detectClaudeAuthFailure,
+  renderClaudeAuthComment,
+} from "../run/claudeAuth.js";
 import { readTranscriptTail, recoverAnswer, type RecoveryResult } from "../run/answerRecovery.js";
-import { acquireRunLock, inspectRunLock, RUN_LOCK_RELATIVE_PATH, type LockHandle } from "../run/runLock.js";
+import {
+  acquireRunLock,
+  inspectRunLock,
+  RUN_LOCK_RELATIVE_PATH,
+  type LockHandle,
+} from "../run/runLock.js";
 import {
   inspectLogDirectory,
   readExecutionTicks,
@@ -219,6 +233,8 @@ interface ItemReport {
    * only — the `--json` item shape is deliberately unchanged.
    */
   sync?: string;
+  /** True when the run stopped because Claude Code is not signed in. */
+  claudeAuth?: boolean;
 }
 
 /**
@@ -355,15 +371,21 @@ function requireParticipants(config: AutomataConfig): {
     );
   }
   if (!config.issueDiscoveryTechnique) {
-    failSettings("No issue discovery technique configured. Run `automata config set issue-discovery-technique <value>`.");
+    failSettings(
+      "No issue discovery technique configured. Run `automata config set issue-discovery-technique <value>`.",
+    );
   }
   if (!config.issueDiscoveryValue) {
-    failSettings("No issue discovery value configured. Run `automata config set issue-discovery-value <value>`.");
+    failSettings(
+      "No issue discovery value configured. Run `automata config set issue-discovery-value <value>`.",
+    );
   }
 
   const allowedUsers = (config.allowedUsers ?? []).filter((user) => user.trim().length > 0);
   if (allowedUsers.length === 0) {
-    failSettings("No allowed users configured. Run `automata config set allowed-users <user1,user2>`.");
+    failSettings(
+      "No allowed users configured. Run `automata config set allowed-users <user1,user2>`.",
+    );
   }
 
   const agentUser = (config.agentUser ?? "").trim();
@@ -502,10 +524,14 @@ interface PlannedRun {
  * newest messages. `Settings` therefore holds the inputs and this holds the
  * answer, so no item can leak its choice into the next one.
  */
-function resolveItemExecution(item: WorkItem, settings: Settings): ReturnType<typeof resolveExecution> {
+function resolveItemExecution(
+  item: WorkItem,
+  settings: Settings,
+): ReturnType<typeof resolveExecution> {
   const trigger = triggeringMessage(item);
   return resolveExecution({
-    directive: trigger === null ? { tool: undefined, model: undefined } : parseRunDirective(trigger.body),
+    directive:
+      trigger === null ? { tool: undefined, model: undefined } : parseRunDirective(trigger.body),
     withOption: settings.withOption,
     modelOption: settings.modelOption,
     configExecutor: settings.configExecutor,
@@ -602,8 +628,12 @@ function describeAssignment(item: WorkItem, agentUser: string): string {
  */
 function describePlanClaim(item: WorkItem): string {
   const claims = claimStates(item);
-  const would = claims.filter((claim) => claim.state === "would-claim").map((claim) => `the ${claim.surface}`);
-  const exempt = claims.filter((claim) => claim.state === "rule-exempt").map((claim) => claim.surface);
+  const would = claims
+    .filter((claim) => claim.state === "would-claim")
+    .map((claim) => `the ${claim.surface}`);
+  const exempt = claims
+    .filter((claim) => claim.state === "rule-exempt")
+    .map((claim) => claim.surface);
   const parts: string[] = [];
   if (would.length > 0) parts.push(`will assign ${would.join(" and ")} to the agent`);
   if (exempt.length > 0) parts.push(`${exempt.join(" and ")} not claimed (orphan pass)`);
@@ -684,7 +714,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** A field that must be a non-empty string if present at all. */
-function validateOptionalString(container: Record<string, unknown>, key: string, path: string): void {
+function validateOptionalString(
+  container: Record<string, unknown>,
+  key: string,
+  path: string,
+): void {
   const value = container[key];
   if (value === undefined || value === null) return;
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -722,8 +756,20 @@ function validateDoWorkConfig(section: unknown): void {
   }
 
   validateOptionalString(section, "baseBranch", "doWork.baseBranch");
-  validateOptionalInt(section, "maxRunsPerTick", "doWork.maxRunsPerTick", 0, "a non-negative integer (0 = unlimited)");
-  validateOptionalInt(section, "lockStaleMinutes", "doWork.lockStaleMinutes", 1, "a positive integer");
+  validateOptionalInt(
+    section,
+    "maxRunsPerTick",
+    "doWork.maxRunsPerTick",
+    0,
+    "a non-negative integer (0 = unlimited)",
+  );
+  validateOptionalInt(
+    section,
+    "lockStaleMinutes",
+    "doWork.lockStaleMinutes",
+    1,
+    "a positive integer",
+  );
   validateOptionalBoolean(section, "dumpOnBlock", "doWork.dumpOnBlock");
   validateOptionalBoolean(section, "postRunLog", "doWork.postRunLog");
 
@@ -764,7 +810,9 @@ function validateSettingContainer(value: unknown, container: string, keys: strin
   }
   for (const key of Object.keys(value)) {
     if (!keys.includes(key)) {
-      failSettings(`doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`);
+      failSettings(
+        `doWork.${container}.${key} is not a recognised setting; expected one of: ${keys.join(", ")}.`,
+      );
     }
   }
 }
@@ -787,7 +835,11 @@ function orphanPassEnabled(settings: Settings): boolean {
 
 function discoverIssues(settings: Settings): GitHubIssue[] {
   if (!issuePassEnabled(settings)) return [];
-  const candidates = listCandidateIssues(settings.technique, settings.discoveryValue, settings.limit);
+  const candidates = listCandidateIssues(
+    settings.technique,
+    settings.discoveryValue,
+    settings.limit,
+  );
 
   if (settings.onlyIssue === undefined) {
     if (candidates.length === settings.limit) {
@@ -927,14 +979,14 @@ function buildIssueState(issue: GitHubIssue, linkMap: OpenPrLinkMap): IssueState
 function describePlan(decisions: Decision[]): string {
   const lines = decisions.map((decision) => {
     if (decision.kind === "skip") {
-      return (
-        `  ${subjectLabel(decision.issue?.number ?? null, decision.pr?.number ?? null)} nothing to do — ${decision.detail}`
-      );
+      return `  ${subjectLabel(decision.issue?.number ?? null, decision.pr?.number ?? null)} nothing to do — ${decision.detail}`;
     }
     const item = decision.item;
     return `  ${itemLabel(item)} ${item.turn} on ${item.branch} — ${item.reason}${describePlanClaim(item)}`;
   });
-  return lines.length === 0 ? "  (nothing matched the discovery filter)\n" : lines.join("\n") + "\n";
+  return lines.length === 0
+    ? "  (nothing matched the discovery filter)\n"
+    : lines.join("\n") + "\n";
 }
 
 /**
@@ -951,9 +1003,13 @@ function claimIssue(item: WorkItem, settings: Settings): void {
   if (!item.needsAssignment || item.issue === null) return;
   try {
     assignIssueToAgent(item.issue.number, settings.participants.agentUser);
-    progress(`  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`);
+    progress(
+      `  assigned issue #${String(item.issue.number)} to ${settings.participants.agentUser}.\n`,
+    );
   } catch (err) {
-    progress(`  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+    progress(
+      `  warning: could not assign issue #${String(item.issue.number)}: ${(err as Error).message}\n`,
+    );
   }
 }
 
@@ -966,7 +1022,9 @@ function claimPr(prNumber: number, agentUser: string): void {
     assignPrToAgent(prNumber, agentUser);
     progress(`  assigned pull request #${String(prNumber)} to ${agentUser}.\n`);
   } catch (err) {
-    progress(`  warning: could not assign pull request #${String(prNumber)}: ${(err as Error).message}\n`);
+    progress(
+      `  warning: could not assign pull request #${String(prNumber)}: ${(err as Error).message}\n`,
+    );
   }
 }
 
@@ -990,11 +1048,15 @@ function notePickupOnIssue(item: WorkItem, marker: MarkerRef): MarkerRef | null 
       `automata do-work: picked this up on pull request #${String(item.pr.number)} — ${item.pr.url}`,
     );
   } catch (err) {
-    progress(`  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`);
+    progress(
+      `  skipped: could not note the pickup on issue #${String(item.issue.number)} — ${(err as Error).message}\n`,
+    );
     try {
       deleteMarker(marker);
     } catch (deleteErr) {
-      progress(`  warning: could not withdraw the working marker: ${(deleteErr as Error).message}\n`);
+      progress(
+        `  warning: could not withdraw the working marker: ${(deleteErr as Error).message}\n`,
+      );
     }
     return false;
   }
@@ -1021,7 +1083,9 @@ function reportIssueMessagesBuriedByNote(
     const messages = getIssueSurface(item.issue.number).messages;
     buried = messagesBetween(messages, participants, watermark, note.createdAt);
   } catch (err) {
-    progress(`  warning: could not re-read issue #${String(item.issue.number)}: ${(err as Error).message}\n`);
+    progress(
+      `  warning: could not re-read issue #${String(item.issue.number)}: ${(err as Error).message}\n`,
+    );
     return 0;
   }
   if (buried.length === 0) return 0;
@@ -1036,7 +1100,9 @@ function reportIssueMessagesBuriedByNote(
         "Please post again to have them acted on.",
     );
   } catch (err) {
-    progress(`  warning: could not report the buried issue message(s): ${(err as Error).message}\n`);
+    progress(
+      `  warning: could not report the buried issue message(s): ${(err as Error).message}\n`,
+    );
   }
   return buried.length;
 }
@@ -1082,7 +1148,9 @@ function refreshOrphanItem(
   const number = item.pr?.number ?? 0;
   const stillOrphan = linkMap.orphans.some((candidate) => candidate.pr.number === number);
   if (!stillOrphan) {
-    const linkedTo = issuesClosedBy(linkMap, number).map((issueNumber) => `#${String(issueNumber)}`);
+    const linkedTo = issuesClosedBy(linkMap, number).map(
+      (issueNumber) => `#${String(issueNumber)}`,
+    );
     return {
       kind: "skip",
       issue: null,
@@ -1175,6 +1243,8 @@ interface Reconciled {
   outcome: Outcome;
   detail: string;
   reason: ReconcileReason;
+  /** True when the run stopped because Claude Code is not signed in. */
+  claudeAuth?: boolean;
 }
 
 async function reconcileMarker(
@@ -1182,10 +1252,14 @@ async function reconcileMarker(
   marker: MarkerRef,
   participants: Participants,
   watermark: string | null,
-  runError: Error | null,
-  diagnostics: (() => Promise<string>) | null,
-  recovery: (() => Promise<RecoveryResult>) | null = null,
+  run: {
+    runError: Error | null;
+    diagnostics: (() => Promise<string>) | null;
+    recovery: (() => Promise<RecoveryResult>) | null;
+    claudeAuth: string | null;
+  },
 ): Promise<Reconciled> {
+  const { runError, diagnostics, recovery, claudeAuth } = run;
   let analysis: AnswerAnalysis;
   try {
     analysis = analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
@@ -1199,7 +1273,8 @@ async function reconcileMarker(
   let recoveryNote: string | null = null;
   let recovered = false;
   // Only a run that finished: a failed run's output is not an answer to publish.
-  if (analysis.answeredAt === null && runError === null && recovery !== null) {
+  const canRecover = runError === null && recovery !== null && claudeAuth === null;
+  if (analysis.answeredAt === null && canRecover) {
     const attempt = await attemptRecovery(item, marker, participants, watermark, recovery);
     if ("analysis" in attempt) {
       analysis = attempt.analysis;
@@ -1210,28 +1285,97 @@ async function reconcileMarker(
   }
 
   if (analysis.answeredAt !== null) {
-    reportOvertakenMessages(item, analysis);
-    try {
-      deleteMarker(marker);
-    } catch (err) {
-      progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
-    }
-    if (analysis.missed.length > 0) {
-      return {
-        outcome: "answered-no-reply",
-        detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
-        reason: "flagged",
-      };
-    }
-    if (recovered) {
-      return { outcome: "answered", detail: "answered (recovered from the run transcript)", reason: "answered" };
-    }
-    return runError === null
-      ? { outcome: "answered", detail: "answered", reason: "answered" }
-      : { outcome: "answered", detail: `answered, but the run reported: ${runError.message}`, reason: "answered" };
+    return reportAnswered(item, marker, analysis, runError, recovered);
   }
 
+  if (claudeAuth !== null) return reportClaudeAuth(item, marker, participants, claudeAuth);
   return reportNoAnswer(item, marker, runError, diagnostics, recoveryNote);
+}
+
+/** The thread holds an answer: drop the marker and say how it got there. */
+function reportAnswered(
+  item: WorkItem,
+  marker: MarkerRef,
+  analysis: AnswerAnalysis,
+  runError: Error | null,
+  recovered: boolean,
+): Reconciled {
+  reportOvertakenMessages(item, analysis);
+  try {
+    deleteMarker(marker);
+  } catch (err) {
+    progress(`  warning: could not delete the marker comment: ${(err as Error).message}\n`);
+  }
+  if (analysis.missed.length > 0) {
+    return {
+      outcome: "answered-no-reply",
+      detail: `answered (${String(analysis.toReport.length)} message(s) arrived mid-run and were flagged)`,
+      reason: "flagged",
+    };
+  }
+  if (recovered) {
+    return {
+      outcome: "answered",
+      detail: "answered (recovered from the run transcript)",
+      reason: "answered",
+    };
+  }
+  return runError === null
+    ? { outcome: "answered", detail: "answered", reason: "answered" }
+    : {
+        outcome: "answered",
+        detail: `answered, but the run reported: ${runError.message}`,
+        reason: "answered",
+      };
+}
+
+/** True when the last earlier comment of the agent on the surface carries the login-failure marker. */
+function hasClaudeAuthComment(
+  item: WorkItem,
+  marker: MarkerRef,
+  participants: Participants,
+): boolean {
+  try {
+    const before = new Date(marker.createdAt).getTime();
+    const agent = participants.agentUser.toLowerCase();
+    const last = readAnsweringSurface(item).findLast(
+      (message) =>
+        message.author.toLowerCase() === agent && new Date(message.createdAt).getTime() < before,
+    );
+    return last?.body.includes(CLAUDE_AUTH_MARKER) === true;
+  } catch {
+    // The surface could not be read: post the comment rather than stay silent.
+    return false;
+  }
+}
+
+/**
+ * The run stopped because Claude Code is not signed in. The comment says so and
+ * names the fix, and carries a marker: when an earlier comment of the agent on
+ * the same surface already carries it, nothing new is posted. No second
+ * redaction pass runs — it would start Claude again and fail the same way.
+ */
+function reportClaudeAuth(
+  item: WorkItem,
+  marker: MarkerRef,
+  participants: Participants,
+  excerpt: string,
+): Reconciled {
+  const surface = markerSurfaceLabel(item);
+  const result: Reconciled = {
+    outcome: "failed",
+    detail: `${CLAUDE_AUTH_REASON}. ${CLAUDE_AUTH_REMEDY}`,
+    reason: "no-answer",
+    claudeAuth: true,
+  };
+  const alreadyTold = hasClaudeAuthComment(item, marker, participants);
+  try {
+    if (alreadyTold) deleteMarker(marker);
+    else updateMarker(marker, renderClaudeAuthComment(surface, excerpt));
+  } catch (err) {
+    warnMarkerNotUpdated(surface, err, "that Claude Code is not signed in");
+  }
+  return result;
 }
 
 type RecoveryAttempt = { analysis: AnswerAnalysis; posted: boolean } | { reason: string };
@@ -1252,7 +1396,9 @@ async function attemptRecovery(
   recovery: () => Promise<RecoveryResult>,
 ): Promise<RecoveryAttempt> {
   const surface = markerSurfaceLabel(item);
-  progress(`  recovery: the run posted no answer on ${surface}; asking the model to write it from the transcript.\n`);
+  progress(
+    `  recovery: the run posted no answer on ${surface}; asking the model to write it from the transcript.\n`,
+  );
   const reread = (): AnswerAnalysis =>
     analyseAnswer(readAnsweringSurface(item), participants, marker, watermark);
   const fail = (reason: string): { reason: string } => {
@@ -1287,11 +1433,14 @@ async function attemptRecovery(
 
   try {
     const verified = reread();
-    if (verified.answeredAt === null) return fail(`the recovered answer is not visible on ${surface} after posting`);
+    if (verified.answeredAt === null)
+      return fail(`the recovered answer is not visible on ${surface} after posting`);
     progress(`  recovery: posted the answer recovered from the run transcript on ${surface}.\n`);
     return { analysis: verified, posted: true };
   } catch (err) {
-    return fail(`could not re-read ${surface} to verify the recovered answer: ${(err as Error).message}`);
+    return fail(
+      `could not re-read ${surface} to verify the recovered answer: ${(err as Error).message}`,
+    );
   }
 }
 
@@ -1313,6 +1462,14 @@ function reportUnverified(item: WorkItem, marker: MarkerRef): Reconciled {
     detail: "could not verify whether an answer was posted",
     reason: "unverified",
   };
+}
+
+/** Tell the operator that the marker comment could not be updated, so the humans were not told `what`. */
+function warnMarkerNotUpdated(surface: string, err: unknown, what: string): void {
+  progress(
+    `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
+      `  the humans have not been told ${what}.\n`,
+  );
 }
 
 /**
@@ -1339,17 +1496,20 @@ async function reportNoAnswer(
       : `automata do-work: the agent run failed before posting an answer (${runError.message}). ` +
         `${sideEffects} Reply on ${surface} to have another attempt made.`;
   const recovery =
-    recoveryNote === null ? "" : ` A second pass tried to recover the answer from the run transcript and could not: ${recoveryNote}.`;
+    recoveryNote === null
+      ? ""
+      : ` A second pass tried to recover the answer from the run transcript and could not: ${recoveryNote}.`;
   try {
     updateMarker(marker, explanation + recovery + ((await diagnostics?.()) ?? ""));
   } catch (err) {
-    progress(
-      `  warning: could not update the marker comment on ${surface}: ${(err as Error).message}\n` +
-        `  the humans have not been told that this run produced no answer.\n`,
-    );
+    warnMarkerNotUpdated(surface, err, "that this run produced no answer");
   }
   return runError === null
-    ? { outcome: "answered-no-reply", detail: "run finished but posted no answer", reason: "no-answer" }
+    ? {
+        outcome: "answered-no-reply",
+        detail: "run finished but posted no answer",
+        reason: "no-answer",
+      }
     : { outcome: "failed", detail: `run failed: ${runError.message}`, reason: "no-answer" };
 }
 
@@ -1374,7 +1534,12 @@ async function invokeExecutor(
     await runCodex(prompt, { model: execution.model, effort: execution.effort, sink });
     return;
   }
-  await runClaude(prompt, { model: execution.model, effort: execution.effort, printSteps: !silent, sink });
+  await runClaude(prompt, {
+    model: execution.model,
+    effort: execution.effort,
+    printSteps: !silent,
+    sink,
+  });
 }
 
 /**
@@ -1393,7 +1558,9 @@ function repairIssueLink(item: WorkItem, baseBranch: string, agentUser: string):
   try {
     const branch = getCurrentBranch();
     if (branch === baseBranch) {
-      progress(`  issue #${String(issue.number)} is still in discussion (no branch was created).\n`);
+      progress(
+        `  issue #${String(issue.number)} is still in discussion (no branch was created).\n`,
+      );
       return false;
     }
 
@@ -1410,16 +1577,23 @@ function repairIssueLink(item: WorkItem, baseBranch: string, agentUser: string):
       claimPr(pr.number, agentUser);
     }
     // Word boundary: `includes("Closes #42")` also matches `Closes #420`.
-    const closesRef = new RegExp(String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`, "i");
+    const closesRef = new RegExp(
+      String.raw`\bcloses\s+#` + String(issue.number) + String.raw`\b`,
+      "i",
+    );
     if (closesRef.test(pr.body)) {
-      progress(`  pull request #${String(pr.number)} already closes issue #${String(issue.number)}.\n`);
+      progress(
+        `  pull request #${String(pr.number)} already closes issue #${String(issue.number)}.\n`,
+      );
       return true;
     }
     addClosesRefToPr(pr.number, issue.number);
     progress(`  linked pull request #${String(pr.number)} to issue #${String(issue.number)}.\n`);
     return true;
   } catch (err) {
-    progress(`  warning: could not link a pull request to issue #${String(issue.number)}: ${(err as Error).message}\n`);
+    progress(
+      `  warning: could not link a pull request to issue #${String(issue.number)}: ${(err as Error).message}\n`,
+    );
     return false;
   }
 }
@@ -1533,7 +1707,7 @@ async function processItem(
   let marker: MarkerRef;
   const markerTarget = markerSurfaceTarget(item);
   try {
-    marker = postMarker(markerTarget.surface, markerTarget.number, "automata do-work: working…");
+    marker = postMarker(markerTarget.surface, markerTarget.number, WORKING_MARKER);
   } catch (err) {
     // Without the marker there is no boundary, so a run now would be answered
     // again on every later tick. Skipping leaves the message for the next tick.
@@ -1552,7 +1726,9 @@ async function processItem(
   }
   let buriedByNote = 0;
   if (note !== null) {
-    progress(`  noted on issue #${String(item.issue?.number ?? 0)} that the work is on pull request #${String(item.pr?.number ?? 0)}.\n`);
+    progress(
+      `  noted on issue #${String(item.issue?.number ?? 0)} that the work is on pull request #${String(item.pr?.number ?? 0)}.\n`,
+    );
     buriedByNote = reportIssueMessagesBuriedByNote(item, note, settings.participants);
   }
 
@@ -1605,22 +1781,25 @@ async function processItem(
   }
   const execution = toExecution(resolved);
 
-  const { runError, diagnostics, recovery } = await runRecorded(item, prompt, execution, settings, silent);
+  const { runError, diagnostics, recovery, claudeAuth } = await runRecorded(
+    item,
+    prompt,
+    execution,
+    settings,
+    silent,
+  );
   const ranExecutor = true;
 
   // Kept registered until reconciliation (which may run a recovery pass) ends,
   // so an interrupt during recovery still releases the marker.
   let reconciled: Awaited<ReturnType<typeof reconcileMarker>>;
   try {
-    reconciled = await reconcileMarker(
-      item,
-      marker,
-      settings.participants,
-      watermark,
+    reconciled = await reconcileMarker(item, marker, settings.participants, watermark, {
       runError,
       diagnostics,
       recovery,
-    );
+      claudeAuth,
+    });
   } finally {
     inFlightMarker = null;
   }
@@ -1628,7 +1807,14 @@ async function processItem(
 
   const outcome = adjustOutcome(reconciled, item, settings, buriedByNote);
 
-  return { ...base, outcome: outcome.outcome, detail: outcome.detail, ranExecutor, execution };
+  return {
+    ...base,
+    outcome: outcome.outcome,
+    detail: outcome.detail,
+    ranExecutor,
+    execution,
+    claudeAuth: outcome.claudeAuth,
+  };
 }
 
 /**
@@ -1646,23 +1832,46 @@ async function runRecorded(
   runError: Error | null;
   diagnostics: (() => Promise<string>) | null;
   recovery: (() => Promise<RecoveryResult>) | null;
+  /** The redacted output of a run that stopped on a Claude login failure, else null. */
+  claudeAuth: string | null;
 }> {
   const transcript = settings.postRunLog ? new RunTranscript(transcriptLabel(item)) : null;
   const before = transcript === null ? null : snapshotCheckout();
 
+  // Without a transcript, a bounded in-memory tail still lets the login failure be found.
+  const authTail =
+    transcript === null && execution.executor === "claude" ? new ClaudeAuthTail() : null;
+
   let runError: Error | null = null;
   try {
-    await invokeExecutor(prompt, execution, silent, transcript ?? undefined);
+    await invokeExecutor(prompt, execution, silent, transcript ?? authTail ?? undefined);
   } catch (err) {
     runError = err as Error;
   }
-  if (transcript === null) return { runError, diagnostics: null, recovery: null };
+  if (transcript === null) {
+    // The tail is only tested, never posted: the user turned the run log off.
+    const claudeAuth =
+      runError !== null && authTail !== null && detectClaudeAuthFailure(authTail.tail) ? "" : null;
+    return { runError, diagnostics: null, recovery: null, claudeAuth };
+  }
+  // Only the pattern redaction of the transcript: a model pass would start Claude again.
+  const tail = transcript.excerpt();
+  const claudeAuth =
+    runError !== null && execution.executor === "claude" && detectClaudeAuthFailure(tail)
+      ? tail
+      : null;
   return {
     runError,
+    claudeAuth,
     recovery: async () => {
-      const text = (transcript.saved ? readTranscriptTail(transcript.path) : null) ?? transcript.excerpt();
+      const text =
+        (transcript.saved ? readTranscriptTail(transcript.path) : null) ?? transcript.excerpt();
       if (text.trim() === "") return { ok: false, reason: "the run transcript is empty" };
-      return recoverAnswer(execution, { subject: markerSurfaceLabel(item), transcript: text, conversation: prompt });
+      return recoverAnswer(execution, {
+        subject: markerSurfaceLabel(item),
+        transcript: text,
+        conversation: prompt,
+      });
     },
     diagnostics: async () => {
       const excerpt = transcript.excerpt();
@@ -1681,7 +1890,6 @@ async function runRecorded(
   };
 }
 
-
 interface CheckoutSnapshot {
   branch: string | null;
   head: string | null;
@@ -1696,7 +1904,10 @@ function snapshotCheckout(): CheckoutSnapshot | null {
 }
 
 /** What the run left behind, or null when the checkout cannot be read. */
-function describeRunEffects(before: CheckoutSnapshot | null, baseBranch: string): RunSideEffects | null {
+function describeRunEffects(
+  before: CheckoutSnapshot | null,
+  baseBranch: string,
+): RunSideEffects | null {
   const after = snapshotCheckout();
   if (before === null || after === null) return null;
   let pr: RunSideEffects["pr"] = null;
@@ -1778,7 +1989,9 @@ function summarize(reports: ItemReport[]): void {
     // absent field would be ambiguous between "no directive" and "an older
     // automata" when read back out of a cron log.
     const ran = report.execution === undefined ? "" : ` · ${describeExecution(report.execution)}`;
-    out(`  ${reportLabel(report)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`);
+    out(
+      `  ${reportLabel(report)} ${report.turn ?? "-"} ${report.outcome} — ${report.detail}${ran}\n`,
+    );
   }
 }
 
@@ -1806,8 +2019,14 @@ export const doWorkCommand = new Command("do-work")
     "Run one tick of the autonomous loop: answer the issues whose newest authorized message the agent has not answered, " +
       "then the open pull requests that close no issue of this repository and have one",
   )
-  .option("--with <executor>", "Executor to use: claude or codex (default: from config, else claude)")
-  .option("--model <string>", "Model identifier to pass to the executor, overriding the configured default for it")
+  .option(
+    "--with <executor>",
+    "Executor to use: claude or codex (default: from config, else claude)",
+  )
+  .option(
+    "--model <string>",
+    "Model identifier to pass to the executor, overriding the configured default for it",
+  )
   .option(
     "--effort <level>",
     "Reasoning effort to pass to the executor, overriding the configured default for it",
@@ -1932,7 +2151,12 @@ async function runDoWorkTraced(options: DoWorkOptions): Promise<number> {
 
   // After the lock is released: a log write must never extend the window in
   // which the next cron tick is turned away.
-  logTick(reports, exitCode, startedAt);
+  logTick(
+    reports,
+    exitCode,
+    startedAt,
+    reports.some((report) => report.claudeAuth === true) ? "claude-auth" : undefined,
+  );
 
   return exitCode;
 }
@@ -2082,6 +2306,27 @@ function buildSelectionEvidence(
   };
 }
 
+/** One decision per issue, then one per orphan pull request: the two passes share one run cap. */
+function decideAll(
+  settings: Settings,
+  issues: GitHubIssue[],
+  linkMap: ReturnType<typeof getOpenPrLinkMap>,
+  policy: Parameters<typeof decideWork>[2],
+): Decision[] {
+  return skipDuplicateHeadBranches([
+    ...issues.map((issue) =>
+      decideWork(buildIssueState(issue, linkMap), settings.participants, policy),
+    ),
+    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
+      decideOrphanPrWork(
+        { prSurface: getPrSurface(candidate.pr.number) },
+        settings.participants,
+        policy,
+      ),
+    ),
+  ]);
+}
+
 function collectSelection(settings: Settings, verbose: boolean): SelectionEvidence {
   const issues = discoverIssues(settings);
   const linkMap = getOpenPrLinkMap();
@@ -2090,12 +2335,7 @@ function collectSelection(settings: Settings, verbose: boolean): SelectionEviden
     defaultBranch: linkMap.defaultBranch,
     protectedBranches: settings.protectedBranches,
   };
-  const decisions = skipDuplicateHeadBranches([
-    ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
-    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
-      decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
-    ),
-  ]);
+  const decisions = decideAll(settings, issues, linkMap, policy);
   return buildSelectionEvidence(settings, issues, linkMap, decisions, verbose);
 }
 
@@ -2158,7 +2398,12 @@ function describeIssueEvidence(settings: Settings, evidence: SelectionEvidence):
   ];
   if (evidence.issues === null) return lines;
 
-  lines.push(heading(`discovery returned ${String(evidence.issues.length)} issue(s)`, evidence.issues.length));
+  lines.push(
+    heading(
+      `discovery returned ${String(evidence.issues.length)} issue(s)`,
+      evidence.issues.length,
+    ),
+  );
   for (const issue of evidence.issues) {
     lines.push(`    #${String(issue.number)} ${issue.title}`);
   }
@@ -2278,11 +2523,11 @@ function selectionSectionFromEvidence(
   verbose: boolean,
 ): CheckSection {
   if (evidence === null) {
-    return makeSelectionSection(
-      ["not run: the tick was blocked before discovery"],
-      [],
-      { ran: false, detail: "blocked before discovery", plan: [] },
-    );
+    return makeSelectionSection(["not run: the tick was blocked before discovery"], [], {
+      ran: false,
+      detail: "blocked before discovery",
+      plan: [],
+    });
   }
   const lines: string[] = [];
   if (verbose && settings !== null) describeSelectionEvidence(settings, evidence, lines);
@@ -2603,6 +2848,7 @@ type BlockedReason =
   | "lock-held"
   | "config-invalid"
   | "preflight-failed"
+  | "claude-auth"
   | "no-candidates"
   | "all-skipped";
 
@@ -2698,6 +2944,9 @@ function classifyBlocked(
   items: WorkItem[],
   reports: ItemReport[],
 ): { reason: BlockedReason; trigger: string } | null {
+  if (reports.some((report) => report.claudeAuth === true)) {
+    return { reason: "claude-auth", trigger: `${CLAUDE_AUTH_REASON}; run \`claude /login\` again` };
+  }
   const ran = reports.some((report) => report.ranExecutor === true);
   if (ran) return null;
 
@@ -2870,12 +3119,7 @@ async function runTick(settings: Settings, options: DoWorkOptions): Promise<Tick
   // Issues first, then the orphan pull requests, and the ordering is load
   // bearing: the two passes share one run cap, so a pile of dependency-bump
   // pull requests must not be able to starve the issues.
-  const decisions = skipDuplicateHeadBranches([
-    ...issues.map((issue) => decideWork(buildIssueState(issue, linkMap), settings.participants, policy)),
-    ...discoverOrphanPrs(settings, linkMap).map((candidate) =>
-      decideOrphanPrWork({ prSurface: getPrSurface(candidate.pr.number) }, settings.participants, policy),
-    ),
-  ]);
+  const decisions = decideAll(settings, issues, linkMap, policy);
   const items = decisions.flatMap((decision) => (decision.kind === "work" ? [decision.item] : []));
 
   const planText = `Work plan (${String(items.length)} of ${String(decisions.length)} candidates need an answer):\n${describePlan(decisions)}`;
@@ -2974,9 +3218,25 @@ async function processItems(
     // executor — a refresh read error, say — did not spend one.
     if (report.ranExecutor === true) runsUsed++;
     reports.push(report);
+    if (report.claudeAuth === true) {
+      reports.push(...items.slice(index + 1).map((rest) => skipForClaudeAuth(rest)));
+      break;
+    }
   }
 
   return { reports, deferred };
+}
+
+/** An item the tick did not start because an earlier run showed Claude Code is not signed in. */
+function skipForClaudeAuth(item: WorkItem): ItemReport {
+  return {
+    issue: item.issue?.number ?? null,
+    pr: item.pr?.number ?? null,
+    title: itemTitle(item),
+    turn: item.turn,
+    outcome: "skipped",
+    detail: `${CLAUDE_AUTH_REASON}; run \`claude /login\` again`,
+  };
 }
 
 /**

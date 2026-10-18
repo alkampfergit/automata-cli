@@ -39,6 +39,10 @@ if command -v npm >/dev/null 2>&1; then
     # working copy (built with `npm run build`).
     echo "Installing automata-cli from npm..."
     npm install -g --ignore-scripts automata-cli || true
+    # Keep the current Azure DevOps CLI available for testing integrations and
+    # newer Azure DevOps features from this repository's Dev Container.
+    echo "Installing azdo-cli 0.22.0..."
+    npm install -g --ignore-scripts azdo-cli@0.22.0
 else
     echo "npm not available, skipping npm-based CLI installs."
 fi

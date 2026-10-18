@@ -10,6 +10,62 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-18
+
+### Added
+
+- `implement-next` works in Azure DevOps mode (`remoteType: azdo`, azdo-cli 0.22.0 or newer). It finds work items with
+  `azdo list-items` (`label` is a tag, `assignee` is Assigned To), assigns the chosen one, posts a `working` comment,
+  and after the run edits that comment, links the pull request with `AB#<id>` and, with `--ask-copilot-review`, adds
+  `agentUser` as reviewer. The prompt tells the agent to open the pull request with `azdo pr open`. The `automata config`
+  wizard shows Azure DevOps wording for the discovery technique. See `docs/implement-next.md`
+
+### Changed
+
+- The conductor watch list moved from `conductor.watch` in `.automata/config.json` to `.automata/conductor-watch.json`,
+  which is gitignored, so `conductor add`, `remove` and the tick's pruning no longer make `git status` dirty. If the new
+  file does not exist, the old `conductor.watch` entries are copied into it once; `config.json` is not rewritten and the
+  old key is ignored after that. See `docs/conductor.md` and `docs/config.md`
+
+### Fixed
+
+- The conductor now counts its rebase and CI-fix markers from the allowed users, the accounts it posts as, and not
+  from the agent account. Before, a request was not seen on the next tick and could repeat without reaching the limit.
+  Its read-only run may also use `gh run view`, so the model can read the logs of a failed check
+
+### Added
+
+- The conductor has a CI-fix check that runs even on an item with the `conductor-blocked` label: when a watched pull
+  request has a failed check and no check is pending, the conductor asks the agent to fix the build. The instructions
+  are configurable with `conductor.prompts.ciFix` (`automata config set conductor-prompt ciFix`, and a wizard screen),
+  and `conductor.ciFix.enabled` switches the check off. It waits for the rebase check on a conflicting pull request,
+  runs once per head commit, and has its own limit, `conductor.maxRepliesPerItem`. See
+  [docs/conductor.md](docs/conductor.md#ci-fix-check)
+- The conductor has a rebase check that runs even on an item with the `conductor-blocked` label: when GitHub reports
+  a merge conflict on a watched pull request, the conductor asks the agent to rebase. The request is configurable
+  with `conductor.prompts.rebase` (`automata config set conductor-prompt rebase`, and a wizard screen). It runs once
+  per head commit and has its own limit, `conductor.maxRepliesPerItem`. See
+  [docs/conductor.md](docs/conductor.md#rebase-check)
+- `automata conductor --verbose` traces every `git` and `gh` call, shows the steps of the model run and lists the tool
+  calls that the run was denied, so a `denied by permissions` block shows which command was refused
+- `do-work` finds a Claude Code login failure (for example `Failed to authenticate: OAuth session expired and could
+  not be refreshed`) and blocks the tick with the reason `claude-auth`. It tells the user to run `claude /login`
+  again, does not start the Claude-based redaction pass, posts the comment once, and shows the problem in
+  `--check`. The detection also works when `doWork.postRunLog` is `false`; the output is then not posted. See
+  [docs/do-work.md](docs/do-work.md#claude-login-failure)
+- `automata conductor --automatic [--interval <seconds>]` runs the tick in a loop in the foreground (default 60 s)
+  and exits 0 when no open item is watched. The conductor also answers open Copilot review threads: it tells the
+  agent to fix each comment and resolve its thread, unless the agent is working. See
+  [docs/conductor.md](docs/conductor.md#automatic-mode)
+
+### Fixed
+
+- The conductor no longer asks for a reply while a `do-work` run is in flight: the `automata do-work: working…` marker
+  is not counted as an agent message that waits for an answer, and the item is skipped with the new reason
+  `agent-working`. See `docs/conductor.md`
+- The conductor now creates the `conductor-blocked` label when `gh` reports it only as `'conductor-blocked' not found`,
+  instead of failing the tick without recording why it stopped
+
 ## [0.11.0] - 2026-10-07
 
 ### Added

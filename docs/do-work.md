@@ -609,20 +609,42 @@ Recent ticks
   …
 ```
 
-### The five triggers
+### The six triggers
 
 | `reason` | Trigger line | When |
 |---|---|---|
 | `lock-held` | `run lock held by pid <n> on <host>` | Another tick holds [the run lock](#the-run-lock). |
 | `config-invalid` | `configuration is not usable — <detail>` | The configuration does not parse or validate, or `gh` is authenticated as the wrong account. |
 | `preflight-failed` | `the pre-flight did not prepare the checkout (<causes>)` | A [pre-flight](#the-repository-hygiene-pre-flight) step failed and no item reached the executor. |
+| `claude-auth` | `Claude Code is not signed in (its login expired and could not be refreshed); run \`claude /login\` again` | A Claude run stopped because its login expired. See [Claude login failure](#claude-login-failure). |
 | `no-candidates` | `no candidate was picked up (0 of <n>)` | Discovery ran and every candidate had nothing to do. |
 | `all-skipped` | `<n> item(s) selected, none reached the executor` | Items were selected and every one of them was skipped, deferred or failed before the model ran. |
 
-They are ordered by cause: a failed pre-flight outranks the two selection outcomes, because when it
+They are ordered by cause: `claude-auth` comes first, and a failed pre-flight outranks the two selection outcomes, because when it
 is present it is *why* they happened.
 
-A tick that invoked the executor for at least one item is not blocked and dumps nothing.
+A tick that invoked the executor for at least one item is not blocked and dumps nothing. The one exception is
+`claude-auth`: the executor ran and stopped at once, so the tick is blocked.
+
+### Claude login failure
+
+When a Claude run exits with a non-zero code and its output shows an authentication failure (for example
+`Failed to authenticate: OAuth session expired and could not be refreshed`), `do-work` does the following:
+
+- It treats the tick as blocked with the reason `claude-auth`, and exits 2. The remaining items of the tick are
+  skipped, because they would fail the same way.
+- It does not start the second redaction pass or the answer recovery pass. Both start Claude and would fail again.
+  The comment shows the last lines of the output after pattern redaction only.
+- It replaces the pickup comment with a message that tells the user to run `claude /login` again (in the
+  devcontainer, if automata runs there). The comment ends with the marker `<!-- automata:claude-auth -->`.
+  If the last earlier comment of the agent on the same thread has this marker, no new comment is posted and the
+  pickup comment is deleted. A later successful answer removes the condition.
+- It records `note=claude-auth` in the operation log, so `--check` lists the problem under `Recent ticks`.
+
+There is no check before each tick. The failure is found from the Claude output. The patterns are in
+`CLAUDE_AUTH_PATTERNS` in `src/run/claudeAuth.ts`. Detection does not depend on `doWork.postRunLog`. When it is `false`, only a
+bounded tail (8 KB) of the output is kept in memory for the detector. It is not saved and not posted, so the
+comment has no output excerpt.
 
 ### What it costs
 

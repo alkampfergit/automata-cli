@@ -295,10 +295,10 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);
   });
 
-const CONDUCTOR_PROMPT_KINDS = ["issue", "pr"] as const;
+const CONDUCTOR_PROMPT_KINDS = ["issue", "pr", "rebase", "ciFix"] as const;
 
 const configSetConductorPrompt = new Command("conductor-prompt")
-  .description("Set the instructions for the conductor on a watched issue or pull request (prompt text or a .md filename)")
+  .description("Set the instructions for the conductor on a watched issue, a watched pull request, a rebase request or a CI-fix request (prompt text or a .md filename)")
   .argument("<kind>", `Kind of watched item: ${CONDUCTOR_PROMPT_KINDS.join(", ")}`)
   .argument("<value>", "Prompt text, or a plain .md filename inside .automata/")
   .action((kind: string, value: string) => {
