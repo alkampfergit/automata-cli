@@ -2,6 +2,7 @@ import type { AutomataConfig } from "../config/configStore.js";
 import {
   applyDiscovery,
   closeIssue,
+  commentOnIssue,
   getStorySource,
   type OpenPrLinkMap,
   type StorySource,
@@ -49,12 +50,17 @@ function drop(id: number, why: string): void {
 
 type StoryResult = "kept" | "dropped" | "failed";
 
+/** The comment that hands a started child to `do-work`: it is the first message from an authorized account. */
+function startComment(story: number): string {
+  return `The conductor starts this child of story #${String(story)}. Please implement it.`;
+}
+
 function fail(id: number, err: unknown): StoryResult {
   process.stderr.write(`Error: story #${String(id)} could not be conducted: ${(err as Error).message}\n`);
   return "failed";
 }
 
-function startChild(label: string, current: StoryChild, discovery: Discovery | null, dryRun: boolean): StoryResult {
+function startChild(story: number, label: string, current: StoryChild, discovery: Discovery | null, dryRun: boolean): StoryResult {
   if (discovery === null || (discovery.technique !== "title-contains" && discovery.value.length === 0)) {
     throw new Error("No usable issue discovery setting. Run `automata config`.");
   }
@@ -63,6 +69,7 @@ function startChild(label: string, current: StoryChild, discovery: Discovery | n
     return "kept";
   }
   applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
+  commentOnIssue(current.number, startComment(story));
   process.stdout.write(`Conductor: ${label}: started child #${String(current.number)}.\n`);
   return "kept";
 }
@@ -94,7 +101,7 @@ function conductStory(id: number, discovery: Discovery | null, linkMap: () => Op
         drop(id, "all children closed, parent closed");
         return "dropped";
       case "start":
-        return startChild(label, plan.current as StoryChild, discovery, dryRun);
+        return startChild(id, label, plan.current as StoryChild, discovery, dryRun);
       case "empty":
       case "wait":
       case "blocked":
@@ -106,11 +113,25 @@ function conductStory(id: number, discovery: Discovery | null, linkMap: () => Op
   }
 }
 
+/** The child a story waits for, when it has started: that child and its pull requests get the ordinary conductor processing. */
+function activeChild(id: number, discovery: Discovery | null, linkMap: () => OpenPrLinkMap): number[] {
+  try {
+    const { source, plan } = readStory(id, discovery, linkMap);
+    const waiting = plan.action === "wait" && plan.current !== null && source.state === "open";
+    return waiting ? [(plan.current as StoryChild).number] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** The stories part of a tick (or a dry run): `failed` counts the stories that could not be conducted, `open` those that remain. */
-export function conductStories(config: AutomataConfig, linkMap: () => OpenPrLinkMap, dryRun: boolean): { failed: number; open: number } {
+export function conductStories(config: AutomataConfig, linkMap: () => OpenPrLinkMap, dryRun: boolean): { failed: number; open: number; active: number[] } {
   const discovery = discoveryOf(config);
-  const results = readStories().map((id) => conductStory(id, discovery, linkMap, dryRun));
+  const ids = readStories();
+  const results = ids.map((id) => conductStory(id, discovery, linkMap, dryRun));
+  const active = ids.flatMap((id, i) => (results[i] === "kept" ? activeChild(id, discovery, linkMap) : []));
   return {
+    active,
     failed: results.filter((r) => r === "failed").length,
     open: results.filter((r) => r !== "dropped").length,
   };

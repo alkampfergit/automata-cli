@@ -154,16 +154,20 @@ At each tick the conductor finds the first open child and acts on it. It never s
 
 | Child state | Meaning | Tick |
 |-------------|---------|------|
-| `closed` | Done. | Passed over. |
+| `closed` | Done: the child is closed and has no open pull request. | Passed over. |
 | `next` | First open child, with no open pull request and no discovery setting. | Applies the discovery setting (label or assignee) so `do-work` implements it. |
 | `started` | First open child that has the discovery setting and no pull request. | Waits. |
-| `in review` | First open child that has an open pull request. | Waits until the pull request is merged and the child is closed. |
+| `in review` | First child that has an open pull request, also a closed child. | Waits until the pull request is merged and the child is closed. |
 | `blocked` | First open child with the `conductor-blocked` label. | Does nothing on GitHub, until a person removes the label. |
 | `queued` | A later open child. | Waits for its turn. |
 
 When all children are closed, the conductor closes the parent with one comment that names the children, and drops it
 from the stories. A closed parent is dropped at the start of its turn, with a line on stdout. A story that cannot be read
-stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for a story.
+stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for the parent.
+When a tick starts a child, the conductor also posts one comment on it, so `do-work` sees a message from an authorized
+account. The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
+to an agent question, a rebase request or a CI-fix request. A closed parent is dropped without a read of its children.
+`conductor add` on a watched parent that has children removes its ordinary watch entry.
 
 `conductor list` shows each story with its children and their states. `conductor --check` adds a `Stories` section: for
 each story, which child is next, which is waiting and which is blocked; an unreadable story is a problem. `--dry-run`

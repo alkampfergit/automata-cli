@@ -439,6 +439,8 @@ function addStory(id: number, story: StorySource, technique: string): number {
   if (technique === "title-contains") {
     return fail("issueDiscoveryTechnique `title-contains` cannot be applied to an existing item; use `label` or `assignee`.");
   }
+  // A parent that was watched as an ordinary item is promoted: it gets story processing only.
+  updateWatch((current) => withoutWatched(current, id));
   const stories = readStories();
   writeStories(stories.includes(id) ? stories : [...stories, id]);
   const first = story.children.find((child) => child.state === "open");
@@ -653,7 +655,16 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
       failed++;
     }
   }
-  failed += conductStories(config, context.linkMap, true).failed;
+  const stories = conductStories(config, context.linkMap, true);
+  failed += stories.failed;
+  for (const id of stories.active.filter((child) => !watchIds.includes(child))) {
+    try {
+      if ((await conductItem(id, config, login, participants, execution, context)) === "failed") failed++; // NOSONAR
+    } catch (err) {
+      process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+      failed++;
+    }
+  }
   return failed > 0 ? 1 : 0;
 }
 
@@ -777,6 +788,15 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
       }
     }
     const stories = conductStories(config, linkMap, false);
+    for (const id of stories.active.filter((child) => !watch.includes(child))) {
+      try {
+        // The active child and its linked pull requests get the ordinary conductor processing.
+        if ((await conductItem(id, config, login, participants, execution, undefined, linkMap)) === "failed") failed++; // NOSONAR
+      } catch (err) {
+        process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+        failed++;
+      }
+    }
     return { code: failed + stories.failed > 0 ? 1 : 0, open: watch.length + stories.open };
   } finally {
     lock.handle.release();

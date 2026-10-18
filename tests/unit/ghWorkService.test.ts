@@ -1162,6 +1162,20 @@ describe("getStorySource and closeIssue", () => {
     expect(getStorySource(2).via).toBe("none");
   });
 
+  it("does not read the children of a closed parent", async () => {
+    mockSpawnSync.mockReturnValueOnce(REMOTE).mockReturnValueOnce(json(issueJson(1, { state: "closed", body: "- [ ] #9" })));
+    const { getStorySource } = await import("../../src/github/ghWorkService.js");
+    expect(getStorySource(1)).toMatchObject({ state: "closed", via: "none", children: [] });
+    expect(calls()).toHaveLength(2);
+  });
+
+  it("comments on an issue", async () => {
+    mockSpawnSync.mockReturnValue(ok(""));
+    const { commentOnIssue } = await import("../../src/github/ghWorkService.js");
+    commentOnIssue(3, "hi");
+    expect(calls().map((c) => c.args)).toEqual([["issue", "comment", "3", "--body", "hi"]]);
+  });
+
   it("closes an issue with one call that carries the comment", async () => {
     mockSpawnSync.mockReturnValue(ok(""));
     const { closeIssue } = await import("../../src/github/ghWorkService.js");
