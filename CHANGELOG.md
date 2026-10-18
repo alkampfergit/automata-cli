@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-18
+
 ### Added
 
 - `implement-next` works in Azure DevOps mode (`remoteType: azdo`, azdo-cli 0.22.0 or newer). It finds work items with
