@@ -69,7 +69,8 @@ function isStarted(child: StoryChild, discovery: Discovery): boolean {
 
 /** What a tick does for the story, and the status of every child. */
 export function planStory(children: StoryChild[], discovery: Discovery): StoryPlan {
-  const index = children.findIndex((child) => child.state === "open");
+  // A closed child with an open pull request is unfinished: the story waits for that pull request.
+  const index = children.findIndex((child) => child.state === "open" || child.openPrs.length > 0);
   if (children.length === 0) return { action: "empty", current: null, statuses: [] };
   if (index === -1) return { action: "complete", current: null, statuses: children.map(() => "closed") };
   const current = children[index];
@@ -85,7 +86,8 @@ export function planStory(children: StoryChild[], discovery: Discovery): StoryPl
     current,
     statuses: children.map((_, i) => {
       if (i < index) return "closed";
-      return i === index ? status : "queued";
+      if (i === index) return status;
+      return children[i].state === "closed" ? "closed" : "queued";
     }),
   };
 }

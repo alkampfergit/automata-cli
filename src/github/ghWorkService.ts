@@ -817,7 +817,8 @@ export function getStorySource(id: number): StorySource {
   const { owner, repo } = getRepoSlug();
   const parent = ghJson<RawStoryIssue>(["api", `repos/${owner}/${repo}/issues/${String(id)}`], `read #${String(id)}`);
   const base = { state: parent.state === "closed" ? ("closed" as const) : ("open" as const), title: parent.title };
-  if (parent.pull_request !== undefined) return { ...base, via: "none", children: [] };
+  // A closed parent is pruned: its children may be deleted or out of reach, so they are not read.
+  if (parent.pull_request !== undefined || base.state === "closed") return { ...base, via: "none", children: [] };
   const sub = getSubIssues(owner, repo, id);
   if (sub.length > 0) return { ...base, via: "sub-issues", children: sub };
   const numbers = parseTaskList(parent.body ?? "", { owner, repo }).filter((n) => n !== id);
@@ -826,6 +827,12 @@ export function getStorySource(id: number): StorySource {
     .filter((raw) => raw.pull_request === undefined)
     .map(toStoryIssue);
   return { ...base, via: children.length > 0 ? "task-list" : "none", children };
+}
+
+/** Post a comment on an issue. */
+export function commentOnIssue(number: number, comment: string): void {
+  const { stderr, status } = run("gh", ["issue", "comment", String(number), "--body", comment]);
+  if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(number)}.`);
 }
 
 /** Close an issue with a comment, in one call, so a failed close cannot leave the comment to be posted again. */

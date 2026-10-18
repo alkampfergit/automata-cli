@@ -14,6 +14,7 @@ const mockWriteWatch = vi.fn((list: number[]) => {
 let storyState: number[] = [];
 const mockStorySource = vi.fn();
 const mockCloseIssue = vi.fn();
+const mockCommentOnIssue = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
@@ -46,6 +47,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
   getStorySource: (...a: unknown[]) => mockStorySource(...a),
   closeIssue: (...a: unknown[]) => mockCloseIssue(...a),
+  commentOnIssue: (...a: unknown[]) => mockCommentOnIssue(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
   postMarker: (...a: unknown[]) => mockPostMarker(...a),
@@ -931,7 +933,18 @@ describe("conductor stories", () => {
     expect(await runWith()).toBe(0);
     expect(mockApply).toHaveBeenCalledOnce();
     expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ number: 12, kind: "issue" }), "label", "automata");
+    expect(mockCommentOnIssue).toHaveBeenCalledWith(12, expect.stringContaining("story #10"));
     expect(storyState).toEqual([10]);
+  });
+
+  it("add promotes a watched parent: its ordinary watch entry is removed", async () => {
+    watchState = [10, 7];
+    mockTarget.mockReturnValue(issue(10));
+    mockStorySource.mockReturnValue(story([sub(12)]));
+    const { runWatchAdd } = await import("../../src/commands/conductor.js");
+    expect(runWatchAdd("10")).toBe(0);
+    expect(storyState).toEqual([10]);
+    expect(watchState).toEqual([7]);
   });
 
   it("a tick waits while the child has an open pull request, or was started", async () => {
@@ -944,6 +957,8 @@ describe("conductor stories", () => {
     expect(await runWith()).toBe(0);
     expect(mockApply).not.toHaveBeenCalled();
     expect(mockPostMarker).not.toHaveBeenCalled();
+    // The started child goes through the ordinary conductor processing.
+    expect(`${stdout}${stderr}`).toMatch(/#12/);
   });
 
   it("a tick leaves a blocked story alone, silently", async () => {

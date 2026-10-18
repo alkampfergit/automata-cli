@@ -51,6 +51,18 @@ describe("planStory", () => {
     expect(plan.statuses).toEqual(["in-review", "queued"]);
   });
 
+  it("shows a closed child after the open one as closed, not queued", () => {
+    expect(planStory([child(1), child(2, { state: "closed" }), child(3)], label).statuses).toEqual(["next", "closed", "queued"]);
+  });
+
+  it("waits for a closed child that still has an open pull request, and does not complete", () => {
+    const wait = planStory([child(1, { state: "closed", openPrs: [9] }), child(2)], label);
+    expect(wait.action).toBe("wait");
+    expect(wait.current?.number).toBe(1);
+    expect(wait.statuses).toEqual(["in-review", "queued"]);
+    expect(planStory([child(1, { state: "closed", openPrs: [9] })], label).action).toBe("wait");
+  });
+
   it("waits for a child that carries the discovery label, or the assignee", () => {
     expect(planStory([child(1, { labels: ["automata"] })], label).statuses).toEqual(["started"]);
     const byAssignee = planStory([child(1, { assignees: ["bot"] })], { technique: "assignee", value: "bot" });

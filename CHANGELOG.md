@@ -39,7 +39,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   and stores it as a story. At each tick the conductor applies the discovery label (or assignee) to the first open
   child that has no pull request, waits until that child is closed, then starts the next. A child with the
   `conductor-blocked` label stops the story. When all children are closed, the conductor closes the parent. `conductor
-  list` and `conductor --check` show the children and their states. See `docs/conductor.md`
+  list` and `conductor --check` show the children and their states. The started child and its pull requests get the
+  ordinary conductor processing. See `docs/conductor.md`
 - The conductor has a CI-fix check that runs even on an item with the `conductor-blocked` label: when a watched pull
   request has a failed check and no check is pending, the conductor asks the agent to fix the build. The instructions
   are configurable with `conductor.prompts.ciFix` (`automata config set conductor-prompt ciFix`, and a wizard screen),
