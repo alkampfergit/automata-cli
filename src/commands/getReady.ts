@@ -135,16 +135,7 @@ export const implementNextCommand = new Command("implement-next")
       process.exit(1);
     }
 
-    let issues: GitHubIssue[];
-    try {
-      if (isAzdo(config)) assertAzdoReady();
-      issues = isAzdo(config)
-        ? listWorkItems(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit)
-        : listIssues(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
+    const issues = discoverIssues(config, limit);
 
     const issue = await resolveIssue(issues, options, limit);
 
@@ -166,11 +157,7 @@ export const implementNextCommand = new Command("implement-next")
     const effort = resolveEffortOption(options.effort);
 
     if (options.claude !== false) {
-      const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
-      const azdoBlock = isAzdo(config) ? `\n\n${azdoPrInstructions(issue.number)}` : "";
-      const prompt = isAzdo(config)
-        ? `Resolving work item #${issue.number}:\n\n${systemPrompt}${azdoBlock}\n\n${issue.body}`
-        : `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
+      const prompt = buildPrompt(config, issue);
       if (executor === "codex") {
         if (options.silent) {
           process.stderr.write("Warning: --silent is only supported with Claude and has no effect when used with Codex.\n");
@@ -189,6 +176,23 @@ export const implementNextCommand = new Command("implement-next")
     // ── Post-claim: link PR to issue ───────────────────────────────────────
     linkPrToIssue(remote, issue.number, commentRef, options.askCopilotReview === true, config.agentUser);
   });
+
+function discoverIssues(config: AutomataConfig, limit: number): GitHubIssue[] {
+  try {
+    if (!isAzdo(config)) return listIssues(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
+    assertAzdoReady();
+    return listWorkItems(config.issueDiscoveryTechnique!, config.issueDiscoveryValue!, limit);
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return process.exit(1);
+  }
+}
+
+function buildPrompt(config: AutomataConfig, issue: GitHubIssue): string {
+  const systemPrompt = config.claudeSystemPrompt ?? DEFAULT_CLAUDE_SYSTEM_PROMPT;
+  if (!isAzdo(config)) return `Resolving issue #${issue.number}:\n\n${systemPrompt}\n\n${issue.body}`;
+  return `Resolving work item #${issue.number}:\n\n${systemPrompt}\n\n${azdoPrInstructions(issue.number)}\n\n${issue.body}`;
+}
 
 function claimIssue(remote: RemoteWriteService, config: AutomataConfig, issueNumber: number): string | undefined {
   try {
