@@ -36,6 +36,39 @@ describe("listWorkItems", () => {
     expect(mockSpawnSync.mock.calls[0][1]).toContain("80");
   });
 
+  it("caps the request at 1000 for a limit of 251", () => {
+    mockSpawnSync.mockReturnValue(ok([]));
+    listWorkItems("label", "x", 251);
+    expect(mockSpawnSync.mock.calls[0][1]).toContain("1000");
+    expect(mockSpawnSync.mock.calls[0][1]).not.toContain("1004");
+  });
+
+  it("widens the window when a full batch of closed items hides an open one", () => {
+    const closed = Array.from({ length: 50 }, (_, i) => item(i + 1, "Closed"));
+    mockSpawnSync.mockReturnValueOnce(ok(closed)).mockReturnValueOnce(ok([...closed, item(99)]));
+    expect(listWorkItems("label", "x", 10).map((i) => i.number)).toEqual([99]);
+    expect(mockSpawnSync.mock.calls[1][1]).toContain("200");
+  });
+
+  it("fails when the maximum window holds only closed items", () => {
+    mockSpawnSync.mockImplementation((_c: string, args: string[] = []) => {
+      const top = Number(args[args.indexOf("--top") + 1]);
+      return ok(Array.from({ length: top }, (_, i) => item(i + 1, "Closed")));
+    });
+    expect(() => listWorkItems("label", "x")).toThrow(/incomplete/);
+  });
+
+  it("warns when the maximum window is full but holds some open items", () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    mockSpawnSync.mockImplementation((_c: string, args: string[] = []) => {
+      const top = Number(args[args.indexOf("--top") + 1]);
+      return ok(Array.from({ length: top }, (_, i) => item(i + 1, i === 0 ? "Active" : "Closed")));
+    });
+    expect(listWorkItems("label", "x")).toHaveLength(1);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("more open work items"));
+    write.mockRestore();
+  });
+
   it("throws azdo's stderr, a missing-CLI message, and a parse message", () => {
     mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "denied", status: 1 });
     expect(() => listWorkItems("label", "x")).toThrow("denied");

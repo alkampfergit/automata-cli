@@ -69,12 +69,12 @@ markdown description of the work item.
 | Discovery `label` | `gh issue list --label` | `azdo list-items --tag` |
 | Discovery `assignee` | `--assignee` | `--assigned-to` |
 | Discovery `title-contains` | `--search "x in:title"` | `--title-contains` |
-| Claim | `working` comment | `azdo assign <id> <agentUser or @me>`, then a `working` comment |
+| Claim | `working` comment | `azdo assign <id> <agentUser, else the authenticated account from azdo auth diagnose>`, then a `working` comment |
 | After the run | edit the comment, `Closes #N`, assign the PR | edit the comment (`azdo comments edit`), `AB#<id>` in the description and a work item link |
 | `--ask-copilot-review` | adds `@copilot` as reviewer | adds `agentUser` as reviewer; with no `agentUser` a warning is printed |
 
 - Closed, Done, Removed and Completed work items are not listed. `azdo list-items` has no "open" filter, so the command
-  asks for four times `--limit` items (at least 50) and cuts the list after the filter.
+  asks for four times `--limit` items (at least 50, at most 1000) and cuts the list after the filter. If a full batch holds too few open items, it asks again with a larger window. If 1000 items are still not enough, it warns that discovery is incomplete (or fails when all 1000 are closed).
 - The prompt starts with `Resolving work item #<id>` and tells the agent to open the pull request with
   `azdo pr open --work-item <id>`, to write `AB#<id>` in the description, and not to use `gh pr create` or `Closes #N`.
 - Azure DevOps pull requests have no assignee, so the PR assignment step does nothing.

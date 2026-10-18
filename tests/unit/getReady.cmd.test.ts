@@ -1312,7 +1312,7 @@ describe("getReady command: Azure DevOps mode", () => {
       const ok = (stdout = "") => ({ stdout, stderr: "", status: 0 });
       if (cmd !== "azdo") return ok();
       if (args[0] === "--version") return ok("0.23.0\n");
-      if (args[0] === "auth") return ok(JSON.stringify({ identity: { displayName: "Me" } }));
+      if (args[0] === "auth") return ok(JSON.stringify({ identity: { displayName: "Me", uniqueName: "me@example.com" } }));
       if (args[0] === "list-items") return ok(JSON.stringify(items));
       if (args[0] === "comments" && args[1] === "add") return ok(JSON.stringify({ commentId: 77, url: "u" }));
       if (args[0] === "pr" && args[1] === "status") return ok(JSON.stringify({ pullRequests: pr }));
@@ -1414,13 +1414,13 @@ describe("getReady command: Azure DevOps mode", () => {
     expect(mockSpawnSync.mock.calls.some((c) => c[0] === "gh")).toBe(false);
   });
 
-  it("assigns to @me when no agentUser is configured", async () => {
+  it("assigns to the resolved account when no agentUser is configured", async () => {
     await configure();
     stubAzdo([workItem(6)]);
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const { implementNextCommand } = await import("../../src/commands/getReady.js");
     await implementNextCommand.parseAsync(["--no-claude"], { from: "user" });
-    expect(azdoCalls().find((a) => a[0] === "assign")).toEqual(["assign", "6", "@me", "--no-update-check"]);
+    expect(azdoCalls().find((a) => a[0] === "assign")).toEqual(["assign", "6", "me@example.com", "--no-update-check"]);
   });
 
   it("tells the agent to use azdo pr open and AB#<id>, not gh or Closes", async () => {

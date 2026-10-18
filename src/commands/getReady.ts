@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { isAzdo, isExplicitGitHub } from "../remote/backend.js";
-import { assertAzdoReady } from "../remote/azdoPrerequisites.js";
+import { assertAzdoReady, resolveAzdoUser } from "../remote/azdoPrerequisites.js";
 import { listWorkItems } from "../remote/azdoWorkItems.js";
 import { selectWriteService, type RemoteWriteService } from "../remote/writeService.js";
 import {
@@ -161,14 +161,7 @@ export const implementNextCommand = new Command("implement-next")
     const executor = options.claude === false ? undefined : resolveExecutor(options.with);
 
     const remote = selectWriteService(config);
-    let commentRef: string | undefined;
-    try {
-      if (isAzdo(config)) remote.assignIssue(issue.number, (config.agentUser ?? "").trim() || "@me");
-      commentRef = remote.postIssueComment(issue.number, "working");
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`);
-      process.exit(1);
-    }
+    const commentRef = claimIssue(remote, config, issue.number);
 
     const effort = resolveEffortOption(options.effort);
 
@@ -196,6 +189,16 @@ export const implementNextCommand = new Command("implement-next")
     // ── Post-claim: link PR to issue ───────────────────────────────────────
     linkPrToIssue(remote, issue.number, commentRef, options.askCopilotReview === true, config.agentUser);
   });
+
+function claimIssue(remote: RemoteWriteService, config: AutomataConfig, issueNumber: number): string | undefined {
+  try {
+    if (isAzdo(config)) remote.assignIssue(issueNumber, (config.agentUser ?? "").trim() || resolveAzdoUser());
+    return remote.postIssueComment(issueNumber, "working");
+  } catch (err) {
+    process.stderr.write(`Error: ${(err as Error).message}\n`);
+    return process.exit(1);
+  }
+}
 
 function resolveExecutor(requested: string): "claude" | "codex" {
   const executor = requested.toLowerCase();
