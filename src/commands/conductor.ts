@@ -442,10 +442,8 @@ function addStory(id: number, story: StorySource, technique: string): number {
   const stories = readStories();
   writeStories(stories.includes(id) ? stories : [...stories, id]);
   const first = story.children.find((child) => child.state === "open");
-  process.stdout.write(
-    `Watching story #${String(id)} (${story.title}): ${String(story.children.length)} children via ${story.via}; ` +
-      `${first === undefined ? "all are closed, so a tick closes it" : `first open child is #${String(first.number)}`}.\n`,
-  );
+  const next = first === undefined ? "all are closed, so a tick closes it" : `first open child is #${String(first.number)}`;
+  process.stdout.write(`Watching story #${String(id)} (${story.title}): ${String(story.children.length)} children via ${story.via}; ${next}.\n`);
   return 0;
 }
 

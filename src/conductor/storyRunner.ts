@@ -54,6 +54,19 @@ function fail(id: number, err: unknown): StoryResult {
   return "failed";
 }
 
+function startChild(label: string, current: StoryChild, discovery: Discovery | null, dryRun: boolean): StoryResult {
+  if (discovery === null || (discovery.technique !== "title-contains" && discovery.value.length === 0)) {
+    throw new Error("No usable issue discovery setting. Run `automata config`.");
+  }
+  if (dryRun) {
+    process.stdout.write(`Conductor: ${label}: a tick would start child #${String(current.number)}.\n`);
+    return "kept";
+  }
+  applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
+  process.stdout.write(`Conductor: ${label}: started child #${String(current.number)}.\n`);
+  return "kept";
+}
+
 function conductStory(id: number, discovery: Discovery | null, linkMap: () => OpenPrLinkMap, dryRun: boolean): StoryResult {
   let read: StoryRead;
   try {
@@ -80,19 +93,8 @@ function conductStory(id: number, discovery: Discovery | null, linkMap: () => Op
         closeIssue(id, storyDoneComment(children));
         drop(id, "all children closed, parent closed");
         return "dropped";
-      case "start": {
-        const current = plan.current as StoryChild;
-        if (discovery === null || (discovery.technique !== "title-contains" && discovery.value.length === 0)) {
-          throw new Error("No usable issue discovery setting. Run `automata config`.");
-        }
-        if (dryRun) {
-          process.stdout.write(`Conductor: ${label}: ${would}start child #${String(current.number)}.\n`);
-          return "kept";
-        }
-        applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
-        process.stdout.write(`Conductor: ${label}: started child #${String(current.number)}.\n`);
-        return "kept";
-      }
+      case "start":
+        return startChild(label, plan.current as StoryChild, discovery, dryRun);
       case "empty":
       case "wait":
       case "blocked":
