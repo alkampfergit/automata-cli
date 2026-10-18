@@ -34,6 +34,12 @@ export interface Discovery {
   value: string;
 }
 
+function stripTrailingPunctuation(text: string): string {
+  let end = text.length;
+  while (end > 0 && ".,;:)".includes(text[end - 1])) end--;
+  return text.slice(0, end);
+}
+
 /**
  * The child numbers in a task list: `- [ ] #12` and `- [x] https://github.com/o/r/issues/12`.
  * First occurrence wins; a link to another repository is not a child.
@@ -42,9 +48,9 @@ export function parseTaskList(body: string, repo: { owner: string; repo: string 
   const seen = new Set<number>();
   const url = `https://github.com/${repo.owner}/${repo.repo}/issues/`.toLowerCase();
   for (const line of body.split(/\r?\n/)) {
-    const item = /^\s*[-*]\s+\[[ xX]\]\s+(\S+)/.exec(line);
+    const item = /^[-*]\s+\[[ xX]\]\s+(\S+)/.exec(line.trim());
     if (item === null) continue;
-    const ref = item[1].replace(/[.,;:)]+$/, "");
+    const ref = stripTrailingPunctuation(item[1]);
     const short = /^#(\d+)$/.exec(ref);
     const full = ref.toLowerCase().startsWith(url) ? /^(\d+)$/.exec(ref.slice(url.length)) : null;
     const digits = (short ?? full)?.[1];
@@ -86,10 +92,11 @@ export function planStory(children: StoryChild[], discovery: Discovery): StoryPl
 
 /** One line for a child, for `conductor list`. */
 export function describeChild(child: StoryChild, status: ChildStatus): string {
+  const prs = child.openPrs.map((n) => `#${String(n)}`).join(", ");
   const detail: Record<ChildStatus, string> = {
     closed: "closed",
     blocked: `blocked (${BLOCKED_LABEL})`,
-    "in-review": `in review (PR ${child.openPrs.map((n) => `#${String(n)}`).join(", ")})`,
+    "in-review": `in review (PR ${prs})`,
     started: "started, waiting for a pull request",
     next: "next",
     queued: "queued",
