@@ -265,14 +265,13 @@ async function readPrInfoOrExit(branch: string): Promise<PrInfo | null> {
 }
 
 async function pollUntilChecksComplete(branch: string): Promise<PrInfo | null> {
-  for (;;) {
-    const pr = await readPrInfoOrExit(branch);
-    if (pr === null) return null;
-    const running = pr.checks.filter((c) => c.status !== "COMPLETED");
-    if (running.length === 0) return pr;
-    process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
-    await sleep(POLL_INTERVAL_MS);
-  }
+  const pr = await readPrInfoOrExit(branch);
+  if (pr === null) return null;
+  const running = pr.checks.filter((c) => c.status !== "COMPLETED");
+  if (running.length === 0) return pr;
+  process.stdout.write(`Waiting for ${running.length} check(s) to complete...\n`);
+  await sleep(POLL_INTERVAL_MS);
+  return pollUntilChecksComplete(branch);
 }
 
 function printSonarStatus(pr: PrInfo): void {

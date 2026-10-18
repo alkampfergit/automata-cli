@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 BASE="origin/develop"
 ALL=0
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --all) ALL=1 ;;
     --base) BASE="${2:?--base needs a ref}"; shift ;;
@@ -32,7 +32,7 @@ RULE_PATHS=(src)
 DUPLICATION_LIMIT=3
 status=0
 
-if [ "$ALL" -eq 1 ]; then
+if [[ "$ALL" -eq 1 ]]; then
   FILES=("${RULE_PATHS[@]}")
   echo "== SonarJS rules (all files) =="
 else
@@ -42,21 +42,19 @@ else
   fi
   FILES=()
   while IFS= read -r file; do
-    [ -f "$file" ] && FILES+=("$file")
+    [[ -f "$file" ]] && FILES+=("$file")
   done < <({ git diff --name-only --diff-filter=d "$BASE"...HEAD; git diff --name-only --diff-filter=d HEAD; git ls-files --others --exclude-standard; } \
     | sort -u | grep -E '^src/.*\.(ts|tsx)$')
   echo "== SonarJS rules (${#FILES[@]} files changed against $BASE) =="
 fi
 
-if [ "${#FILES[@]}" -gt 0 ]; then
-  if ! npx eslint --config eslint.sonar.config.js --report-unused-disable-directives-severity off "${FILES[@]}"; then
-    status=1
-  fi
+if [[ "${#FILES[@]}" -gt 0 ]] && ! npx --no-install eslint --config eslint.sonar.config.js --report-unused-disable-directives-severity off "${FILES[@]}"; then
+  status=1
 fi
 
 echo
 echo "== Duplication (limit ${DUPLICATION_LIMIT}%) =="
-if ! npx jscpd "${PATHS[@]}" \
+if ! npx --no-install jscpd "${PATHS[@]}" \
   --min-tokens 150 --min-lines 10 \
   --threshold "$DUPLICATION_LIMIT" \
   --silent \
@@ -65,7 +63,7 @@ if ! npx jscpd "${PATHS[@]}" \
 fi
 
 echo
-if [ "$status" -eq 0 ]; then
+if [[ "$status" -eq 0 ]]; then
   echo "Local Sonar check: PASSED"
 else
   echo "Local Sonar check: FAILED"
