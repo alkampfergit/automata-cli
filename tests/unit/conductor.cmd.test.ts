@@ -961,6 +961,39 @@ describe("conductor stories", () => {
     expect(`${stdout}${stderr}`).toMatch(/#12/);
   });
 
+  it("a failed label leaves the child startable: the comment came first, so a retry repeats both", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(12)]));
+    mockApply.mockImplementationOnce(() => {
+      throw new Error("label failed");
+    });
+    expect(await runWith()).toBe(1);
+    expect(mockCommentOnIssue).toHaveBeenCalledOnce();
+    expect(await runWith()).toBe(0);
+    expect(mockApply).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed comment applies no label, so the child stays next", async () => {
+    storyState = [10];
+    mockStorySource.mockReturnValue(story([sub(12)]));
+    mockCommentOnIssue.mockImplementationOnce(() => {
+      throw new Error("comment failed");
+    });
+    expect(await runWith()).toBe(1);
+    expect(mockApply).not.toHaveBeenCalled();
+  });
+
+  it("a watched pull request of a blocked child gets no ordinary processing", async () => {
+    storyState = [10];
+    watchState = [40];
+    mockTarget.mockImplementation((id: number) => ({ ...issue(id), kind: id === 40 ? "pr" : "issue" }));
+    mockStorySource.mockReturnValue(story([sub(12, { labels: ["conductor-blocked"] })]));
+    mockLinks.mockReturnValue({ byIssue: new Map([[12, [{ number: 40 }]]]) });
+    expect(await runWith()).toBe(0);
+    expect(stdout).toMatch(/#40 is covered by watched issue #12/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
   it("a tick leaves a blocked story alone, silently", async () => {
     storyState = [10];
     mockStorySource.mockReturnValue(story([sub(12, { labels: ["conductor-blocked"] }), sub(13)]));

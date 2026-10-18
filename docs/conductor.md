@@ -165,9 +165,11 @@ When all children are closed, the conductor closes the parent with one comment t
 from the stories. A closed parent is dropped at the start of its turn, with a line on stdout. A story that cannot be read
 stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for the parent.
 When a tick starts a child, the conductor also posts one comment on it, so `do-work` sees a message from an authorized
-account. The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
+account. The comment comes before the label, so a failed label leaves the child `next` and the next tick repeats both.
+The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
 to an agent question, a rebase request or a CI-fix request. A closed parent is dropped without a read of its children.
-`conductor add` on a watched parent that has children removes its ordinary watch entry.
+`conductor add` on a watched parent that has children removes its ordinary watch entry. A watched pull request that
+closes the current child of a story, also a blocked child, is covered by the story and gets no separate reply.
 
 `conductor list` shows each story with its children and their states. `conductor --check` adds a `Stories` section: for
 each story, which child is next, which is waiting and which is blocked; an unreadable story is a problem. `--dry-run`
