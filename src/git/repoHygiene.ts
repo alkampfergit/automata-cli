@@ -171,7 +171,7 @@ function detectRescueTarget(
   if (!detached && current !== options.baseBranch && agentOwnsBranch(current, options.agentUser)) {
     return { branch: current, createdBranch: false, source: current };
   }
-  const source = detached ? "detached HEAD" : current === options.baseBranch ? options.baseBranch : current;
+  const source = detached ? "detached HEAD" : current;
   const label = detached ? "detached" : flattenBranchName(source);
   return {
     branch: `${RESCUE_BRANCH_PREFIX}${label}-${utcStamp(now)}`,
@@ -261,6 +261,15 @@ function rescueUncommittedChanges(options: HygieneOptions, now: Date): RescueOut
     return { kind: "failed", step: "commit", detail: committed.stderr, ...left };
   }
 
+  return pushAndOpenPr(target, options, left);
+}
+
+/** Push the rescue branch, then find or open its draft pull request. */
+function pushAndOpenPr(
+  target: { branch: string; createdBranch: boolean; source: string },
+  options: HygieneOptions,
+  left: Pick<RescueFailure, "branch" | "createdBranch">,
+): RescueOutcome {
   const pushed = pushSetUpstream(target.branch);
   if (!pushed.ok) {
     // Naming the commit matters: the tree is *clean* now, so no later tick will

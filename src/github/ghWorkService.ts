@@ -3,6 +3,7 @@ import type { IssueDiscoveryTechnique } from "../config/configStore.js";
 import type { GitHubIssue } from "../config/githubService.js";
 import type { RawMessage } from "./conversation.js";
 import { recordCommand } from "../run/commandTrace.js";
+import { parseTaskList } from "../conductor/story.js";
 
 /**
  * The `gh` calls `do-work` needs.
@@ -756,6 +757,88 @@ export function getWatchTarget(id: number): WatchTarget {
     title: raw.title,
     labels: (raw.labels ?? []).map((label) => (typeof label === "string" ? label : (label.name ?? ""))).filter((name) => name.length > 0),
   };
+}
+
+/** A child of a story, as GitHub reports it. */
+export interface StoryIssue {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  labels: string[];
+  assignees: string[];
+}
+
+export interface StorySource {
+  /** Where the children came from; `none` when the issue has no children. */
+  via: "sub-issues" | "task-list" | "none";
+  state: "open" | "closed";
+  title: string;
+  children: StoryIssue[];
+}
+
+interface RawStoryIssue extends RawWatchTarget {
+  body?: string | null;
+  assignees?: { login?: string }[];
+  repository_url?: string;
+}
+
+function toStoryIssue(raw: RawStoryIssue): StoryIssue {
+  return {
+    number: raw.number,
+    title: raw.title,
+    state: raw.state === "closed" ? "closed" : "open",
+    labels: (raw.labels ?? []).map((label) => (typeof label === "string" ? label : (label.name ?? ""))).filter((name) => name.length > 0),
+    assignees: (raw.assignees ?? []).map((assignee) => assignee.login ?? "").filter((name) => name.length > 0),
+  };
+}
+
+/** Sub-issues are paged by hand: `gh api --paginate` joins the pages in a way that depends on the `gh` version. */
+const MAX_SUB_ISSUE_PAGES = 10;
+
+function getSubIssues(owner: string, repo: string, parent: number): StoryIssue[] {
+  const children: StoryIssue[] = [];
+  for (let page = 1; page <= MAX_SUB_ISSUE_PAGES; page++) {
+    const raw = ghJson<RawStoryIssue[]>(
+      ["api", `repos/${owner}/${repo}/issues/${String(parent)}/sub_issues?per_page=100&page=${String(page)}`],
+      `read the sub-issues of #${String(parent)}`,
+    );
+    // A sub-issue of another repository cannot be worked on by this repository's `do-work`.
+    children.push(...raw.filter((entry) => entry.repository_url?.toLowerCase().endsWith(`/repos/${owner}/${repo}`.toLowerCase()) ?? true).map(toStoryIssue));
+    if (raw.length < 100) return children;
+  }
+  throw new Error(`#${String(parent)} has more than ${String(MAX_SUB_ISSUE_PAGES * 100)} sub-issues; refusing to read part of them.`);
+}
+
+/**
+ * Read an issue as a story: its native sub-issues in order; when it has none, the
+ * issues named in the task list of its body. A pull request is never a story.
+ */
+export function getStorySource(id: number): StorySource {
+  const { owner, repo } = getRepoSlug();
+  const parent = ghJson<RawStoryIssue>(["api", `repos/${owner}/${repo}/issues/${String(id)}`], `read #${String(id)}`);
+  const base = { state: parent.state === "closed" ? ("closed" as const) : ("open" as const), title: parent.title };
+  // A closed parent is pruned: its children may be deleted or out of reach, so they are not read.
+  if (parent.pull_request !== undefined || base.state === "closed") return { ...base, via: "none", children: [] };
+  const sub = getSubIssues(owner, repo, id);
+  if (sub.length > 0) return { ...base, via: "sub-issues", children: sub };
+  const numbers = parseTaskList(parent.body ?? "", { owner, repo }).filter((n) => n !== id);
+  const children = numbers
+    .map((n) => ghJson<RawStoryIssue>(["api", `repos/${owner}/${repo}/issues/${String(n)}`], `read #${String(n)}`))
+    .filter((raw) => raw.pull_request === undefined)
+    .map(toStoryIssue);
+  return { ...base, via: children.length > 0 ? "task-list" : "none", children };
+}
+
+/** Post a comment on an issue. */
+export function commentOnIssue(number: number, comment: string): void {
+  const { stderr, status } = run("gh", ["issue", "comment", String(number), "--body", comment]);
+  if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(number)}.`);
+}
+
+/** Close an issue with a comment, in one call, so a failed close cannot leave the comment to be posted again. */
+export function closeIssue(number: number, comment: string): void {
+  const { stderr, status } = run("gh", ["issue", "close", String(number), "--comment", comment]);
+  if (status !== 0) throw new Error(stderr.trim() || `Failed to close #${String(number)}.`);
 }
 
 /**

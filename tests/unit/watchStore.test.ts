@@ -11,6 +11,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getWatchTarget: (...a: unknown[]) => mockTarget(...a),
   getOpenPrLinkMap: (...a: unknown[]) => mockLinks(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
+  getStorySource: () => ({ via: "none", state: "open", title: "", children: [] }),
 }));
 
 import { readWatch, writeWatch } from "../../src/conductor/watchStore.js";

@@ -12,7 +12,7 @@ automata conductor --dry-run    # write the replies, but do not post them
 automata conductor --verbose    # trace the work behind a tick or a run of the options above
 automata conductor --automatic  # run a tick every 60 seconds until nothing open is watched
 automata conductor --automatic --interval 30
-automata conductor add <id>     # watch an issue or pull request
+automata conductor add <id>     # watch an issue or pull request; a parent with children becomes a story
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
 ```
@@ -135,6 +135,47 @@ At the start of each tick, after the lock is taken, every closed issue and close
 the list, and each removal is logged on stdout (`Conductor: dropped issue #114 from the watch list (closed).`). An item
 that cannot be looked up (network or `gh` error) stays on the list, with a warning on stderr.
 
+## Stories
+
+A story is a parent issue whose child issues the conductor starts one at a time, in order. `conductor add <parent>`
+reads the children of the parent: its native sub-issues, or, when it has none, the issues named in the task list of its
+body (`- [ ] #12` or `- [x] #12`, or a link to an issue of this repository). Sub-issues of another repository are
+ignored. An issue with no children is watched as an ordinary issue, as before.
+
+A story is stored in the same file as the watch list, under `stories`; the file shows the key only when a story exists.
+The children are never stored: a tick reads them again, so a change made in GitHub counts at once.
+
+```json
+{ "watch": [114], "stories": [153] }
+```
+
+The parent gets no label and no reply from the conductor. Only the children are implemented, by [`do-work`](do-work.md).
+At each tick the conductor finds the first open child and acts on it. It never skips a child.
+
+| Child state | Meaning | Tick |
+|-------------|---------|------|
+| `closed` | Done: the child is closed and has no open pull request. | Passed over. |
+| `next` | First open child, with no open pull request and no discovery setting. | Applies the discovery setting (label or assignee) so `do-work` implements it. |
+| `started` | First open child that has the discovery setting and no pull request. | Waits. |
+| `in review` | First child that has an open pull request, also a closed child. | Waits until the pull request is merged and the child is closed. |
+| `blocked` | First open child with the `conductor-blocked` label. | Does nothing on GitHub, until a person removes the label. |
+| `queued` | A later open child. | Waits for its turn. |
+
+When all children are closed, the conductor closes the parent with one comment that names the children, and drops it
+from the stories. A closed parent is dropped at the start of its turn, with a line on stdout. A story that cannot be read
+stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for the parent.
+When a tick starts a child, the conductor also posts one comment on it, so `do-work` sees a message from an authorized
+account. The comment comes before the label, so a failed label leaves the child `next` and the next tick repeats both.
+The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
+to an agent question, a rebase request or a CI-fix request. A closed parent is dropped without a read of its children.
+`conductor add` on a watched parent that has children removes its ordinary watch entry. A watched pull request that
+closes the current child of a story, also a blocked child, is covered by the story and gets no separate reply.
+
+`conductor list` shows each story with its children and their states. `conductor --check` adds a `Stories` section: for
+each story, which child is next, which is waiting and which is blocked; an unreadable story is a problem. `--dry-run`
+prints what a tick would do and changes nothing. `conductor remove <parent>` takes a story off the list and changes
+nothing on GitHub. `add` needs the same discovery setting as for an item; `title-contains` is refused.
+
 ## Reply rule
 
 The decision of whether a watched item needs a conductor reply is a pure function (`decideConductorReply`,
@@ -250,7 +291,11 @@ error and exits 1. A model run that posted a reply and also printed `NEEDS-HUMAN
 
 **Overlapping entries.** `watch add` on an issue also follows its linked pull requests, and the issue's conversation
 already includes them. A tick, `--check` and `--dry-run` give such a pull request no separate reply while its issue
-stays on the watch list, so the limit and the label of the issue cannot be bypassed.
+stays on the watch list and can reply, so the limit and the label of the issue cannot be bypassed. The line
+`#<pr> is covered by watched issue #<issue>` means that the issue's turn decides the replies of the pull request,
+including Copilot review threads. When the issue cannot reply, because it has the `conductor-blocked` label or is at
+the reply limit, it covers nothing: the pull request is decided on its own, with its own label and its own count of
+replies. Put the label on the pull request to pause it alone.
 
 **Several checkouts.** The run lock is local to one checkout. The limit is checked before the model runs, so two
 checkouts that run at the same time can both post and pass the limit by a small amount. The next tick on any checkout

@@ -10,6 +10,18 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-19
+
+### Added
+
+- The conductor can drive a parent story: it works through open child issues in order, waits for each child to close,
+  stops when a child is blocked, and closes the parent when all children are complete. (#153)
+
+### Fixed
+
+- A watched pull request is no longer silenced by its watched issue when that issue is `conductor-blocked` or at the
+  reply limit. The pull request is decided on its own, so Copilot review threads on it get a reply. (#161)
+
 ## [0.12.0] - 2026-10-18
 
 ### Added
@@ -35,6 +47,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- The conductor can drive a parent story. `conductor add <parent>` reads its sub-issues, or the task list in its body,
+  and stores it as a story. At each tick the conductor applies the discovery label (or assignee) to the first open
+  child that has no pull request, waits until that child is closed, then starts the next. A child with the
+  `conductor-blocked` label stops the story. When all children are closed, the conductor closes the parent. `conductor
+  list` and `conductor --check` show the children and their states. The started child and its pull requests get the
+  ordinary conductor processing. See `docs/conductor.md`
 - The conductor has a CI-fix check that runs even on an item with the `conductor-blocked` label: when a watched pull
   request has a failed check and no check is pending, the conductor asks the agent to fix the build. The instructions
   are configurable with `conductor.prompts.ciFix` (`automata config set conductor-prompt ciFix`, and a wizard screen),

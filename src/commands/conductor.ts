@@ -19,9 +19,11 @@ import {
   getPrChecks,
   getPrSurface,
   getRepoSlug,
+  getStorySource,
   getWatchTarget,
   addLabel,
   postMarker,
+  type StorySource,
   type WatchTarget,
 } from "../github/ghWorkService.js";
 import type { Participants } from "../github/conversation.js";
@@ -32,6 +34,7 @@ import {
   loopStateOf,
   prConversation,
   type Conversation,
+  type ConductorDecision,
 } from "../conductor/replyDecision.js";
 import {
   composeConductorPrompt,
@@ -62,7 +65,8 @@ import type { LoopState } from "../conductor/loopSafety.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
-import { readWatch, writeWatch } from "../conductor/watchStore.js";
+import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
+import { checkStories, conductStories, listStoryLines, storyCovered } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -214,12 +218,30 @@ async function runModelForText(prompt: string, execution: ConductorExecution): P
 }
 
 /** The watched pull requests an issue of the same watch list already covers, with that issue. */
-function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap): Map<number, number> {
-  return coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number));
+function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig, participants: Participants): Map<number, number> {
+  const canReply = (id: number): boolean => issueCanReply(id, config, participants, linkMap);
+  const covered = coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number), canReply);
+  // The current child of a story owns its pull requests, also when it is blocked.
+  for (const [pr, child] of storyCovered(config, linkMap)) if (!covered.has(pr)) covered.set(pr, child);
+  return covered;
+}
+
+/**
+ * Whether a watched issue can answer in this tick. A blocked issue, or one at its reply limit, cannot, and then its
+ * linked pull requests are decided on their own. A read that fails counts as "can": `conductItem` reports it.
+ */
+function issueCanReply(id: number, config: AutomataConfig, participants: Participants, linkMap: () => OpenPrLinkMap): boolean {
+  try {
+    const item = readWatchedItem(id, linkMap);
+    const loop = loopStateOf(item.conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
+    return !loop.blocked && loop.replies < loop.maxReplies;
+  } catch {
+    return true;
+  }
 }
 
 function coveredNote(id: number, issue: number): string {
-  return `Conductor: #${String(id)} is covered by watched issue #${String(issue)} and gets no separate reply.`;
+  return `Conductor: #${String(id)} is covered by watched issue #${String(issue)}; its replies, including Copilot review threads, are decided there.`;
 }
 
 /** What one dry run shares across its items: the link map, and the conversations it has already answered. */
@@ -304,6 +326,17 @@ function frameFor(key: "issue" | "pr" | "rebase" | "ciFix", config: AutomataConf
   }
 }
 
+/** The decision to act on: a rebase request, then a CI-fix request, then the first ordinary reply. */
+function pickOwedDecision(eligible: ConductorDecision[]): ConductorDecision | undefined {
+  return eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
+}
+
+/** The line that tells why an item gets no reply this tick. */
+function idleMessage(decisions: ConductorDecision[], label: string): string {
+  const stopped = decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
+  return stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -330,12 +363,9 @@ async function conductItem(
   const eligible = verdict.decisions.filter(
     (decision) => decision.kind !== "skip" && dryRun?.answered.has(targetKey(decision.surface)) !== true,
   );
-  const owed =
-    eligible.find((decision) => decision.kind === "rebase") ?? eligible.find((decision) => decision.kind === "ci-fix") ?? eligible[0];
+  const owed = pickOwedDecision(eligible);
   if (owed === undefined) {
-    const stopped = verdict.decisions.find((decision) => decision.kind === "skip" && decision.reason !== "closed" && decision.reason !== "answered" && decision.reason !== "no-agent-message");
-    const why = stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
-    process.stdout.write(`${why}\n`);
+    process.stdout.write(`${idleMessage(verdict.decisions, label)}\n`);
     return "idle";
   }
   const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
@@ -412,6 +442,10 @@ export function runWatchAdd(rawId: string): number {
   try {
     const target = getWatchTarget(id);
     if (target.state === "closed") return fail(`${describe(target)} is closed; nothing to watch.`);
+    if (target.kind === "issue") {
+      const story = getStorySource(id);
+      if (story.children.length > 0) return addStory(id, story, technique);
+    }
     // Resolve the linked PRs first: a failure here must leave GitHub untouched.
     const followed =
       target.kind === "issue"
@@ -427,10 +461,30 @@ export function runWatchAdd(rawId: string): number {
   }
 }
 
+/** The parent has children: store it as a story. Only the children are given to `do-work`, one at a time. */
+function addStory(id: number, story: StorySource, technique: string): number {
+  if (technique === "title-contains") {
+    return fail("issueDiscoveryTechnique `title-contains` cannot be applied to an existing item; use `label` or `assignee`.");
+  }
+  // A parent that was watched as an ordinary item is promoted: it gets story processing only.
+  updateWatch((current) => withoutWatched(current, id));
+  const stories = readStories();
+  writeStories(stories.includes(id) ? stories : [...stories, id]);
+  const first = story.children.find((child) => child.state === "open");
+  const next = first === undefined ? "all are closed, so a tick closes it" : `first open child is #${String(first.number)}`;
+  process.stdout.write(`Watching story #${String(id)} (${story.title}): ${String(story.children.length)} children via ${story.via}; ${next}.\n`);
+  return 0;
+}
+
 export function runWatchRemove(rawId: string): number {
   const id = parseWatchId(rawId);
   if (id === null) return fail(`"${rawId}" is not an issue or pull request number.`);
   const before = readWatch();
+  if (readStories().includes(id)) {
+    writeStories(withoutWatched(readStories(), id));
+    process.stdout.write(`Stopped watching story #${String(id)}.\n`);
+    return 0;
+  }
   if (!before.includes(id)) return fail(`#${String(id)} is not on the watch list.`);
   updateWatch((current) => withoutWatched(current, id));
   process.stdout.write(`Stopped watching #${String(id)}.\n`);
@@ -441,10 +495,12 @@ export function runWatchList(): number {
   const config = loadGitHubConfig();
   if (typeof config === "number") return config;
   const watch = readWatch();
-  if (watch.length === 0) {
+  const storyLines = listStoryLines(config, onceLinkMap());
+  if (watch.length === 0 && storyLines.length === 0) {
     process.stdout.write("The watch list is empty.\n");
     return 0;
   }
+  for (const line of storyLines) process.stdout.write(`${line}\n`);
   for (const id of watch) {
     try {
       process.stdout.write(`${describe(getWatchTarget(id))}\n`);
@@ -572,12 +628,12 @@ function runConductorCheck(): number {
   }
   const linkMap = onceLinkMap();
   const watchIds = "problem" in checked ? [] : readWatch({ migrate: false });
-  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap);
+  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap, checked.config, checked.participants);
   const report =
     "problem" in checked
       ? buildConductorCheck({
           generatedAt, repo, configProblem: checked.problem, identity: "", execution: "",
-          lock: { kind: "free" }, staleMinutes: DEFAULT_DO_WORK.lockStaleMinutes, watched: [],
+          lock: { kind: "free" }, staleMinutes: DEFAULT_DO_WORK.lockStaleMinutes, watched: [], stories: [],
         })
       : buildConductorCheck({
           generatedAt, repo, configProblem: null,
@@ -586,9 +642,28 @@ function runConductorCheck(): number {
           lock: inspectConductorLock(staleMinutesOf(checked.config)),
           staleMinutes: staleMinutesOf(checked.config),
           watched: watchIds.map((id) => checkWatched(id, checked.participants, resolveMaxReplies(checked.config.conductor), checked.config.conductor?.ciFix?.enabled !== false, linkMap, covered.get(id))),
+          stories: checkStories(checked.config, linkMap),
         });
   process.stdout.write(report.text);
   return report.exitCode;
+}
+
+/** Conduct one item and report whether it failed; an error is printed, not thrown, so the other items still run. */
+async function conductSafely(id: number, conduct: () => Promise<string>): Promise<boolean> {
+  try {
+    return (await conduct()) === "failed";
+  } catch (err) {
+    process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
+    return true;
+  }
+}
+
+/**
+ * Run `step` for each id, one after the other, and count the failures. The chain is sequential on purpose: each step
+ * reads and writes the same account's conversations.
+ */
+function conductInOrder(ids: readonly number[], step: (id: number) => Promise<boolean>): Promise<number> {
+  return ids.reduce(async (previous, id) => (await previous) + ((await step(id)) ? 1 : 0), Promise.resolve(0));
 }
 
 /** `--dry-run`: the tick without its effects. A live lock is a warning, not a stop, because nothing is written. */
@@ -599,15 +674,16 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     process.stderr.write(`Warning: a conductor is running here (pid ${String(lock.owner.pid)}); the dry run does not take the lock.\n`);
   }
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
-  let failed = 0;
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
-  const covered = coveredOf(watchIds, context.linkMap);
-  for (const id of watchIds) {
+  const covered = coveredOf(watchIds, context.linkMap, config, participants);
+  const conduct = (id: number): Promise<boolean> =>
+    conductSafely(id, () => conductItem(id, config, login, participants, execution, context));
+  let failed = await conductInOrder(watchIds, async (id) => {
     try {
       if (isWatchClosed(getWatchTarget(id).state)) {
         process.stdout.write(`Conductor: #${String(id)} is closed; a tick would drop it from the watch list.\n`);
-        continue;
+        return false;
       }
     } catch {
       // As in the prune: an id that cannot be looked up stays, and conductItem reports the read failure.
@@ -615,16 +691,16 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     const coveredBy = covered.get(id);
     if (coveredBy !== undefined) {
       process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
-      continue;
+      return false;
     }
-    try {
-      // One item at a time on purpose, as in a real tick.
-      if ((await conductItem(id, config, login, participants, execution, context)) === "failed") failed++; // NOSONAR
-    } catch (err) {
-      process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-      failed++;
-    }
-  }
+    return conduct(id);
+  });
+  const stories = conductStories(config, context.linkMap, true);
+  failed += stories.failed;
+  failed += await conductInOrder(
+    stories.active.filter((child) => !watchIds.includes(child)),
+    conduct,
+  );
   return failed > 0 ? 1 : 0;
 }
 
@@ -730,24 +806,24 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
     const watch = pruneWatchList();
-    let failed = 0;
     const linkMap = onceLinkMap();
-    const covered = coveredOf(watch, linkMap);
-    for (const id of watch) {
+    const covered = coveredOf(watch, linkMap, config, participants);
+    const conduct = (id: number): Promise<boolean> =>
+      conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap));
+    // One item at a time on purpose: each run reads and writes the same account's conversations.
+    let failed = await conductInOrder(watch, (id) => {
       const coveredBy = covered.get(id);
-      if (coveredBy !== undefined) {
-        process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
-        continue;
-      }
-      try {
-        // One item at a time on purpose: each run reads and writes the same account's conversations.
-        if ((await conductItem(id, config, login, participants, execution, undefined, linkMap)) === "failed") failed++; // NOSONAR
-      } catch (err) {
-        process.stderr.write(`Error: #${String(id)} could not be conducted: ${(err as Error).message}\n`);
-        failed++;
-      }
-    }
-    return { code: failed > 0 ? 1 : 0, open: watch.length };
+      if (coveredBy === undefined) return conduct(id);
+      process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
+      return Promise.resolve(false);
+    });
+    const stories = conductStories(config, linkMap, false);
+    // The active child and its linked pull requests get the ordinary conductor processing.
+    failed += await conductInOrder(
+      stories.active.filter((child) => !watch.includes(child)),
+      conduct,
+    );
+    return { code: failed + stories.failed > 0 ? 1 : 0, open: watch.length + stories.open };
   } finally {
     lock.handle.release();
   }
@@ -771,7 +847,7 @@ export const conductorCommand = new Command("conductor")
 
 conductorCommand
   .command("add <id>")
-  .description("Watch an issue or pull request and make do-work pick it up (an issue also follows its linked PR)")
+  .description("Watch an issue or pull request and make do-work pick it up (an issue also follows its linked PR; a parent with children becomes a story)")
   .action((id: string) => {
     exitWith(runWatchAdd(id));
   });
