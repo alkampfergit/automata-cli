@@ -10,6 +10,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- The conductor prompt tells the model to run `gh` and `git` commands exactly as written. A project rule that
+  prefixes commands (for example with `rtk`) no longer makes the run refuse every command (#163).
+
 ## [0.13.0] - 2026-10-19
 
 ### Added
