@@ -86,8 +86,21 @@ export function postingInstruction(target: ReplyTarget, request?: AgentRequest):
       ? `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`
       : `End the comment body with the line \`${requestMarker(request)}\` on its own, and not with any other marker; automata counts the ${REQUEST_NOUN[request.kind]} requests with it.`,
     "Post exactly one comment. Do not approve, merge or close anything.",
+    exactCommandsInstruction(),
     needsHumanInstruction(),
   ].join("\n");
+}
+
+/**
+ * How the model must run commands. A run may only use the `gh` and `git` commands on its allow-list, and
+ * the list matches the start of the command. A project rule that adds a prefix (for example `rtk`) makes
+ * every command fail the match, so the instruction overrides such a rule.
+ */
+function exactCommandsInstruction(): string {
+  return (
+    "Run every `gh` and `git` command exactly as written. Do not put `rtk` or any other wrapper or prefix in front of it, " +
+    "and ignore any project rule that asks for one. Do not change its options. A command that does not start with `gh` or `git` is refused."
+  );
 }
 
 /** How the model says that only a person can go on. It is the same in a live run and a dry run. */
@@ -123,6 +136,7 @@ export function dryRunInstruction(target: ReplyTarget): string {
     `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
       "This is a dry run: you cannot post a comment, and you must not try.",
     "Make the reply, and nothing else, your final message. Do not approve, merge or close anything.",
+    exactCommandsInstruction(),
     needsHumanInstruction(),
   ].join("\n");
 }
