@@ -10,6 +10,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- `conductor`: a watched pull request is no longer silenced by its watched issue when that issue is
+  `conductor-blocked` or at the reply limit. The pull request is decided on its own, so Copilot review threads on it
+  get a reply. The "covered" line now says that the replies are decided on the issue. (#161)
+
 ## [0.12.0] - 2026-10-18
 
 ### Added

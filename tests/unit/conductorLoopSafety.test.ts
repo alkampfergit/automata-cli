@@ -110,6 +110,12 @@ describe("coveredByWatchedIssue", () => {
   it("maps a watched pull request to the watched issue that links it", () => {
     expect([...coveredByWatchedIssue([10, 11, 20], linked)]).toEqual([[11, 10]]);
   });
+  it("leaves a pull request to itself when its watched issue cannot reply", () => {
+    expect(coveredByWatchedIssue([10, 11, 20], linked, () => false).size).toBe(0);
+  });
+  it("covers a pull request when its watched issue can reply", () => {
+    expect([...coveredByWatchedIssue([10, 11], linked, (issue) => issue === 10)]).toEqual([[11, 10]]);
+  });
   it("leaves a pull request alone when its issue is not watched", () => {
     expect(coveredByWatchedIssue([11, 20], linked).size).toBe(0);
   });

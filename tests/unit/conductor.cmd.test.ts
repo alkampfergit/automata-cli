@@ -485,6 +485,24 @@ describe("conductor --check and --dry-run", () => {
     expect(mockLinks).toHaveBeenCalledOnce();
   });
 
+  it("a watched pull request is decided on its own when its watched issue is blocked", async () => {
+    watching(5, 50);
+    mockTarget.mockImplementation((n: number) => (n === 50 ? pr(50) : { ...issue(n), labels: ["conductor-blocked"] }));
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, answered));
+    mockPrSurface.mockImplementation((n: number) => ({
+      pr: { number: n, title: "P", body: "", url: "u", state: "OPEN", headRefName: "b", baseRefName: "develop" },
+      messages: owed,
+      threads: [],
+    }));
+    mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+      options.sink.output("stdout", JSON.stringify({ type: "result", result: "Answer." }) + "\n");
+    });
+    expect(await runWith({ dryRun: true })).toBe(0);
+    expect(stdout).not.toMatch(/#50 is covered by watched issue #5/);
+    expect(stdout).toMatch(/#50 needs/);
+  });
+
   it("--dry-run answers a conversation once when an issue and its linked PR are both watched", async () => {
     watching(5, 50);
     mockTarget.mockImplementation((n: number) => (n === 50 ? pr(50) : issue(n)));
