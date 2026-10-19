@@ -22,6 +22,7 @@ import {
   getStorySource,
   getWatchTarget,
   addLabel,
+  removeLabel,
   postMarker,
   type StorySource,
   type WatchTarget,
@@ -62,6 +63,7 @@ import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
+import { READY_LABEL, READY_LABEL_DESCRIPTION, readyLabelChange } from "../conductor/readyLabel.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
@@ -282,6 +284,46 @@ function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: st
 
 type ItemResult = "replied" | "idle" | "failed";
 
+/** Apply one label change; a failed edit throws. */
+function applyReadyChange(number: number, change: "add" | "remove"): void {
+  const target = { kind: "pr" as const, number };
+  if (change === "add") addLabel(target, READY_LABEL, READY_LABEL_DESCRIPTION);
+  else removeLabel(target, READY_LABEL);
+}
+
+const READY_PHRASES = {
+  add: { now: "add the", done: "added the", to: "to" },
+  remove: { now: "remove the", done: "removed the", to: "from" },
+} as const;
+
+/** The label change as a phrase, for example `add the conductor-ready label to #7`. */
+function readyPhrase(number: number, change: "add" | "remove", past: boolean): string {
+  const words = READY_PHRASES[change];
+  return `${past ? words.done : words.now} ${READY_LABEL} label ${words.to} #${String(number)}`;
+}
+
+/**
+ * Keep the `conductor-ready` label true for each pull request of the item. It needs no model and posts no comment.
+ * A failed edit is a warning only: the label is a signal, and it must not stop the replies. A dry run changes nothing.
+ */
+function syncReadyLabels(item: WatchedItem, dryRun: boolean): void {
+  for (const pr of item.thread.prs) {
+    const change = readyLabelChange(pr.surface, pr.checks, item.labels);
+    if (change === null) continue;
+    const number = pr.surface.pr.number;
+    if (dryRun) {
+      process.stdout.write(`Conductor: dry run, a tick would ${readyPhrase(number, change, false)}.\n`);
+      continue;
+    }
+    try {
+      applyReadyChange(number, change);
+      process.stdout.write(`Conductor: ${readyPhrase(number, change, true)}.\n`);
+    } catch (err) {
+      process.stderr.write(`Warning: could not ${readyPhrase(number, change, false)}: ${(err as Error).message}\n`);
+    }
+  }
+}
+
 async function conductDryRunItem(
   prompt: string,
   execution: ConductorExecution,
@@ -356,6 +398,7 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
+  syncReadyLabels(item, dryRun !== undefined);
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.

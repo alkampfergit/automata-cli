@@ -10,6 +10,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- `automata conductor` applies the label `conductor-ready` to a watched pull request (or one linked to a watched
+  issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
+  checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`
+
 ### Fixed
 
 - The conductor prompt tells the model to run `gh` and `git` commands exactly as written. A project rule that
