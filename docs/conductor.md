@@ -291,7 +291,11 @@ error and exits 1. A model run that posted a reply and also printed `NEEDS-HUMAN
 
 **Overlapping entries.** `watch add` on an issue also follows its linked pull requests, and the issue's conversation
 already includes them. A tick, `--check` and `--dry-run` give such a pull request no separate reply while its issue
-stays on the watch list, so the limit and the label of the issue cannot be bypassed.
+stays on the watch list and can reply, so the limit and the label of the issue cannot be bypassed. The line
+`#<pr> is covered by watched issue #<issue>` means that the issue's turn decides the replies of the pull request,
+including Copilot review threads. When the issue cannot reply, because it has the `conductor-blocked` label or is at
+the reply limit, it covers nothing: the pull request is decided on its own, with its own label and its own count of
+replies. Put the label on the pull request to pause it alone.
 
 **Several checkouts.** The run lock is local to one checkout. The limit is checked before the model runs, so two
 checkouts that run at the same time can both post and pass the limit by a small amount. The next tick on any checkout

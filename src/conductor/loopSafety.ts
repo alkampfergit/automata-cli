@@ -69,14 +69,19 @@ export interface LoopState {
  * The watched pull requests that a watched issue already covers: the issue's
  * conversation includes its linked pull requests, so a standalone entry for one
  * would dodge the limit and the label of the issue. Maps each such pull request
- * to the issue that covers it.
+ * to the issue that covers it. An issue that cannot reply (`canReply` is false: blocked or at the reply limit)
+ * covers nothing, so its pull requests are decided on their own.
  */
-export function coveredByWatchedIssue(watch: number[], linkedPrs: (issue: number) => number[]): Map<number, number> {
+export function coveredByWatchedIssue(
+  watch: number[],
+  linkedPrs: (issue: number) => number[],
+  canReply: (issue: number) => boolean = () => true,
+): Map<number, number> {
   const covered = new Map<number, number>();
   for (const id of watch) {
-    for (const pr of linkedPrs(id)) {
-      if (pr !== id && watch.includes(pr) && !covered.has(pr)) covered.set(pr, id);
-    }
+    const prs = linkedPrs(id).filter((pr) => pr !== id && watch.includes(pr) && !covered.has(pr));
+    if (prs.length === 0 || !canReply(id)) continue;
+    for (const pr of prs) covered.set(pr, id);
   }
   return covered;
 }

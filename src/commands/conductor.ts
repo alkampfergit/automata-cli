@@ -218,15 +218,30 @@ async function runModelForText(prompt: string, execution: ConductorExecution): P
 }
 
 /** The watched pull requests an issue of the same watch list already covers, with that issue. */
-function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig): Map<number, number> {
-  const covered = coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number));
+function coveredOf(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig, participants: Participants): Map<number, number> {
+  const canReply = (id: number): boolean => issueCanReply(id, config, participants, linkMap);
+  const covered = coveredByWatchedIssue(watch, (id) => (linkMap().byIssue.get(id) ?? []).map((ref) => ref.number), canReply);
   // The current child of a story owns its pull requests, also when it is blocked.
   for (const [pr, child] of storyCovered(config, linkMap)) if (!covered.has(pr)) covered.set(pr, child);
   return covered;
 }
 
+/**
+ * Whether a watched issue can answer in this tick. A blocked issue, or one at its reply limit, cannot, and then its
+ * linked pull requests are decided on their own. A read that fails counts as "can": `conductItem` reports it.
+ */
+function issueCanReply(id: number, config: AutomataConfig, participants: Participants, linkMap: () => OpenPrLinkMap): boolean {
+  try {
+    const item = readWatchedItem(id, linkMap);
+    const loop = loopStateOf(item.conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
+    return !loop.blocked && loop.replies < loop.maxReplies;
+  } catch {
+    return true;
+  }
+}
+
 function coveredNote(id: number, issue: number): string {
-  return `Conductor: #${String(id)} is covered by watched issue #${String(issue)} and gets no separate reply.`;
+  return `Conductor: #${String(id)} is covered by watched issue #${String(issue)}; its replies, including Copilot review threads, are decided there.`;
 }
 
 /** What one dry run shares across its items: the link map, and the conversations it has already answered. */
@@ -613,7 +628,7 @@ function runConductorCheck(): number {
   }
   const linkMap = onceLinkMap();
   const watchIds = "problem" in checked ? [] : readWatch({ migrate: false });
-  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap, checked.config);
+  const covered = "problem" in checked ? new Map<number, number>() : coveredOf(watchIds, linkMap, checked.config, checked.participants);
   const report =
     "problem" in checked
       ? buildConductorCheck({
@@ -661,7 +676,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
-  const covered = coveredOf(watchIds, context.linkMap, config);
+  const covered = coveredOf(watchIds, context.linkMap, config, participants);
   const conduct = (id: number): Promise<boolean> =>
     conductSafely(id, () => conductItem(id, config, login, participants, execution, context));
   let failed = await conductInOrder(watchIds, async (id) => {
@@ -792,7 +807,7 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
     process.stdout.write(`Conductor: running as ${login}.\n`);
     const watch = pruneWatchList();
     const linkMap = onceLinkMap();
-    const covered = coveredOf(watch, linkMap, config);
+    const covered = coveredOf(watch, linkMap, config, participants);
     const conduct = (id: number): Promise<boolean> =>
       conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap));
     // One item at a time on purpose: each run reads and writes the same account's conversations.
