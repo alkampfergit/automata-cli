@@ -98,6 +98,12 @@ describe("instructions", () => {
     expect(text).toContain(REPLY_MARKER);
     expect(text).toContain("NEEDS-HUMAN:");
   });
+  it("both tell the model to run gh and git commands exactly as written", () => {
+    for (const text of [postingInstruction(target), dryRunInstruction(target)]) {
+      expect(text).toContain("exactly as written");
+      expect(text).toContain("`rtk`");
+    }
+  });
   it("a dry run offers the needs-a-human line only", () => {
     const text = dryRunInstruction(target);
     expect(text).toContain("NEEDS-HUMAN:");
