@@ -30,6 +30,8 @@ export interface PullRequestRef {
   mergeable?: string;
   /** The commit the head branch points at. */
   headSha?: string;
+  /** Label names; only `getPrSurface` fills them. */
+  labels?: string[];
 }
 
 export interface ReviewThread {
@@ -104,6 +106,7 @@ interface RawPrView {
   isDraft?: boolean;
   mergeable?: string;
   headRefOid?: string;
+  labels?: { name?: string }[];
   body: string;
   author?: RawAuthor;
   createdAt: string;
@@ -616,7 +619,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid,labels",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -657,6 +660,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       updatedAt: raw.updatedAt ?? raw.createdAt,
       mergeable: raw.mergeable,
       headSha: raw.headRefOid,
+      labels: (raw.labels ?? []).map((label) => label.name ?? "").filter((name) => name.length > 0),
     },
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
@@ -860,6 +864,15 @@ export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: str
   }
   if (result.status !== 0) {
     throw new Error(result.stderr.trim() || `Failed to add the label ${name} to #${String(target.number)}.`);
+  }
+}
+
+/** Remove a label from an issue or a pull request. A label the item does not have is not an error. */
+export function removeLabel(target: Pick<WatchTarget, "number" | "kind">, name: string): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  const result = run("gh", [edit, "edit", String(target.number), "--remove-label", name]);
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to remove the label ${name} from #${String(target.number)}.`);
   }
 }
 
