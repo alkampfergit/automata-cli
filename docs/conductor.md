@@ -109,15 +109,16 @@ A pull request is ready when all of these are true:
 
 - it is open and not a draft;
 - GitHub does not report a merge conflict (`CONFLICTING`; `UNKNOWN` does not block);
-- it has no unresolved review thread;
-- it has at least one check, every check is finished, and none failed (`FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED`,
-  `CANCELLED`, `ERROR`, `STARTUP_FAILURE`); a skipped or neutral check counts as green;
+- every review thread is resolved (a resolved thread does not block);
+- it has at least one check, every check is finished, and each one ended `SUCCESS`, `SKIPPED` or `NEUTRAL`; any other
+  conclusion, for example `FAILURE` or `STALE`, is not green;
 - neither the pull request nor the watched item has the `conductor-blocked` label.
 
 An approving review is not needed. Each tick, for each watched pull request and each open pull request linked to a
 watched issue, automata adds the label when the pull request is ready and lacks it. It removes the label when the pull
 request is not ready and has it, so a new push (checks start again), a failed check, a new unresolved thread or a
-merge conflict removes it. If the repository has no such label, the tick creates it.
+merge conflict removes it. When the model answers `NEEDS-HUMAN` in the same tick, automata also removes the label from
+every pull request of the item as it applies `conductor-blocked`. If the repository has no such label, the tick creates it.
 
 A label that cannot be added or removed is a warning on stderr; the tick does not exit 1 for it. `--dry-run` prints
 the change a tick would make and applies none. `--check` does not list label changes.

@@ -18,6 +18,7 @@ const mockCommentOnIssue = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
+const mockRemoveLabel = vi.fn();
 const mockPostMarker = vi.fn();
 const mockLinks = vi.fn();
 const mockIssueSurface = vi.fn();
@@ -50,6 +51,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   commentOnIssue: (...a: unknown[]) => mockCommentOnIssue(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
+  removeLabel: (...a: unknown[]) => mockRemoveLabel(...a),
   postMarker: (...a: unknown[]) => mockPostMarker(...a),
   getOpenPrLinkMap: () => mockLinks(),
   getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
@@ -607,6 +609,24 @@ describe("conductor loop safety", () => {
     expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
     expect(stdout).toMatch(/needs a human \(the choice is a policy call\)/);
     expect(stderr).not.toMatch(/posted no comment/);
+  });
+
+  it("removes conductor-ready from a linked pull request when the model says it needs a human", async () => {
+    watching();
+    conversation(0);
+    mockLinks.mockReturnValue({ byIssue: new Map([[7, [{ number: 50 }]]]) });
+    mockPrSurface.mockImplementation((n: number) => ({
+      pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", labels: [] },
+      assignees: [],
+      messages: [],
+      threads: [],
+    }));
+    mockChecks.mockReturnValue([{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }]);
+    mockRunClaude.mockImplementation(printed("NEEDS-HUMAN: the choice is a policy call"));
+    expect(await run()).toBe(0);
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50, kind: "pr" }), "conductor-ready", expect.any(String));
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
+    expect(mockRemoveLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50, kind: "pr" }), "conductor-ready");
   });
 
   it("exits 1 when the label cannot be applied", async () => {

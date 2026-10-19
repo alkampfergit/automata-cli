@@ -256,6 +256,20 @@ function targetKey(target: ReplyTarget): string {
   return `${target.kind}#${String(target.number)}`;
 }
 
+/**
+ * A blocked item is not ready. The sync ran before the model, so a pull request of the item may carry the
+ * label, also one added earlier in this tick. A failed removal is a warning; the next tick reconciles it.
+ */
+function clearReadyLabels(item: WatchedItem): void {
+  for (const pr of item.thread.prs) {
+    try {
+      removeLabel({ kind: "pr", number: pr.surface.pr.number }, READY_LABEL);
+    } catch (err) {
+      process.stderr.write(`Warning: could not ${readyPhrase(pr.surface.pr.number, "remove", false)}: ${(err as Error).message}\n`);
+    }
+  }
+}
+
 /** The model needs a person: label the watched item and say nothing on the conversation. */
 function blockItem(item: WatchedItem, label: string, reason: string): ItemResult {
   try {
@@ -265,6 +279,7 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
     return "failed";
   }
   process.stdout.write(`Conductor: ${label} needs a human (${reason}); applied the ${BLOCKED_LABEL} label.\n`);
+  clearReadyLabels(item);
   return "idle";
 }
 

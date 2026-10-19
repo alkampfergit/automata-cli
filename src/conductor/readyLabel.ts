@@ -10,19 +10,19 @@ export const READY_LABEL = "conductor-ready";
 
 export const READY_LABEL_DESCRIPTION = "The conductor found this pull request ready for a person to review and merge";
 
-/** The conclusions of a finished check that mean the build is broken. */
-const BROKEN_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED", "ERROR", "STARTUP_FAILURE"]);
+/** The conclusions of a finished check that count as green. Any other conclusion, for example `STALE`, does not. */
+const GREEN_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 
-/** Every check is finished and none is broken. No check at all is not proof of a green build. */
+/** Every check is finished and green. No check at all is not proof of a green build. */
 function checksAreGreen(checks: CiCheck[]): boolean {
   return (
     checks.length > 0 &&
-    checks.every((check) => check.status === "COMPLETED" && check.conclusion !== null && !BROKEN_CONCLUSIONS.has(check.conclusion))
+    checks.every((check) => check.status === "COMPLETED" && check.conclusion !== null && GREEN_CONCLUSIONS.has(check.conclusion))
   );
 }
 
 /**
- * `itemLabels` are the labels of the watched item, which may be an issue. Open, not a draft, not in conflict, no unresolved review thread, green checks, and not blocked.
+ * `itemLabels` are the labels of the watched item, which may be an issue. Open, not a draft, not in conflict, every review thread resolved, green checks, and not blocked.
  * No approving review is needed.
  */
 export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: string[] = []): boolean {
@@ -31,7 +31,7 @@ export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: strin
     surface.pr.state === "OPEN" &&
     !surface.pr.isDraft &&
     surface.pr.mergeable !== "CONFLICTING" &&
-    surface.threads.length === 0 &&
+    surface.threads.every((thread) => thread.isResolved) &&
     !labels.includes(BLOCKED_LABEL) &&
     checksAreGreen(checks)
   );
