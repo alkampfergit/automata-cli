@@ -41,13 +41,24 @@ describe("isReady", () => {
     ["a conflict", surface({ mergeable: "CONFLICTING" }), green],
     ["a closed pull request", surface({ state: "CLOSED" }), green],
     ["a merged pull request", surface({ state: "MERGED" }), green],
-    ["an unresolved thread", surface({}, [{} as PrSurface["threads"][number]]), green],
+    ["an unresolved thread", surface({}, [{ isResolved: false } as PrSurface["threads"][number]]), green],
     ["a failed check", surface(), [...green, { name: "l", status: "COMPLETED", conclusion: "FAILURE" }]],
     ["a pending check", surface(), [...green, { name: "l", status: "IN_PROGRESS", conclusion: null }]],
+    ["a stale check", surface(), [...green, { name: "l", status: "COMPLETED", conclusion: "STALE" }]],
     ["no check", surface(), []],
     ["the blocked label on the pull request", surface({ labels: ["Conductor-Blocked"] }), green],
   ])("is not ready with %s", (_name, pr, checks) => {
     expect(isReady(pr, checks)).toBe(false);
+  });
+
+  it("is ready when every review thread is resolved", () => {
+    const threads = [{ isResolved: true }, { isResolved: true }] as PrSurface["threads"];
+    expect(isReady(surface({}, threads), green)).toBe(true);
+  });
+
+  it("is not ready when one of several threads is unresolved", () => {
+    const threads = [{ isResolved: true }, { isResolved: false }] as PrSurface["threads"];
+    expect(isReady(surface({}, threads), green)).toBe(false);
   });
 
   it("is not ready when the watched item carries the blocked label", () => {
