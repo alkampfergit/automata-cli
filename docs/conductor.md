@@ -100,6 +100,28 @@ one short note with the CI-fix marker, so the check does not run again for the s
 check, it waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists it as
 `CI-fix request on PR #<n>`.
 
+## Ready label
+
+A person can find the pull requests that wait for a review by the `conductor-ready` label. automata applies it; the
+model is not run and has no permission to edit labels. The conductor posts no comment for it.
+
+A pull request is ready when all of these are true:
+
+- it is open and not a draft;
+- GitHub does not report a merge conflict (`CONFLICTING`; `UNKNOWN` does not block);
+- it has no unresolved review thread;
+- it has at least one check, every check is finished, and none failed (`FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED`,
+  `CANCELLED`, `ERROR`, `STARTUP_FAILURE`); a skipped or neutral check counts as green;
+- neither the pull request nor the watched item has the `conductor-blocked` label.
+
+An approving review is not needed. Each tick, for each watched pull request and each open pull request linked to a
+watched issue, automata adds the label when the pull request is ready and lacks it. It removes the label when the pull
+request is not ready and has it, so a new push (checks start again), a failed check, a new unresolved thread or a
+merge conflict removes it. If the repository has no such label, the tick creates it.
+
+A label that cannot be added or removed is a warning on stderr; the tick does not exit 1 for it. `--dry-run` prints
+the change a tick would make and applies none. `--check` does not list label changes.
+
 ## Watch list
 
 The items the conductor follows are stored in `.automata/conductor-watch.json`, an array of issue and pull request
