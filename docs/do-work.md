@@ -30,7 +30,7 @@ automata do-work --check            # read-only health report: is the loop worki
 | `--pr <number>` | Process only this pull request, and skip the issue pass. It must be an open pull request that closes no issue of this repository, otherwise the tick exits 1. A warning is printed if it does not match the discovery filter. Given together with `--issue`, both passes run, each restricted to what was named. |
 | `--limit <n>` | Maximum **issues** to fetch (default: `10`). A note is printed when the result was truncated. It does not bound the orphan pass, whose candidates come out of the pull-request query that is always read in full. |
 | `--max-runs <n>` | Maximum **model runs** this tick — an item skipped for a dirty tree, a failed marker, or because it stopped being actionable does not consume a slot. Remaining items are reported as `deferred`. The issue items and the orphan pull-request items share this one budget, and the issues are offered it first. Default: `doWork.maxRunsPerTick`. |
-| `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. |
+| `--dry-run` | Print the pre-flight plan and the work plan, then a summary and the exact command that would be launched for each item, and stop. Nothing is rescued, pruned, pulled, assigned, posted, edited, deleted, checked out or invoked. The one thing it writes is a prompt file under the system temporary directory — see [Inspecting a tick without running it](#inspecting-a-tick-without-running-it). |
 | `--check` | Print a read-only health report for the loop and exit — see [Checking the loop's health](#checking-the-loops-health). Exits `0` when it found no problem, `1` when it did. Cannot be combined with `--dry-run`. |
 | `--no-fetch` | With `--check`: make **no network call at all** — no `git fetch` and no `gh` query. Ahead/behind is reported from the last fetch, and the selection section does not run. |
 | `--verbose` | Show the work behind the report: every `git` and `gh` invocation with its duration and exit code, the discovery query as sent, and every candidate considered before the discovery filter narrowed it. Applies to `--check` and to a [blocked-exit dump](#when-a-tick-does-nothing). |
@@ -294,13 +294,15 @@ Issue #42 — Add a flag
 
   Command that would be launched:
 ────────────────────────────────────────────────────────────────────────
-/path/to/claude --dangerously-skip-permissions --model claude-opus-4-6 --verbose --output-format stream-json -p 'You are the agent…'
+/path/to/claude --dangerously-skip-permissions --model claude-opus-4-6 --verbose --output-format stream-json -p < /tmp/automata-prompt-acme-widget-issue-42-issue-discuss.txt
 ────────────────────────────────────────────────────────────────────────
 ```
 
-The command is built by the same argv builders the real invocation uses, so it cannot drift from what a real tick would spawn, and it is shell-quoted so it can be pasted and run by hand. It is printed **unindented** on purpose: the prompt is a multi-line quoted argument, so indenting the continuation lines would add whitespace to the prompt the command actually sends.
+The executor receives the prompt on **stdin**, not as a command-line argument. Linux caps one argument at 128 KiB, and the prompt grows with the conversation, so an argument would fail with `E2BIG` on a long thread. Claude gets a bare `-p`, and Codex gets `exec … -` (Codex reads `-` as "take the instructions from stdin"). There is no size limit of automata's own; a prompt that is too long for the model fails through the executor's own error.
 
-`--dry-run --json` returns the same information as data — including `args` (the raw argv), `command`, and the full `prompt` — which is the easier form for diffing a prompt change.
+The dry run writes the prompt to `<tmpdir>/automata-prompt-<owner>-<repo>-<issue|pr>-<number>-<turn>.txt` and prints the command with `< <that file>`. The argv comes from the same builders the real invocation uses, and the file holds exactly the bytes a real tick writes to the executor's stdin. So the printed command is the executed command, and you can paste it and run it by hand. The name is fixed for each item and turn, so a repeated dry run overwrites the file and does not add another. The file stays in place for you to read; automata does not delete it. Every other effect of `--dry-run` is as listed under `--dry-run` above: it changes nothing in the repository or on GitHub.
+
+`--dry-run --json` returns the same information as data — including `args` (the raw argv, with a bare `-p` or `-`), `command`, the full `prompt` and `promptFile` (the path of the prompt file) — which is the easier form for diffing a prompt change.
 
 `--dry-run` respects the run cap, and reports how many items it did not describe.
 
@@ -733,7 +735,7 @@ So in particular:
 - The prompt carries no issue identity and no issue conversation.
 - `--json` reports `issue: null` for the item, with the pull request in `pr`.
 
-**Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an oversized prompt or an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
+**Everything else is shared** with a build turn: the head branch is checked out and fast-forwarded, a fork or a protected head is refused, the marker is posted and reconciled the same way, an unrecognised `tool:` directive is refused the same way, and a mid-run authorized message is flagged the same way.
 
 ### Synchronizing a diverged head branch
 
@@ -936,7 +938,7 @@ The file is named for automata rather than for `do-work` so other long-running c
 Exit 2 means degraded, not broken. An item was:
 
 - `skipped` — nothing was attempted: branch preparation failed, the marker could not be posted, the item stopped being actionable (including an orphan pull request that has since been linked to an issue, merged or closed), another pull request in the same tick already owns its head branch (`branch-busy`), or the pull request is unsafe to work on (from a fork, or its head *is* the base branch). A dirty tree reaches this path in two cases: the [pre-flight rescue](#1-rescue-uncommitted-changes) itself failed, or an executor earlier in the *same* tick left changes behind — the pre-flight runs once, before the first item, so it cannot clean up after one. When a pre-flight step is the cause, the skip line names it (see [reporting](#reporting));
-- `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive, or an oversized prompt). A marker is updated only if one had already been posted;
+- `failed` — the run errored, a read failed before the executor was reached, or the run was refused before it started (an unrecognised `tool:` directive). A marker is updated only if one had already been posted;
 - `deferred` — the run cap was reached. The cap counts model runs, so a skipped item does not consume one;
 - `answered-no-reply` — the run finished without posting anything, or it answered but an authorized message arrived mid-run and had to be flagged. Either way a human must reply.
 

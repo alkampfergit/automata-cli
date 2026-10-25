@@ -120,7 +120,9 @@ import {
   type CheckSection,
   type LockContext,
 } from "../run/checkReport.js";
-import { dirname } from "node:path";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { version } from "../version.js";
 import { runClaude, buildClaudeArgs } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
@@ -512,7 +514,9 @@ interface PlannedRun {
   prompt: string;
   bin: string;
   args: string[];
-  /** The argv rendered as a shell-pasteable command line. */
+  /** Holds the exact bytes the real run writes to the executor's stdin. */
+  promptFile: string;
+  /** The argv and the stdin redirect rendered as a shell-pasteable command line. */
   command: string;
 }
 
@@ -563,9 +567,10 @@ function toExecution(resolved: Extract<ResolveExecutionResult, { ok: true }>): R
  * real invocation uses so `--dry-run` cannot drift from what actually happens.
  */
 function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun {
+  const repo = getRepoSlug();
   const prompt = composePrompt({
     item,
-    repo: getRepoSlug(),
+    repo,
     agentUser: settings.participants.agentUser,
     baseBranch: settings.baseBranch,
     frame: settings.prompts[item.turn],
@@ -577,15 +582,32 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
   // child stays cancellable; `--silent` suppresses printing, not the flags.
   const args =
     execution.executor === "codex"
-      ? buildCodexArgs(prompt, { yolo: true, model: execution.model, effort: execution.effort })
+      ? buildCodexArgs(prompt, { yolo: true, model: execution.model, effort: execution.effort, promptOn: "stdin" })
       : buildClaudeArgs(prompt, {
           yolo: true,
           verbose: true,
           model: execution.model,
           effort: execution.effort,
+          promptOn: "stdin",
         });
 
-  return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
+  // The one thing a dry run writes: the prompt, where the printed `<` redirect reads it.
+  const promptFile = writePromptFile(item, repo, prompt);
+  const command = `${[bin, ...args].map(shellQuote).join(" ")} < ${shellQuote(promptFile)}`;
+  return { prompt, bin, args, promptFile, command };
+}
+
+/**
+ * Write a dry run's prompt under the temporary directory. The name is fixed per
+ * repository, subject and turn, so repeated dry runs overwrite one file instead
+ * of piling up.
+ */
+function writePromptFile(item: WorkItem, repo: { owner: string; repo: string }, prompt: string): string {
+  const subject = item.issue !== null ? `issue-${String(item.issue.number)}` : `pr-${String(item.pr?.number ?? 0)}`;
+  const name = `automata-prompt-${repo.owner}-${repo.repo}-${subject}-${item.turn}.txt`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+  const file = join(tmpdir(), name);
+  writeFileSync(file, prompt, "utf8");
+  return file;
 }
 
 /**
@@ -664,11 +686,7 @@ function describePlannedRun(
     "  Permissions  bypassed (do-work always runs unattended)",
     `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
     "",
-    "  Command that would be launched:",
-    // Printed flush-left and unindented on purpose: the prompt is a multi-line
-    // quoted argument, so indenting the continuation lines would inject leading
-    // whitespace into the prompt itself and the command would no longer be the
-    // one that runs.
+    "  Command that would be launched (the prompt is read from the file on stdin):",
     rule,
     run.command,
     rule,
@@ -1755,19 +1773,7 @@ async function processItem(
     frame: settings.prompts[item.turn],
   });
 
-  const oversized = describeOversizedPrompt(prompt);
-  if (oversized !== null) {
-    return refuseBeforeRun(
-      base,
-      marker,
-      oversized,
-      `automata do-work: could not start a run because ${oversized} ` +
-        "Summarise the discussion in a new issue, or shorten the thread, and try again.",
-    );
-  }
-
-  // Resolved here, beside the oversized-prompt refusal, because both are
-  // pre-flight refusals that need the marker to already exist.
+  // Resolved here, because a pre-flight refusal needs the marker to already exist.
   const resolved = resolveItemExecution(item, settings);
   if (!resolved.ok) {
     const detail = describeInvalidTool(resolved.invalidTool);
@@ -1926,20 +1932,6 @@ function describeRunEffects(
     headAfter: after.head,
     pr,
   };
-}
-
-// Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt is
-// passed as one. A long-lived issue with many authorized comments can reach
-// that, and the raw failure is an opaque E2BIG from spawn. Fail legibly instead;
-// piping the prompt through stdin is the real fix and is tracked separately.
-function describeOversizedPrompt(prompt: string): string | null {
-  const MAX_PROMPT_BYTES = 96 * 1024;
-  const promptBytes = Buffer.byteLength(prompt, "utf8");
-  if (promptBytes <= MAX_PROMPT_BYTES) return null;
-  return (
-    `the composed prompt is ${String(Math.round(promptBytes / 1024))} KiB, over the ${String(MAX_PROMPT_BYTES / 1024)} KiB ` +
-    "limit for a single command-line argument. The conversation is too long to hand to the executor this way."
-  );
 }
 
 function adjustOutcome(
@@ -3349,6 +3341,7 @@ function toRunJson(entry: DryRunEntry): Record<string, unknown> {
       args: null,
       command: null,
       prompt: null,
+      promptFile: null,
     };
   }
   return {
@@ -3366,6 +3359,7 @@ function toRunJson(entry: DryRunEntry): Record<string, unknown> {
     args: entry.run.args,
     command: entry.run.command,
     prompt: entry.run.prompt,
+    promptFile: entry.run.promptFile,
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { EventEmitter, Readable } from "node:stream";
+import { EventEmitter, Readable, Writable } from "node:stream";
 
 const mockSpawnSync = vi.fn();
 const mockSpawn = vi.fn();
@@ -70,6 +70,7 @@ describe("claudeService.invokeClaudeCode (sync mode)", () => {
     const { buildClaudeArgs } = await import("../../src/claude/claudeService.js");
 
     expect(buildClaudeArgs("p")).toEqual(["-p", "p"]);
+    expect(buildClaudeArgs("p", { promptOn: "argv" })).toEqual(["-p", "p"]);
     // An empty level must emit nothing rather than a bare `--effort` that would
     // swallow the next argument.
     expect(buildClaudeArgs("p", { effort: "" })).toEqual(["-p", "p"]);
@@ -227,6 +228,7 @@ describe("claudeService.invokeClaudeCode (verbose mode)", () => {
     const events = [JSON.stringify({ type: "result", result: "the reply", num_turns: 1 })];
     const child = createMockChildProcess(events, 0) as EventEmitter & { stdout: Readable; stderr: Readable };
     child.stderr = new Readable({ read() {} });
+    (child as unknown as { stdin: Writable }).stdin = new Writable({ write(_c, _e, done) { done(); } });
     mockSpawn.mockReturnValue(child);
 
     const stderrLines: string[] = [];
