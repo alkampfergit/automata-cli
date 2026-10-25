@@ -979,6 +979,9 @@ export function describeDivergence(upstream: string, head: string): DivergenceRe
   return { commits, merges: count };
 }
 
+/** The `git rebase` words that fix the strategy; `rebaseOnto` and `git rebase-prs` both start from them. */
+export const REBASE_STRATEGY_ARGS: readonly string[] = ["rebase", "--no-reapply-cherry-picks"];
+
 /**
  * `git rebase --no-reapply-cherry-picks <ref>` — replay the current branch onto
  * `ref`, dropping every commit already upstream as the same patch.
@@ -996,7 +999,7 @@ export function describeDivergence(upstream: string, head: string): DivergenceRe
  * `stderr` alone would tell the operator a rebase conflicted and nothing more.
  */
 export function rebaseOnto(ref: string): GitCommandResult {
-  const { stdout, stderr, status } = run("git", ["rebase", "--no-reapply-cherry-picks", ref]);
+  const { stdout, stderr, status } = run("git", [...REBASE_STRATEGY_ARGS, ref]);
   const detail = [stdout.trim(), stderr.trim()].filter((part) => part.length > 0).join("\n");
   return { ok: status === 0, stderr: detail };
 }
