@@ -148,7 +148,7 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; echoResult?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; echoResult?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink; cwd?: string } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
@@ -165,6 +165,7 @@ export function runClaude(
     const child = spawn(claudeBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+      cwd: options.cwd,
     });
     trackChild(child);
     feedStdin(child, prompt);

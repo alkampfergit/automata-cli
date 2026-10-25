@@ -71,7 +71,7 @@ function invokeCodexCodeSync(prompt: string, options: InvokeCodexOptions): void 
  */
 export function runCodex(
   prompt: string,
-  options: { model?: string; effort?: string; readOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; readOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink; cwd?: string } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
@@ -86,6 +86,7 @@ export function runCodex(
     const child = spawn(codexBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+      cwd: options.cwd,
     });
     trackChild(child);
     feedStdin(child, prompt);

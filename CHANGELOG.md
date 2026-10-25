@@ -12,6 +12,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- `automata git rebase-prs` rebases every open pull request that is behind its base branch, in a temporary worktree,
+  and pushes with `--force-with-lease`. The configured executor resolves conflicts. A pull request it cannot rebase
+  is left unchanged, gets the label `rebase-blocked` and one comment. Options `--dry-run`, `--no-fetch`, `--pr` and
+  `--max-prs`; config keys `git.rebasePrs.{prompt,maxAttempts,testCommand,includeDrafts}` and
+  `automata config set git-rebase-prs-*`. See `docs/git.md`. (#128)
 - `automata conductor` applies the label `conductor-ready` to a watched pull request (or one linked to a watched
   issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
   checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`

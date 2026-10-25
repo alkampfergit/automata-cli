@@ -82,6 +82,18 @@ export interface AutomataDoWorkConfig {
   prompts?: DoWorkPrompts;
 }
 
+/** Settings of `automata git rebase-prs`. The executor, model and effort are the `doWork` ones. */
+export interface RebasePrsConfig {
+  /** Instructions for the model that resolves conflicts. Text or a `.md` filename in `.automata/`. */
+  prompt?: string;
+  /** The most conflict resolutions spent on one pull request. Unset means 3. */
+  maxAttempts?: number;
+  /** A shell command run in the worktree after the rebase. A non-zero exit blocks the pull request. */
+  testCommand?: string;
+  /** True also rebases draft pull requests. Unset means false. */
+  includeDrafts?: boolean;
+}
+
 /**
  * Repository-level git settings. Separate from `doWork` on purpose: these apply
  * to the git commands a human runs, not to the unattended loop.
@@ -98,6 +110,7 @@ export interface AutomataGitConfig {
    * gitflow when `origin` has a `develop` branch, trunk when it does not.
    */
   releaseFlow?: ReleaseFlow;
+  rebasePrs?: RebasePrsConfig;
 }
 
 /** Instructions for the conductor, one per kind of watched item. Text or a `.md` filename in `.automata/`. */
@@ -294,6 +307,16 @@ export const DEFAULT_CONDUCTOR_CI_FIX_PROMPT =
   "it must end with a `NEEDS-HUMAN:` line that gives the reason. " +
   "Do not change any file, merge, close or push yourself. Write only the message to the agent.";
 
+/** Default instructions for the model that resolves the conflicts of `automata git rebase-prs`. */
+export const DEFAULT_REBASE_PRS_PROMPT =
+  "A rebase of this pull request branch stopped on conflicts. Open each conflicted file, keep the intent of both " +
+  "sides, and remove every conflict marker (<<<<<<<, =======, >>>>>>>). " +
+  "Edit the files only. Do not run git add, git commit, git rebase, git push or git checkout: the tool does that. " +
+  "Do not change a file that is not conflicted.";
+
+/** The default for `git.rebasePrs.maxAttempts`. */
+export const DEFAULT_REBASE_PRS_MAX_ATTEMPTS = 3;
+
 const CONFIG_DIR = ".automata";
 const CONFIG_FILE = "config.json";
 
@@ -387,6 +410,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.conductor?.prompts?.ciFix) {
     config.conductor.prompts.ciFix = resolvePromptRef(config.conductor.prompts.ciFix, dir);
+  }
+  if (config.git?.rebasePrs?.prompt) {
+    config.git.rebasePrs.prompt = resolvePromptRef(config.git.rebasePrs.prompt, dir);
   }
   return config;
 }

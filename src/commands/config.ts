@@ -8,6 +8,7 @@ import {
   type TurnKind,
   type AutomataDoWorkConfig,
   type AutomataConductorConfig,
+  type RebasePrsConfig,
   DEFAULT_DO_WORK,
 } from "../config/configStore.js";
 import { RELEASE_FLOWS, isReleaseFlow } from "../git/releaseFlow.js";
@@ -324,6 +325,62 @@ function writeConductor(patch: Partial<AutomataConductorConfig>): void {
   writeConfig({ ...current, conductor: { ...current.conductor, ...patch } });
 }
 
+function writeRebasePrs(patch: Partial<RebasePrsConfig>): void {
+  const current = readRawConfig();
+  writeConfig({ ...current, git: { ...current.git, rebasePrs: { ...current.git?.rebasePrs, ...patch } } });
+}
+
+function requireNonEmpty(value: string, key: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    process.stderr.write(`Error: ${key} requires a non-empty value.\n`);
+    process.exit(1);
+  }
+  return trimmed;
+}
+
+const configSetRebasePrsPrompt = new Command("git-rebase-prs-prompt")
+  .description("Set the instructions for the model that resolves conflicts in `git rebase-prs` (prompt text or a .md filename)")
+  .argument("<value>", "Prompt text, or a plain .md filename inside .automata/")
+  .action((value: string) => {
+    writeRebasePrs({ prompt: requireNonEmpty(value, "git-rebase-prs-prompt") });
+    process.stdout.write("git.rebasePrs.prompt set.\n");
+  });
+
+const configSetRebasePrsMaxAttempts = new Command("git-rebase-prs-max-attempts")
+  .description("Set the most conflict resolutions `git rebase-prs` spends on one pull request (default 3)")
+  .argument("<value>", "A positive integer")
+  .action((value: string) => {
+    const attempts = parseNonNegativeInt(value, "git-rebase-prs-max-attempts");
+    if (attempts < 1) {
+      process.stderr.write(`Error: git-rebase-prs-max-attempts must be at least 1 (got "${value}").\n`);
+      process.exit(1);
+    }
+    writeRebasePrs({ maxAttempts: attempts });
+    process.stdout.write(`git.rebasePrs.maxAttempts set to: ${String(attempts)}\n`);
+  });
+
+const configSetRebasePrsTestCommand = new Command("git-rebase-prs-test-command")
+  .description("Set the shell command `git rebase-prs` runs in the worktree after a rebase")
+  .argument("<value>", "A shell command, for example 'npm test'")
+  .action((value: string) => {
+    const command = requireNonEmpty(value, "git-rebase-prs-test-command");
+    writeRebasePrs({ testCommand: command });
+    process.stdout.write(`git.rebasePrs.testCommand set to: ${command}\n`);
+  });
+
+const configSetRebasePrsIncludeDrafts = new Command("git-rebase-prs-include-drafts")
+  .description("Set whether `git rebase-prs` also rebases draft pull requests")
+  .argument("<value>", "true or false")
+  .action((value: string) => {
+    if (value !== "true" && value !== "false") {
+      process.stderr.write(`Error: git-rebase-prs-include-drafts must be true or false (got "${value}").\n`);
+      process.exit(1);
+    }
+    writeRebasePrs({ includeDrafts: value === "true" });
+    process.stdout.write(`git.rebasePrs.includeDrafts set to: ${value}\n`);
+  });
+
 function requireExecutor(value: string): Executor {
   if (!VALID_EXECUTORS.includes(value as Executor)) {
     process.stderr.write(`Error: invalid executor "${value}". Must be one of: ${VALID_EXECUTORS.join(", ")}\n`);
@@ -420,6 +477,10 @@ const configSet = new Command("set")
   .addCommand(configSetConductorExecutor)
   .addCommand(configSetConductorModel)
   .addCommand(configSetConductorEffort)
+  .addCommand(configSetRebasePrsPrompt)
+  .addCommand(configSetRebasePrsMaxAttempts)
+  .addCommand(configSetRebasePrsTestCommand)
+  .addCommand(configSetRebasePrsIncludeDrafts)
   .addCommand(configSetGitTrunkBranch)
   .addCommand(configSetGitReleaseFlow);
 

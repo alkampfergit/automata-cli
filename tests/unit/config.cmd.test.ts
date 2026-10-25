@@ -497,3 +497,26 @@ describe("automata config set git-release-flow", () => {
     expect(readConfigFile().git).toEqual({ trunkBranch: "main", releaseFlow: "trunk" });
   });
 });
+
+describe("automata config set git-rebase-prs-*", () => {
+  it("writes each key under git.rebasePrs and keeps the other git keys", () => {
+    run(["config", "set", "git-trunk-branch", "main"]);
+    run(["config", "set", "git-rebase-prs-prompt", " Resolve it. "]);
+    run(["config", "set", "git-rebase-prs-max-attempts", "5"]);
+    run(["config", "set", "git-rebase-prs-test-command", "npm test"]);
+    run(["config", "set", "git-rebase-prs-include-drafts", "true"]);
+    expect(readConfigFile().git).toEqual({
+      trunkBranch: "main",
+      rebasePrs: { prompt: "Resolve it.", maxAttempts: 5, testCommand: "npm test", includeDrafts: true },
+    });
+  });
+
+  it("rejects bad values and writes nothing", () => {
+    expect(runExpectingFailure(["config", "set", "git-rebase-prs-max-attempts", "0"])).toMatch(/at least 1/);
+    expect(runExpectingFailure(["config", "set", "git-rebase-prs-max-attempts", "x"])).toMatch(/non-negative integer/);
+    expect(runExpectingFailure(["config", "set", "git-rebase-prs-test-command", " "])).toMatch(/non-empty/);
+    expect(runExpectingFailure(["config", "set", "git-rebase-prs-prompt", " "])).toMatch(/non-empty/);
+    expect(runExpectingFailure(["config", "set", "git-rebase-prs-include-drafts", "yes"])).toMatch(/true or false/);
+    expect(existsSync(join(automataDir(), "config.json"))).toBe(false);
+  });
+});
