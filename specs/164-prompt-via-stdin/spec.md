@@ -13,7 +13,7 @@ fail with `E2BIG` (Linux caps one argument at 128 KiB).
   gets a bare `-p` and Codex gets `-`.
 - FR-2: `runClaude` and `runCodex` spawn with a piped stdin, write the prompt and close the stream. `EPIPE` and
   `ERR_STREAM_DESTROYED` on stdin are swallowed; only the `close` event settles the run.
-- FR-3: `do-work --dry-run` writes the prompt to `<tmpdir>/automata-prompt-<owner>-<repo>-<issue|pr>-<n>-<turn>.txt`
+- FR-3: `do-work --dry-run` writes the prompt to `<tmpdir>/automata-prompts-<uid>/automata-prompt-<owner>-<repo>-<hash>-<issue|pr>-<n>-<turn>.txt` (directory `0700`, file `0600`, replaced without following links)
   (overwritten on each run) and prints the command with `< <file>`. `--dry-run --json` keeps `prompt` and adds
   `promptFile`.
 - FR-4: The 96 KiB guard (`describeOversizedPrompt` and its refusal) is removed.

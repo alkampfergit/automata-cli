@@ -120,7 +120,8 @@ import {
   type CheckSection,
   type LockContext,
 } from "../run/checkReport.js";
-import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { version } from "../version.js";
@@ -598,16 +599,39 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
 }
 
 /**
- * Write a dry run's prompt under the temporary directory. The name is fixed per
- * repository, subject and turn, so repeated dry runs overwrite one file instead
- * of piling up.
+ * Write a dry run's prompt into a private directory under the temporary
+ * directory. The name is fixed per repository, subject and turn, so repeated
+ * dry runs overwrite one file instead of piling up.
+ *
+ * The prompt holds private issue conversations, so the directory is owner-only
+ * (`0700`) and the file is `0600`. An existing file is removed first and
+ * recreated with `wx`, so a planted symlink is never followed. The repository
+ * part of the name carries a hash of `owner/repo`, because joining the two with
+ * a hyphen alone maps `a/b-c` and `a-b/c` to the same name.
  */
 function writePromptFile(item: WorkItem, repo: { owner: string; repo: string }, prompt: string): string {
   const subject = item.issue !== null ? `issue-${String(item.issue.number)}` : `pr-${String(item.pr?.number ?? 0)}`;
-  const name = `automata-prompt-${repo.owner}-${repo.repo}-${subject}-${item.turn}.txt`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
-  const file = join(tmpdir(), name);
-  writeFileSync(file, prompt, "utf8");
+  const identity = createHash("sha256").update(`${repo.owner}/${repo.repo}`).digest("hex").slice(0, 12);
+  const label = `${repo.owner}-${repo.repo}`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+  const name = `automata-prompt-${label}-${identity}-${subject}-${item.turn}.txt`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+  const file = join(privatePromptDir(), name);
+  rmSync(file, { force: true });
+  writeFileSync(file, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
   return file;
+}
+
+/** The owner-only directory for dry-run prompt files; refuses one that is not ours or not private. */
+function privatePromptDir(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const dir = join(tmpdir(), uid === undefined ? "automata-prompts" : `automata-prompts-${String(uid)}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  const foreign = uid !== undefined && stat.uid !== uid;
+  const open = process.platform !== "win32" && (stat.mode & 0o077) !== 0;
+  if (!stat.isDirectory() || foreign || open) {
+    throw new Error(`Refusing to write the dry-run prompt: ${dir} is not a private directory owned by you.`);
+  }
+  return dir;
 }
 
 /**
