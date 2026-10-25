@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { lstatSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { IssueSurface, PrSurface, PullRequestRef } from "../../src/github/ghWorkService.js";
 import type { RawMessage } from "../../src/github/conversation.js";
@@ -1613,8 +1612,7 @@ describe("do-work output modes", () => {
 
   it("--dry-run prints a bare -p and redirects the prompt file into the command", async () => {
     await runDoWork(["--dry-run"]);
-    const file = join(tmpdir(), "automata-prompt-acme-widget-issue-42-issue-discuss.txt");
-    expect(stdout).toContain(` -p < ${file}\n`);
+    expect(stdout).toMatch(/ -p < \S*automata-prompts-?\d*\/automata-prompt-acme-widget-[0-9a-f]{12}-issue-42-issue-discuss\.txt\n/);
     expect(stdout).not.toContain("You are: automata-bot'");
   });
 
@@ -1624,6 +1622,26 @@ describe("do-work output modes", () => {
     const { prompt, promptFile } = payload.runs[0];
     expect(readFileSync(promptFile, "utf8")).toBe(prompt);
     expect(prompt).toContain("--- Context assembled by automata ---\nRepository: acme/widget\nYou are: automata-bot");
+  });
+
+  it("--dry-run keeps the prompt file owner-only", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const file = (JSON.parse(stdout) as { runs: { promptFile: string }[] }).runs[0].promptFile;
+    expect(statSync(file).mode & 0o077).toBe(0);
+    expect(statSync(dirname(file)).mode & 0o077).toBe(0);
+  });
+
+  it("--dry-run replaces a symlink at the prompt path instead of writing through it", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const file = (JSON.parse(stdout) as { runs: { promptFile: string }[] }).runs[0].promptFile;
+    const victim = join(dirname(file), "victim.txt");
+    writeFileSync(victim, "keep");
+    rmSync(file);
+    symlinkSync(victim, file);
+    stdout = "";
+    await runDoWork(["--dry-run", "--json"]);
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(lstatSync(file).isSymbolicLink()).toBe(false);
   });
 
   it("--dry-run overwrites the prompt file on a repeated run instead of adding another", async () => {

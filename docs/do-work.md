@@ -294,13 +294,13 @@ Issue #42 — Add a flag
 
   Command that would be launched:
 ────────────────────────────────────────────────────────────────────────
-/path/to/claude --dangerously-skip-permissions --model claude-opus-4-6 --verbose --output-format stream-json -p < /tmp/automata-prompt-acme-widget-issue-42-issue-discuss.txt
+/path/to/claude --dangerously-skip-permissions --model claude-opus-4-6 --verbose --output-format stream-json -p < /tmp/automata-prompts-1000/automata-prompt-acme-widget-3f2a9c1b7d4e-issue-42-issue-discuss.txt
 ────────────────────────────────────────────────────────────────────────
 ```
 
 The executor receives the prompt on **stdin**, not as a command-line argument. Linux caps one argument at 128 KiB, and the prompt grows with the conversation, so an argument would fail with `E2BIG` on a long thread. Claude gets a bare `-p`, and Codex gets `exec … -` (Codex reads `-` as "take the instructions from stdin"). There is no size limit of automata's own; a prompt that is too long for the model fails through the executor's own error.
 
-The dry run writes the prompt to `<tmpdir>/automata-prompt-<owner>-<repo>-<issue|pr>-<number>-<turn>.txt` and prints the command with `< <that file>`. The argv comes from the same builders the real invocation uses, and the file holds exactly the bytes a real tick writes to the executor's stdin. So the printed command is the executed command, and you can paste it and run it by hand. The name is fixed for each item and turn, so a repeated dry run overwrites the file and does not add another. The file stays in place for you to read; automata does not delete it. Every other effect of `--dry-run` is as listed under `--dry-run` above: it changes nothing in the repository or on GitHub.
+The dry run writes the prompt to `<tmpdir>/automata-prompts-<uid>/automata-prompt-<owner>-<repo>-<hash>-<issue|pr>-<number>-<turn>.txt`. The directory is owner-only (`0700`) and the file is `0600`, because the prompt holds private conversations. `<hash>` is a short hash of `owner/repo`, so two repositories never share a file. An existing file or symlink at that path is replaced, never written through and prints the command with `< <that file>`. The argv comes from the same builders the real invocation uses, and the file holds exactly the bytes a real tick writes to the executor's stdin. So the printed command is the executed command, and you can paste it and run it by hand. The name is fixed for each item and turn, so a repeated dry run overwrites the file and does not add another. The file stays in place for you to read; automata does not delete it. Every other effect of `--dry-run` is as listed under `--dry-run` above: it changes nothing in the repository or on GitHub.
 
 `--dry-run --json` returns the same information as data — including `args` (the raw argv, with a bare `-p` or `-`), `command`, the full `prompt` and `promptFile` (the path of the prompt file) — which is the easier form for diffing a prompt change.
 
