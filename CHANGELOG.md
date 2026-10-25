@@ -16,6 +16,14 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
   checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`
 
+### Changed
+
+- `do-work` passes the prompt to Claude and Codex on stdin instead of as a command-line argument. A long conversation
+  no longer fails with `E2BIG`, and the 96 KiB refusal ("the composed prompt is … KiB") is removed. `--dry-run` now
+  prints the command with `< <prompt file>`, where the prompt file is written under the system temporary directory
+  (one fixed name for each item and turn). `--dry-run --json` gains `promptFile`, and `args` ends in a bare `-p` (or
+  `-` for Codex). (#40)
+
 ### Fixed
 
 - The conductor prompt tells the model to run `gh` and `git` commands exactly as written. A project rule that

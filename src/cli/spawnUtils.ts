@@ -51,6 +51,26 @@ export function shellQuote(arg: string): string {
   return "'" + arg.replaceAll("'", ESCAPED_QUOTE) + "'";
 }
 
+/**
+ * Hand a prompt to a child through its stdin and close the stream.
+ *
+ * The write is asynchronous: a prompt over the pipe buffer (64 KiB on Linux)
+ * cannot be written in one call, and `end()` flushes the rest. A child that
+ * exits before it has read everything makes the pipe fail with `EPIPE`, or the
+ * stream with `ERR_STREAM_DESTROYED`. Both are swallowed on purpose: the child's
+ * `close` event already reports the early exit, and a second rejection from here
+ * would settle the caller twice. The same path covers a child stopped by a signal
+ * mid-write.
+ */
+export function feedStdin(child: { stdin: NodeJS.WritableStream | null }, text: string): void {
+  const stdin = child.stdin;
+  if (stdin === null) return;
+  stdin.on("error", () => {
+    // Reported by the child's `close` event.
+  });
+  stdin.end(text);
+}
+
 export function truncate(str: string, max: number): string {
   return str.length > max ? str.slice(0, max) + "..." : str;
 }

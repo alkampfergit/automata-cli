@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { IssueSurface, PrSurface, PullRequestRef } from "../../src/github/ghWorkService.js";
 import type { RawMessage } from "../../src/github/conversation.js";
@@ -1548,7 +1551,7 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("Marker       would post on issue #42");
     expect(stdout).toContain("Executor     claude");
     expect(stdout).toContain("Permissions  bypassed");
-    expect(stdout).toContain("Command that would be launched:");
+    expect(stdout).toContain("Command that would be launched (the prompt is read from the file on stdin):");
     expect(stdout).toContain("Dry run: nothing was rescued, pruned, pulled, assigned, posted, checked out or executed.");
   });
 
@@ -1608,23 +1611,28 @@ describe("do-work output modes", () => {
     expect(payload.runs[0]).toMatchObject({ effort: null });
   });
 
-  it("--dry-run shell-quotes the prompt so the command can be pasted", async () => {
+  it("--dry-run prints a bare -p and redirects the prompt file into the command", async () => {
     await runDoWork(["--dry-run"]);
-    const command = stdout.slice(stdout.indexOf("-p "));
-    expect(command).toMatch(/-p '/);
+    const file = join(tmpdir(), "automata-prompt-acme-widget-issue-42-issue-discuss.txt");
+    expect(stdout).toContain(` -p < ${file}\n`);
+    expect(stdout).not.toContain("You are: automata-bot'");
   });
 
-  it("--dry-run injects no indentation into the multi-line prompt", async () => {
-    // The command is printed unindented on purpose: indenting the continuation
-    // lines of a multi-line quoted argument would add leading whitespace to the
-    // prompt the command actually sends, making the printed command a lie.
-    // (The prompt cannot appear byte-identical inside a quoted argument, because
-    // shell quoting has to escape the apostrophes in it — so this checks the
-    // property that matters: newlines are not followed by injected padding.)
-    await runDoWork(["--dry-run"]);
-    expect(stdout).toContain(
-      "--- Context assembled by automata ---\nRepository: acme/widget\nYou are: automata-bot",
-    );
+  it("--dry-run writes the exact prompt bytes to the file the command reads", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const payload = JSON.parse(stdout) as { runs: { prompt: string; promptFile: string }[] };
+    const { prompt, promptFile } = payload.runs[0];
+    expect(readFileSync(promptFile, "utf8")).toBe(prompt);
+    expect(prompt).toContain("--- Context assembled by automata ---\nRepository: acme/widget\nYou are: automata-bot");
+  });
+
+  it("--dry-run overwrites the prompt file on a repeated run instead of adding another", async () => {
+    await runDoWork(["--dry-run", "--json"]);
+    const first = (JSON.parse(stdout) as { runs: { promptFile: string }[] }).runs[0].promptFile;
+    stdout = "";
+    await runDoWork(["--dry-run", "--json"]);
+    const second = (JSON.parse(stdout) as { runs: { promptFile: string }[] }).runs[0].promptFile;
+    expect(second).toBe(first);
   });
 
   it("--dry-run reports the branch differently for a build turn", async () => {
@@ -1699,18 +1707,18 @@ describe("do-work output modes", () => {
     expect(stdout).toContain("2 further item(s) deferred by the run cap.");
   });
 
-  it("--dry-run --json includes the argv, command and prompt", async () => {
+  it("--dry-run --json includes the argv, command, prompt and prompt file", async () => {
     await runDoWork(["--dry-run", "--json"]);
     const payload = JSON.parse(stdout) as {
-      runs: { issue: number; turn: string; executor: string; args: string[]; command: string; prompt: string }[];
+      runs: { issue: number; turn: string; executor: string; args: string[]; command: string; prompt: string; promptFile: string }[];
     };
     expect(payload.runs).toHaveLength(1);
     const run = payload.runs[0];
     expect(run).toMatchObject({ issue: 42, turn: "issue-discuss", executor: "claude" });
     expect(run.args).toContain("--dangerously-skip-permissions");
-    expect(run.args.at(-2)).toBe("-p");
-    expect(run.args.at(-1)).toBe(run.prompt);
-    expect(run.command).toContain("-p ");
+    expect(run.args.at(-1)).toBe("-p");
+    expect(run.args).not.toContain(run.prompt);
+    expect(run.command).toContain(` -p < ${run.promptFile}`);
   });
 
   it("--json emits the plan on stdout with progress on stderr", async () =>{
