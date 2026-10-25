@@ -629,6 +629,58 @@ describe("conductor loop safety", () => {
     expect(mockRemoveLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50, kind: "pr" }), "conductor-ready");
   });
 
+  describe("conductor-ready reconciliation", () => {
+    const readyPr = (n: number, labels: string[] = []) => ({
+      pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", labels },
+      assignees: [],
+      messages: [],
+      threads: [],
+    });
+    const green = [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }];
+
+    it("does not add the label to a pull request of a blocked watched issue, also as its own entry", async () => {
+      watchState = [5, 50];
+      mockTarget.mockImplementation((n: number) => (n === 5 ? { ...issue(5), labels: ["conductor-blocked"] } : pr(50)));
+      mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+      mockPrSurface.mockImplementation((n: number) => readyPr(n));
+      mockChecks.mockReturnValue(green);
+      expect(await run()).toBe(0);
+      expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+    });
+
+    it("removes the label from a blocked story child's pull request and retries a failed removal", async () => {
+      watchState = [];
+      storyState = [30];
+      mockStorySource.mockReturnValue({ via: "label", state: "open", title: "S", children: [{ number: 31, state: "open", title: "C", labels: [], assignees: [] }] });
+      mockLinks.mockReturnValue({ byIssue: new Map([[31, [{ number: 60 }]]]) });
+      mockTarget.mockImplementation((n: number) => ({ ...issue(n), labels: ["conductor-blocked"] }));
+      mockPrSurface.mockImplementation((n: number) => readyPr(n, ["conductor-ready"]));
+      mockChecks.mockReturnValue(green);
+      mockRemoveLabel.mockImplementationOnce(() => {
+        throw new Error("503");
+      });
+      expect(await run()).toBe(0);
+      expect(stderr).toMatch(/could not remove the conductor-ready label from #60: 503/);
+      expect(await run()).toBe(0);
+      expect(mockRemoveLabel).toHaveBeenCalledTimes(2);
+      expect(mockRemoveLabel).toHaveBeenLastCalledWith(expect.objectContaining({ number: 60 }), "conductor-ready");
+    });
+
+    it("removes the label from a watched pull request that closed, before the prune, and only reports it in a dry run", async () => {
+      watchState = [50];
+      mockTarget.mockReturnValue({ ...pr(50, "closed"), labels: ["conductor-ready"] });
+      expect(await run()).toBe(0);
+      expect(mockRemoveLabel).toHaveBeenCalledWith({ kind: "pr", number: 50 }, "conductor-ready");
+      mockRemoveLabel.mockClear();
+      stdout = "";
+      watchState = [50];
+      const { runConductor } = await import("../../src/commands/conductor.js");
+      expect(await runConductor({ dryRun: true })).toBe(0);
+      expect(mockRemoveLabel).not.toHaveBeenCalled();
+      expect(stdout).toMatch(/dry run, a tick would remove the conductor-ready label from #50/);
+    });
+  });
+
   it("exits 1 when the label cannot be applied", async () => {
     watching();
     conversation(0);
@@ -693,7 +745,7 @@ describe("conductor --automatic", () => {
     vi.useFakeTimers();
     try {
       watchState = [7];
-      mockTarget.mockReturnValueOnce(issue(7));
+      mockTarget.mockReturnValueOnce(issue(7)).mockReturnValueOnce(issue(7)).mockReturnValueOnce(issue(7));
       mockTarget.mockReturnValue({ ...issue(7), state: "closed" });
       const done = runWith({ automatic: true, interval: "3" });
       await vi.advanceTimersByTimeAsync(3000);

@@ -317,24 +317,77 @@ function readyPhrase(number: number, change: "add" | "remove", past: boolean): s
   return `${past ? words.done : words.now} ${READY_LABEL} label ${words.to} #${String(number)}`;
 }
 
+/** Apply or, in a dry run, report one label change. A failed edit is a warning only: the next tick reconciles it. */
+function changeReadyLabel(number: number, change: "add" | "remove", dryRun: boolean): void {
+  if (dryRun) {
+    process.stdout.write(`Conductor: dry run, a tick would ${readyPhrase(number, change, false)}.\n`);
+    return;
+  }
+  try {
+    applyReadyChange(number, change);
+    process.stdout.write(`Conductor: ${readyPhrase(number, change, true)}.\n`);
+  } catch (err) {
+    process.stderr.write(`Warning: could not ${readyPhrase(number, change, false)}: ${(err as Error).message}\n`);
+  }
+}
+
+/** The labels of a story child, or null when it cannot be read: its pull request is then left alone. */
+function childLabels(child: number): string[] | null {
+  try {
+    return getWatchTarget(child).labels;
+  } catch (err) {
+    process.stderr.write(`Warning: could not read #${String(child)} for the ${READY_LABEL} label, skipping its pull request: ${(err as Error).message}\n`);
+    return null;
+  }
+}
+
 /**
- * Keep the `conductor-ready` label true for each pull request of the item. It needs no model and posts no comment.
- * A failed edit is a warning only: the label is a signal, and it must not stop the replies. A dry run changes nothing.
+ * The labels of every watched context of each open pull request: the pull request itself, a watched issue that
+ * links it, and the current child of a story. A blocked context blocks the pull request, whichever entry decides.
+ * A closed or merged watched pull request is returned apart, for its stale label.
  */
-function syncReadyLabels(item: WatchedItem, dryRun: boolean): void {
-  for (const pr of item.thread.prs) {
-    const change = readyLabelChange(pr.surface, pr.checks, item.labels);
-    if (change === null) continue;
-    const number = pr.surface.pr.number;
-    if (dryRun) {
-      process.stdout.write(`Conductor: dry run, a tick would ${readyPhrase(number, change, false)}.\n`);
+function readyContexts(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig): { open: Map<number, string[] | null>; closed: WatchTarget[] } {
+  const open = new Map<number, string[] | null>();
+  const closed: WatchTarget[] = [];
+  const add = (pr: number, labels: string[] | null): void => {
+    const known = open.get(pr);
+    open.set(pr, labels === null || known === null ? null : [...(known ?? []), ...labels]);
+  };
+  for (const id of watch) {
+    let target: WatchTarget;
+    try {
+      target = getWatchTarget(id);
+    } catch (err) {
+      process.stderr.write(`Warning: could not check #${String(id)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
       continue;
     }
+    if (isWatchClosed(target.state)) {
+      if (target.kind === "pr") closed.push(target);
+    } else if (target.kind === "pr") add(id, target.labels);
+    else for (const ref of linkMap().byIssue.get(id) ?? []) add(ref.number, target.labels);
+  }
+  for (const [pr, child] of storyCovered(config, linkMap)) add(pr, childLabels(child));
+  return { open, closed };
+}
+
+/**
+ * Keep the `conductor-ready` label true for every watched pull request. It needs no model and posts no comment,
+ * and it does not depend on who may reply: a blocked or limited item, a covered pull request and a pull request
+ * that closed are all reconciled. It runs before the prune. A dry run changes nothing.
+ */
+function reconcileReadyLabels(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig, dryRun: boolean): void {
+  const { open, closed } = readyContexts(watch, linkMap, config);
+  for (const target of closed) {
+    if (target.labels.some((label) => label.toLowerCase() === READY_LABEL)) changeReadyLabel(target.number, "remove", dryRun);
+  }
+  for (const [number, labels] of open) {
+    if (labels === null) continue;
     try {
-      applyReadyChange(number, change);
-      process.stdout.write(`Conductor: ${readyPhrase(number, change, true)}.\n`);
+      const pr = readPr(number);
+      const change = readyLabelChange(pr.surface, pr.checks, labels);
+      if (change !== null) changeReadyLabel(number, change, dryRun);
     } catch (err) {
-      process.stderr.write(`Warning: could not ${readyPhrase(number, change, false)}: ${(err as Error).message}\n`);
+      process.stderr.write(`Warning: could not read #${String(number)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
     }
   }
 }
@@ -413,7 +466,6 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  syncReadyLabels(item, dryRun !== undefined);
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
@@ -734,6 +786,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
+  reconcileReadyLabels(watchIds, context.linkMap, config, true);
   const covered = coveredOf(watchIds, context.linkMap, config, participants);
   const conduct = (id: number): Promise<boolean> =>
     conductSafely(id, () => conductItem(id, config, login, participants, execution, context));
@@ -863,8 +916,9 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
-    const watch = pruneWatchList();
     const linkMap = onceLinkMap();
+    reconcileReadyLabels(readWatch(), linkMap, config, false);
+    const watch = pruneWatchList();
     const covered = coveredOf(watch, linkMap, config, participants);
     const conduct = (id: number): Promise<boolean> =>
       conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap));
