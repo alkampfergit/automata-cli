@@ -114,11 +114,17 @@ A pull request is ready when all of these are true:
   conclusion, for example `FAILURE` or `STALE`, is not green;
 - neither the pull request nor the watched item has the `conductor-blocked` label.
 
-An approving review is not needed. Each tick, for each watched pull request and each open pull request linked to a
-watched issue, automata adds the label when the pull request is ready and lacks it. It removes the label when the pull
+An approving review is not needed. Each tick, before the prune, for each watched pull request, each open pull request linked to a
+watched issue and each open pull request of the current child of a story, automata adds the label when the pull request is ready and lacks it. It removes the label when the pull
 request is not ready and has it, so a new push (checks start again), a failed check, a new unresolved thread or a
 merge conflict removes it. When the model answers `NEEDS-HUMAN` in the same tick, automata also removes the label from
-every pull request of the item as it applies `conductor-blocked`. If the repository has no such label, the tick creates it.
+every pull request of the item as it applies `conductor-blocked`.
+
+The label does not depend on who may reply. A blocked item, an item at its reply limit and a pull request that another
+entry covers are all reconciled. A pull request has the labels of every watched entry that holds it, so a blocked
+issue blocks its linked pull request also when that pull request is a watch entry of its own. The label of a watched
+pull request that closed or merged is removed before the prune drops it from the watch list. A removal that fails is
+tried again on the next tick. If the repository has no such label, the tick creates it.
 
 A label that cannot be added or removed is a warning on stderr; the tick does not exit 1 for it. `--dry-run` prints
 the change a tick would make and applies none. `--check` does not list label changes.
