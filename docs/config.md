@@ -268,6 +268,39 @@ automata config set git-release-flow trunk     # or: gitflow
 detection, remove the key from `.automata/config.json` or use the wizard: clear the trunk field, or pick "Detect from
 origin" as the release flow.
 
+### `git.rebasePrs`
+
+Settings of [`automata git rebase-prs`](git.md#automata-git-rebase-prs). The executor, model and effort are the
+[`doWork`](#dowork) ones.
+
+```json
+{
+  "git": {
+    "rebasePrs": {
+      "maxAttempts": 3,
+      "testCommand": "npm test",
+      "includeDrafts": false
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `prompt` | built-in | Instructions for the model that resolves conflicts. Prompt text or a plain `.md` filename in `.automata/` (see [Prompt file references](#prompt-file-references)). Automata appends the pull request and the conflicted files. |
+| `maxAttempts` | `3` | The most conflict resolutions spent on one pull request. |
+| `testCommand` | *(unset)* | A shell command run in the worktree after the rebase. A non-zero exit blocks the pull request. |
+| `includeDrafts` | `false` | `true` also rebases draft pull requests. |
+
+```bash
+automata config set git-rebase-prs-prompt "Resolve the conflicts; keep both behaviours."
+automata config set git-rebase-prs-max-attempts 3
+automata config set git-rebase-prs-test-command "npm test"
+automata config set git-rebase-prs-include-drafts true
+```
+
+The wizard has no screen for these keys.
+
 ### Wizard
 
 | Wizard screen | Key written |
