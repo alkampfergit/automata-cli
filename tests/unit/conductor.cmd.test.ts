@@ -32,6 +32,10 @@ function printedReply(_prompt: string, options: { sink?: { output: (s: "stdout",
   return Promise.resolve();
 }
 const mockRunCodex = vi.fn();
+const mockPending = vi.fn();
+const mockAddReviewer = vi.fn();
+let settingsState: { global: Record<string, number | string>; items: Record<string, Record<string, number | string>> } = { global: {}, items: {} };
+let roundsState: Record<string, { requested: number; headSha: string | null; stopped?: string }> = {};
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
@@ -48,6 +52,14 @@ vi.mock("../../src/conductor/watchStore.js", () => ({
   writeStories: (list: number[]) => {
     storyState = list;
   },
+  readSettings: () => settingsState,
+  readRounds: () => roundsState,
+  writeRound: (n: number, record: { requested: number; headSha: string | null; stopped?: string }) => {
+    roundsState = { ...roundsState, [String(n)]: record };
+  },
+}));
+vi.mock("../../src/config/githubService.js", () => ({
+  addCopilotReviewer: (...a: unknown[]) => mockAddReviewer(...a),
 }));
 vi.mock("../../src/github/ghWorkService.js", () => ({
   getAuthenticatedLogin: () => mockLogin(),
@@ -65,6 +77,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
   getPrChecks: (...a: unknown[]) => mockChecks(...a),
   getRepoSlug: () => ({ owner: "acme", repo: "widget" }),
+  getCopilotReviewPending: (...a: unknown[]) => mockPending(...a),
 }));
 vi.mock("../../src/claude/claudeService.js", () => ({
   runClaude: (...a: unknown[]) => mockRunClaude(...a),
@@ -96,6 +109,9 @@ beforeEach(() => {
   stderr = "";
   watchState = [];
   storyState = [];
+  settingsState = { global: {}, items: {} };
+  roundsState = {};
+  mockPending.mockReturnValue(false);
   mockStorySource.mockReturnValue({ via: "none", state: "open", title: "", children: [] });
   vi.spyOn(process.stdout, "write").mockImplementation((s) => ((stdout += String(s)), true));
   vi.spyOn(process.stderr, "write").mockImplementation((s) => ((stderr += String(s)), true));
@@ -1248,5 +1264,92 @@ describe("conductor stories", () => {
     const { runWatchList } = await import("../../src/commands/conductor.js");
     expect(runWatchList()).toBe(0);
     expect(stdout).toMatch(/story #10 \(open, 3 children via sub-issues\): Epic\n  #11 closed: C11\n  #12 next: C12\n  #13 queued: C13/);
+  });
+});
+
+describe("conductor Copilot review rounds", () => {
+  const SHA = "a".repeat(40);
+  const green = [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }];
+  const prSurface = (n: number, extra: object = {}, labels: string[] = [], threads: unknown[] = []) => ({
+    pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", headSha: SHA, labels, ...extra },
+    assignees: [],
+    messages: [],
+    threads,
+  });
+
+  function watchingPr(n: number) {
+    watchState = [n];
+    mockTarget.mockReturnValue({ number: n, kind: "pr", state: "open", title: "P", labels: [] });
+    mockPrSurface.mockImplementation((id: number) => prSurface(id));
+    mockChecks.mockReturnValue(green);
+  }
+
+  it("does nothing about Copilot when no rounds are configured", async () => {
+    watchingPr(50);
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockPending).not.toHaveBeenCalled();
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50 }), "conductor-ready", expect.any(String));
+  });
+
+  it("requests the first round, records it, and holds the ready label back", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+    expect(roundsState["50"]).toEqual({ requested: 1, headSha: SHA });
+    expect(stdout).toMatch(/requesting Copilot review round 1 of 2/);
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  it("waits while a review is pending and does not request twice", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    mockPending.mockReturnValue(true);
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  it("applies the setting of the issue that links the pull request, and the pull request's own value wins", async () => {
+    watchState = [5];
+    mockTarget.mockReturnValue({ number: 5, kind: "issue", state: "open", title: "I", labels: [] });
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    mockPrSurface.mockImplementation((id: number) => prSurface(id));
+    mockChecks.mockReturnValue(green);
+    settingsState.items["5"] = { "copilot-review-rounds": 1 };
+    await run();
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+    mockAddReviewer.mockClear();
+    roundsState = {};
+    settingsState.items["50"] = { "copilot-review-rounds": 0 };
+    await run();
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed request, stops the rounds of that pull request and goes on", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    mockAddReviewer.mockImplementation(() => {
+      throw new Error("no licence");
+    });
+    expect(await run()).toBe(0);
+    expect(stderr).toMatch(/could not ask Copilot to review PR #50, going on without Copilot: no licence/);
+    expect(roundsState["50"]).toMatchObject({ requested: 0, stopped: "no licence" });
+    mockAddReviewer.mockClear();
+    await run();
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50 }), "conductor-ready", expect.any(String));
+  });
+
+  it("a dry run reports the request and records nothing", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    expect(await runConductor({ dryRun: true })).toBe(0);
+    expect(stdout).toMatch(/dry run, a tick would ask Copilot for a review of PR #50/);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(roundsState).toEqual({});
   });
 });

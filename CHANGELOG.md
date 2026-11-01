@@ -17,6 +17,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   out and a marker says how many. The frame, the new messages and the review threads are kept; if they alone are
   too large, no run starts and the marker comment says why. See `docs/do-work.md` (#176)
 
+- `automata conductor config [<id>] set|get|unset|list` sets `copilot-review-rounds` (an integer, 0 is off) and
+  `copilot-review-type` (`balanced` or `lite`; stored, but not supported yet, so not sent to GitHub), for one item or
+  for all. With rounds set, the conductor asks Copilot for a review of each pull request, waits for it, lets the agent
+  fix the comments, asks again up to the number of rounds, and holds back `conductor-ready` until the rounds are done.
+  See `docs/conductor.md` (#172)
+- `automata git request-copilot-review [<pr>]` asks Copilot to review a pull request. See `docs/git.md` (#172)
 - `automata conductor` applies the label `conductor-ready` to a watched pull request (or one linked to a watched
   issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
   checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`

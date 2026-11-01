@@ -693,6 +693,29 @@ export function getPrChecks(prNumber: number): CiCheck[] {
   });
 }
 
+/** The pull request of the current branch, or the one named; its number and state. */
+export function getPrNumberAndState(prNumber?: number): { number: number; state: string } {
+  const args = ["pr", "view", ...(prNumber === undefined ? [] : [String(prNumber)]), "--json", "number,state"];
+  return ghJson<{ number: number; state: string }>(
+    args,
+    prNumber === undefined ? "read the pull request of the current branch" : `read pull request #${String(prNumber)}`,
+  );
+}
+
+/**
+ * Whether Copilot is a requested reviewer that has not reviewed yet. GitHub keeps the reviewer in `reviewRequests`
+ * until its review is submitted, and drops it then.
+ */
+export function getCopilotReviewPending(prNumber: number): boolean {
+  const raw = ghJson<{ reviewRequests?: { login?: string; name?: string; slug?: string }[] | null }>(
+    ["pr", "view", String(prNumber), "--json", "reviewRequests"],
+    `read the review requests of pull request #${String(prNumber)}`,
+  );
+  return (raw.reviewRequests ?? []).some((request) =>
+    [request.login, request.name, request.slug].some((name) => name?.toLowerCase().includes("copilot") === true),
+  );
+}
+
 /**
  * Add the agent as an assignee.
  *
