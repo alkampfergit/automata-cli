@@ -77,7 +77,8 @@ export function decideSkip(pr: OpenPr, options: Pick<RebaseOptions, "includeDraf
  * Markdown heading underline, so matching it would block a correct resolution.
  */
 export function hasConflictMarkers(text: string): boolean {
-  return /^(<{7}|>{7})( |$)/m.test(text);
+  // `conflict-marker-size` in .gitattributes can make Git write more than seven characters.
+  return /^(<{7,}|>{7,})( |$)/m.test(text);
 }
 
 export function buildConflictPrompt(prompt: string, pr: OpenPr, files: string[], attempt: number, maxAttempts: number): string {
@@ -114,12 +115,22 @@ export function blockedComment(pr: OpenPr, reason: BlockReason, detail: string):
   return lines.join("\n");
 }
 
-function lines(text: string): string[] {
-  return text.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+/** NUL-delimited, so a path with a quote, a tab, a newline or non-ASCII text arrives unchanged. */
+function conflictedFiles(deps: RebaseDeps, worktree: string): string[] {
+  return deps
+    .git(["diff", "-z", "--name-only", "--diff-filter=U"], worktree)
+    .stdout.split("\0")
+    .filter((file) => file.length > 0);
 }
 
-function conflictedFiles(deps: RebaseDeps, worktree: string): string[] {
-  return lines(deps.git(["diff", "--name-only", "--diff-filter=U"], worktree).stdout);
+/** The text of a resolved file, or null when the resolution deleted it. Other read errors propagate. */
+function readResolved(deps: RebaseDeps, path: string): string | null {
+  try {
+    return deps.readText(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
 }
 
 type RebaseResult =
@@ -150,7 +161,10 @@ async function rebaseWithModel(
     } catch (err) {
       return abort("executor-failed", (err as Error).message);
     }
-    const remaining = files.filter((file) => hasConflictMarkers(deps.readText(join(worktree, file))));
+    const remaining = files.filter((file) => {
+      const text = readResolved(deps, join(worktree, file));
+      return text !== null && hasConflictMarkers(text);
+    });
     if (remaining.length > 0) return abort("markers-left", remaining.join("\n"));
     deps.git(["add", "-A", "--", ...files], worktree);
     return resolveFrom(deps.git(["-c", "core.editor=true", "rebase", "--continue"], worktree), attempts + 1);

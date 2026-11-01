@@ -573,7 +573,7 @@ A pull request is **blocked** when the model leaves a conflict marker (`<<<<<<<`
 test command exits non-zero, `git.rebasePrs.maxAttempts` resolutions are spent, or git stops with no conflicted file.
 Automata then runs `git rebase --abort`, pushes nothing, adds the label `rebase-blocked` and posts one comment that names
 the reason. A pull request that already has the label gets no second comment. A later successful rebase removes the
-label.
+label. The comment is posted before the label, so a failed comment is retried on the next run.
 
 One pull request that blocks or fails does not stop the others.
 
@@ -581,7 +581,9 @@ One pull request that blocks or fails does not stop the others.
 
 The command takes the `do-work` run lock for its run, so a `do-work` tick cannot start while it works. When `do-work`
 (or another `rebase-prs`) holds the lock, the command prints that and exits 0 without work. A lock that looks alive but
-is older than `doWork.lockStaleMinutes` exits 1, as `do-work` does.
+is older than `doWork.lockStaleMinutes` exits 1, as `do-work` does. A value of `doWork.lockStaleMinutes` that is not a
+positive integer stops the command with exit 1. On `SIGINT` or `SIGTERM` the command stops the executor, releases the
+lock and exits 130; a temporary worktree can remain, and `git worktree prune` removes its record.
 
 ### Configuration
 
