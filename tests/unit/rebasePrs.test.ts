@@ -62,6 +62,7 @@ describe("hasConflictMarkers", () => {
     expect(hasConflictMarkers("a\n>>>>>>> abc123\n")).toBe(true);
   });
   it("ignores a Markdown heading underline and inline text", () => {
+    expect(hasConflictMarkers("a\n" + "<".repeat(32) + " HEAD\nb\n")).toBe(true);
     expect(hasConflictMarkers("Title\n=======\nText with <<<<<<< inside\n")).toBe(false);
   });
 });
@@ -209,6 +210,28 @@ describe("rebasePullRequests with a real git repository", () => {
     expect(prompts[0].prompt).toContain("- shared.txt");
     expect(git(remote, "show", "feature/a:shared.txt")).toBe("merged\n");
     expect(git(remote, "merge-base", "--is-ancestor", "develop", "feature/a")).toBe("");
+  });
+
+  it("accepts a resolution that deletes the file", async () => {
+    branchFromDevelop("feature/a", "shared.txt", "branch\n");
+    git(work, "rm", "--quiet", "shared.txt");
+    git(work, "commit", "--quiet", "-m", "delete on develop");
+    git(work, "push", "--quiet", "origin", "develop");
+    git(work, "fetch", "--quiet", "origin");
+    resolver = (cwd) => rmSync(join(cwd, "shared.txt"));
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "rebased", conflictsResolved: 1 });
+  });
+
+  it("resolves a conflict in a file whose name Git would quote", async () => {
+    commitFile(work, "naïve.txt", "one\n", "add");
+    git(work, "push", "--quiet", "origin", "develop");
+    branchFromDevelop("feature/a", "naïve.txt", "branch\n");
+    advanceDevelop("naïve.txt", "develop\n");
+    resolver = (cwd) => writeFileSync(join(cwd, "naïve.txt"), "merged\n");
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "rebased", conflictsResolved: 1 });
+    expect(prompts[0].prompt).toContain("- naïve.txt");
   });
 
   it("blocks when the model leaves a conflict marker, and leaves the branch untouched", async () => {

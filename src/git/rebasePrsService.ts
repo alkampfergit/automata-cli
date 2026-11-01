@@ -56,7 +56,7 @@ export function listOpenPrs(only?: number): OpenPr[] {
     if (raw.state !== "OPEN") throw new Error(`Pull request #${String(only)} is not open.`);
     return [toOpenPr(raw)];
   }
-  const raw = JSON.parse(gh(["pr", "list", "--state", "open", "--limit", "200", "--json", PR_FIELDS])) as RawPr[];
+  const raw = JSON.parse(gh(["pr", "list", "--state", "open", "--limit", "100000", "--json", PR_FIELDS])) as RawPr[];
   return raw.map(toOpenPr).sort((a, b) => a.number - b.number);
 }
 
@@ -90,8 +90,9 @@ export function createRebaseDeps(settings: ExecutorSettings): RebaseDeps {
       return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
     },
     notifyBlocked: (pr, comment) => {
-      addLabel({ number: pr.number, kind: "pr" }, REBASE_BLOCKED_LABEL, REBASE_BLOCKED_LABEL_DESCRIPTION);
+      // The label is the "already told" signal, so it goes last: a failed comment leaves no label and the next run retries.
       gh(["pr", "comment", String(pr.number), "--body-file", "-"], comment);
+      addLabel({ number: pr.number, kind: "pr" }, REBASE_BLOCKED_LABEL, REBASE_BLOCKED_LABEL_DESCRIPTION);
     },
     clearBlocked: (pr) => removeLabel({ number: pr.number, kind: "pr" }, REBASE_BLOCKED_LABEL),
   };

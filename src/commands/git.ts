@@ -29,6 +29,7 @@ import { describeReleaseFlowSource } from "../git/releaseFlow.js";
 import { cleanBranchesCmd } from "./cleanBranches.js";
 import { checkChangelogSection, readChangelog } from "../git/changelogGate.js";
 import { describeOutcome, exitCodeFor, rebasePullRequests, type PrOutcome } from "../git/rebasePrs.js";
+import { terminateTrackedChildren } from "../cli/childRegistry.js";
 import { createRebaseDeps, fetchOrigin, listOpenPrs } from "../git/rebasePrsService.js";
 import {
   DEFAULT_DO_WORK,
@@ -608,17 +609,49 @@ Exits 0 while a do-work run holds the run lock. Exits 1 when a pull request was 
       process.exit(1);
     }
 
-    const release = takeRunLock(dryRun, config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes);
+    // hand-edited JSON is not validated by readConfig; 0 or a negative value would make every foreign lock look stale.
+    const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
+    if (!Number.isSafeInteger(staleMinutes) || staleMinutes < 1) {
+      process.stderr.write(`Error: doWork.lockStaleMinutes must be a positive integer (got ${String(staleMinutes)}).\n`);
+      process.exit(1);
+    }
+
+    const release = takeRunLock(dryRun, staleMinutes);
     if (release === null) return;
+    const onSignal = interruptRebase(release);
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
     try {
       await runRebasePrs(config, { dryRun, only, maxPrs, owners, fetch: options.fetch });
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exitCode = 1;
     } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
       release();
     }
   });
+
+/**
+ * Stop the executor before releasing the run lock, as `do-work` does: a model that outlives
+ * its parent would keep editing while the next tick takes the freed lock. The worktree is
+ * removed by the `finally` blocks of the interrupted run only when the process ends normally,
+ * so a signal leaves it for `git worktree prune`.
+ */
+function interruptRebase(release: () => void): () => void {
+  let shuttingDown = false;
+  return (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stderr.write("\nInterrupted: stopping the executor before releasing the run lock…\n");
+    void terminateTrackedChildren().then((allExited) => {
+      if (allExited) release();
+      else process.stderr.write("Warning: could not confirm the executor exited; leaving the run lock in place.\n");
+      process.exit(130);
+    });
+  };
+}
 
 /**
  * Take the `do-work` run lock, or say why not. Returns the release function, or null
