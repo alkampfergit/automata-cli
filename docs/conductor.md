@@ -184,7 +184,7 @@ At each tick the conductor finds the first open child and acts on it. It never s
 | Child state | Meaning | Tick |
 |-------------|---------|------|
 | `closed` | Done: the child is closed and has no open pull request. | Passed over. |
-| `next` | First open child, with no open pull request and no discovery setting. | Applies the discovery setting (label or assignee) so `do-work` implements it. |
+| `next` | First open child, with no open pull request and no discovery setting. | Reads the thread, then [starts the child](#starting-a-child). |
 | `started` | First open child that has the discovery setting and no pull request. | Waits. |
 | `in review` | First child that has an open pull request, also a closed child. | Waits until the pull request is merged and the child is closed. |
 | `blocked` | First open child with the `conductor-blocked` label. | Does nothing on GitHub, until a person removes the label. |
@@ -193,12 +193,32 @@ At each tick the conductor finds the first open child and acts on it. It never s
 When all children are closed, the conductor closes the parent with one comment that names the children, and drops it
 from the stories. A closed parent is dropped at the start of its turn, with a line on stdout. A story that cannot be read
 stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for the parent.
-When a tick starts a child, the conductor also posts one comment on it, so `do-work` sees a message from an authorized
-account. The comment comes before the label, so a failed label leaves the child `next` and the next tick repeats both.
 The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
 to an agent question, a rebase request or a CI-fix request. A closed parent is dropped without a read of its children.
 `conductor add` on a watched parent that has children removes its ordinary watch entry. A watched pull request that
 closes the current child of a story, also a blocked child, is covered by the story and gets no separate reply.
+
+### Starting a child
+
+The conductor automates the person who answers the `do-work` turns: the conductor posts, `do-work` runs the agent, the
+agent answers, the conductor replies. Before it starts a `next` child, it reads the comments of the child. Only comments
+of `allowedUsers` and `agentUser` count, and the issue body is not a message.
+
+| Newest comment | Tick |
+|----------------|------|
+| None | Posts one start comment ("The conductor starts this child of story #N. Please implement it."), then applies the discovery setting. The comment comes first, so a failed label leaves the child `next` and the next tick repeats both. |
+| From an allowed account | Does nothing and prints `waiting for the agent`. The child gets no label. |
+| From the agent | Runs the model as the conductor user, then applies the discovery setting so `do-work` continues. |
+
+The model gets the whole thread of the child (and its linked pull requests) and the parent story, with the instructions
+`conductor.prompts.child`. It answers the question or clarification of the agent as the user would, or says to proceed
+with the implementation when nothing is open. If the answer needs a person, the model ends with
+`NEEDS-HUMAN: <question>`: nothing is posted, no label is applied, the question is printed on stdout as
+`Conductor: story #N: #C needs you: <question>`, and the next tick checks the child again. A failed run is an error
+(exit 1) and leaves the child `next`. The run uses the `conductor.executor` setting like every other conductor turn.
+
+A child that already has the discovery setting stays with `do-work` and the ordinary conductor turn. `--dry-run` runs
+the model for a child on which the agent spoke last and prints the reply; it prints a line for the other two cases.
 
 `conductor list` shows each story with its children and their states. `conductor --check` adds a `Stories` section: for
 each story, which child is next, which is waiting and which is blocked; an unreadable story is a problem. `--dry-run`
@@ -253,6 +273,7 @@ The prompt depends on the kind of the watched item:
 | `conductor.prompts.pr` | A watched pull request |
 | `conductor.prompts.rebase` | A [rebase request](#rebase-check) for a watched pull request that has a merge conflict |
 | `conductor.prompts.ciFix` | A [CI-fix request](#ci-fix-check) for a watched pull request that has a failed check |
+| `conductor.prompts.child` | The answer to a story child on which the agent spoke last, [before it is started](#starting-a-child) |
 
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
 [config.md](config.md#conductor). Without a key, a built-in default applies. The issue and pull request defaults ask the model to write the

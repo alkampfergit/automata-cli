@@ -299,6 +299,7 @@ The `Git` entry shows both screens in turn and saves them together when the rele
 | `prompts.pr` | built-in | Instructions for the conductor on a watched pull request. |
 | `prompts.rebase` | built-in | The request the conductor sends to the agent when a watched pull request has a merge conflict. See [conductor.md](conductor.md#rebase-check). Also `automata config set conductor-prompt rebase <text>` and the wizard screen `Prompts → Conductor — Rebase`. |
 | `prompts.ciFix` | built-in | Instructions for the request the conductor sends to the agent when a watched pull request has a failed check. See [conductor.md](conductor.md#ci-fix-check). Also `automata config set conductor-prompt ciFix <text>` and the wizard screen `Prompts → Conductor — CI fix`. |
+| `prompts.child` | built-in | Instructions for the answer to a story child on which the agent spoke last. See [conductor.md](conductor.md#starting-a-child). Also `automata config set conductor-prompt child <text>`. |
 | `ciFix.enabled` | `true` | `false` switches the [CI-fix check](conductor.md#ci-fix-check) off. Hand-edited; there is no `config set` key. |
 | `executor` | `claude` | The CLI the conductor runs, read-only: `claude`. `codex` is refused. See [conductor.md](conductor.md#running-the-model). |
 | `models.claude`, `models.codex` | unset | Model passed to that executor. |
@@ -326,7 +327,7 @@ automata config set conductor-prompt rebase "Please rebase and push."
 automata config set conductor-prompt ciFix conductor-ci-fix.md
 ```
 
-`conductor-prompt` takes the kind (`issue`, `pr`, `rebase` or `ciFix`) followed by prompt text or a `.md` filename. The wizard has the
+`conductor-prompt` takes the kind (`issue`, `pr`, `rebase`, `ciFix` or `child`) followed by prompt text or a `.md` filename. The wizard has the
 `conductor-executor`, `conductor-model` and `conductor-effort` set the executor settings; the wizard does not have screens
 for them. The wizard has the same four screens under `Prompts` (`Conductor — Issue`, `Conductor — PR`, `Conductor — Rebase`, `Conductor — CI fix`); they save to
 `.automata/conductor-issue.md`, `.automata/conductor-pr.md`, `.automata/conductor-rebase.md` and `.automata/conductor-ci-fix.md`.
