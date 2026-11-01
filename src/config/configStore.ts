@@ -108,6 +108,8 @@ export interface ConductorPrompts {
   rebase?: string;
   /** Sent to the agent when a watched pull request has a failed check. */
   ciFix?: string;
+  /** The instructions for the answer to a story child on which the agent spoke last, before the child is started. */
+  child?: string;
 }
 
 /** Settings of the conductor's CI-fix check. */
@@ -273,6 +275,20 @@ export const DEFAULT_CONDUCTOR_PR_PROMPT =
   "Do not change any file, do not merge or close the pull request, and do not push to any branch.";
 
 /**
+ * Default instructions for the answer to a story child on which the agent spoke last. The conductor acts as the
+ * person who answers the agent; the spec-driven process (`speckit-full`) tells what the agent needs next.
+ */
+export const DEFAULT_CONDUCTOR_CHILD_PROMPT =
+  "You are the conductor: you act for the people allowed to instruct the agent named in the context below. " +
+  "The issue below is a child of a story. The agent spoke last on it, and no allowed user has answered yet.\n\n" +
+  "Read the whole conversation. Follow the spec-driven process (`speckit-full`) to decide what the agent needs next:\n" +
+  "- If the agent asked a question or asked for a clarification, answer it as the user would, from the conversation and the story.\n" +
+  "- If nothing is open, write that the agent must proceed with the implementation.\n" +
+  "- If the answer needs a decision of a person that the conversation does not contain, do not guess.\n\n" +
+  "Write the next message to the agent, short and concrete. " +
+  "Do not change any file, do not merge or close anything, and do not push to any branch.";
+
+/**
  * Default request for a watched pull request that conflicts with its base branch.
  * The conductor posts it, as a comment, to the agent.
  */
@@ -384,6 +400,9 @@ export function readConfig(): AutomataConfig {
   }
   if (config.conductor?.prompts?.rebase) {
     config.conductor.prompts.rebase = resolvePromptRef(config.conductor.prompts.rebase, dir);
+  }
+  if (config.conductor?.prompts?.child) {
+    config.conductor.prompts.child = resolvePromptRef(config.conductor.prompts.child, dir);
   }
   if (config.conductor?.prompts?.ciFix) {
     config.conductor.prompts.ciFix = resolvePromptRef(config.conductor.prompts.ciFix, dir);

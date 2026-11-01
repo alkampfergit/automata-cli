@@ -983,6 +983,8 @@ describe("conductor stories", () => {
   beforeEach(() => {
     mockApply.mockReset();
     mockReadConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "automata" });
+    // A child that nobody commented on yet.
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, []));
   });
 
   async function runWith(options: { check?: boolean; dryRun?: boolean } = {}): Promise<number> {
@@ -1049,6 +1051,67 @@ describe("conductor stories", () => {
     expect(mockPostMarker).not.toHaveBeenCalled();
     // The started child goes through the ordinary conductor processing.
     expect(`${stdout}${stderr}`).toMatch(/#12/);
+  });
+
+  describe("a child with a thread", () => {
+    const agentLast = [text("alice", "t1", "please"), text("bot", "t2", "Which database?")];
+
+    beforeEach(() => {
+      storyState = [10];
+      mockStorySource.mockReturnValue(story([sub(12)]));
+      mockTarget.mockImplementation((id: number) => issue(id));
+    });
+
+    it("waits, without a comment or a label, when an allowed account spoke last", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, [...agentLast, text("alice", "t3", "Postgres")]));
+      expect(await runWith()).toBe(0);
+      expect(stdout).toMatch(/child #12 is waiting for the agent/);
+      expect(mockApply).not.toHaveBeenCalled();
+      expect(mockCommentOnIssue).not.toHaveBeenCalled();
+      expect(mockRunClaude).not.toHaveBeenCalled();
+    });
+
+    it("answers as the user when the agent spoke last, then applies the label and posts no start comment", async () => {
+      let posted = false;
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, posted ? [...agentLast, text("alice", "t3", "Postgres")] : agentLast));
+      mockRunClaude.mockImplementation(async (prompt: string) => {
+        expect(prompt).toMatch(/child of story #10: Epic/);
+        expect(prompt).toMatch(/Which database\?/);
+        posted = true;
+      });
+      expect(await runWith()).toBe(0);
+      expect(mockRunClaude).toHaveBeenCalledOnce();
+      expect(mockCommentOnIssue).not.toHaveBeenCalled();
+      expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ number: 12 }), "label", "automata");
+    });
+
+    it("prints the question and applies no label when the model needs the user", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+        options.sink.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: Which budget?" }) + "\n");
+      });
+      expect(await runWith()).toBe(0);
+      expect(stdout).toMatch(/#12 needs you: Which budget\?/);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
+
+    it("leaves the child next and exits 1 when the run posted nothing", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockResolvedValue(undefined);
+      expect(await runWith()).toBe(1);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
+
+    it("--dry-run prints the reply and changes nothing", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+        options.sink.output("stdout", JSON.stringify({ type: "result", result: "Use Postgres." }) + "\n");
+      });
+      expect(await runWith({ dryRun: true })).toBe(0);
+      expect(stdout).toMatch(/the agent spoke last on child #12; a tick would answer it/);
+      expect(stdout).toMatch(/Use Postgres\./);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
   });
 
   it("a failed label leaves the child startable: the comment came first, so a retry repeats both", async () => {

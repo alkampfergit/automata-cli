@@ -16,6 +16,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
   checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`
 
+- The conductor reads the thread of a story child before it starts the child. When the agent spoke last, a model run
+  answers as the conductor user (new `conductor.prompts.child`), then the child is labelled; when an allowed account
+  spoke last, the child waits; the fixed start comment is posted only for a child with no comment. A model that needs
+  a person (`NEEDS-HUMAN:`) posts nothing and its question is printed. See `docs/conductor.md` (#173)
+
 ### Changed
 
 - `do-work` passes the prompt to Claude and Codex on stdin instead of as a command-line argument. A long conversation

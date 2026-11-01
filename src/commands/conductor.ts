@@ -6,6 +6,7 @@ import {
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CHILD_PROMPT,
   DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
@@ -68,7 +69,8 @@ import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
 import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
-import { checkStories, conductStories, listStoryLines, storyCovered } from "../conductor/storyRunner.js";
+import type { StoryChild } from "../conductor/story.js";
+import { checkStories, conductStories, listStoryLines, storyCovered, type ChildReply, type ChildTurn } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -524,6 +526,59 @@ async function conductItem(
   }
 }
 
+/**
+ * The start step of a story child on which the agent spoke last: the conductor answers as the user. The whole
+ * thread of the child goes to the model with the story, and the discovery setting follows the reply. A model that
+ * needs a person (`NEEDS-HUMAN:`) posts nothing, the question is printed, and the child gets no label.
+ */
+async function replyToChild(
+  child: StoryChild,
+  story: { id: number; title: string },
+  dryRun: boolean,
+  checked: Preflight,
+  linkMap: () => OpenPrLinkMap,
+): Promise<ChildReply> {
+  const { login, config, participants, execution } = checked;
+  const label = `#${String(child.number)}`;
+  const { thread } = readWatchedItem(child.number, linkMap);
+  const replyTo: ReplyTarget = { kind: "issue", number: child.number };
+  const context =
+    `This issue is a child of story #${String(story.id)}: ${story.title}. ` +
+    `Read the story with \`gh issue view ${String(story.id)}\` if you need it.`;
+  const frame = `${config.conductor?.prompts?.child ?? DEFAULT_CONDUCTOR_CHILD_PROMPT}\n\n${context}`;
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun });
+  const where = `issue #${String(child.number)}`;
+  process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  if (dryRun) {
+    const result = await conductDryRunItem(prompt, execution, label, where, replyTo, { linkMap, answered: new Set() });
+    if (result === "failed") throw new Error(`the dry run for ${label} failed`);
+    return result === "replied" ? "replied" : "needs-user";
+  }
+  const captured = captureStdout();
+  const outcome = await conductReply({
+    login,
+    read: () => readTargetMessages(replyTo),
+    run: () => runModel(prompt, execution, replyTo, captured.sink),
+  });
+  reportDenials(captured.text(), label);
+  const needsUser = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
+  if (needsUser !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
+    process.stdout.write(`Conductor: story #${String(story.id)}: ${label} needs you: ${needsUser}\n`);
+    return "needs-user";
+  }
+  switch (outcome.kind) {
+    case "posted":
+      process.stdout.write(`Conductor: posted a reply on ${where}.\n`);
+      return "replied";
+    case "posted-nothing":
+      throw new Error(`the run for ${label} finished but posted no comment on ${where}`);
+    case "run-failed":
+      throw new Error(`the run for ${label} failed and posted no comment on ${where}: ${outcome.error}`);
+    case "unverified":
+      throw new Error(`could not tell whether ${label} got a reply: ${outcome.error}`);
+  }
+}
+
 /** Config shared by `add` and `list`: GitHub mode and a discovery setting that can be applied. */
 function loadGitHubConfig(): AutomataConfig | number {
   const config = readRawConfig();
@@ -806,13 +861,20 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     }
     return conduct(id);
   });
-  const stories = conductStories(config, context.linkMap, true);
+  const stories = await conductStories(config, context.linkMap, true, childTurn(checked, context.linkMap));
   failed += stories.failed;
   failed += await conductInOrder(
     stories.active.filter((child) => !watchIds.includes(child)),
     conduct,
   );
   return failed > 0 ? 1 : 0;
+}
+
+function childTurn(checked: Preflight, linkMap: () => OpenPrLinkMap): ChildTurn {
+  return {
+    participants: checked.participants,
+    reply: (child, story, dryRun) => replyToChild(child, story, dryRun, checked, linkMap),
+  };
 }
 
 function reportHeldLock(held: { pid: number; host: string; startedAt: string }, suspect: boolean, staleMinutes: number): number {
@@ -929,7 +991,7 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
       process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
       return Promise.resolve(false);
     });
-    const stories = conductStories(config, linkMap, false);
+    const stories = await conductStories(config, linkMap, false, childTurn(checked, linkMap));
     // The active child and its linked pull requests get the ordinary conductor processing.
     failed += await conductInOrder(
       stories.active.filter((child) => !watch.includes(child)),

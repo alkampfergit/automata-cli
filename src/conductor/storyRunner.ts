@@ -3,6 +3,7 @@ import {
   applyDiscovery,
   closeIssue,
   commentOnIssue,
+  getIssueSurface,
   getStorySource,
   type OpenPrLinkMap,
   type StorySource,
@@ -11,6 +12,8 @@ import { describeChild, planStory, storyDoneComment, storyLines, type Discovery,
 import { readStories, writeStories } from "./watchStore.js";
 import { withoutWatched } from "./watchList.js";
 import type { StoryCheck } from "./checkReport.js";
+import { classifyChildThread } from "./childStart.js";
+import type { Participants } from "../github/conversation.js";
 
 /** The I/O of a story: read it, act on it. The rules are in `story.ts`. */
 
@@ -60,23 +63,51 @@ function fail(id: number, err: unknown): StoryResult {
   return "failed";
 }
 
-function startChild(story: number, label: string, current: StoryChild, discovery: Discovery | null, dryRun: boolean): StoryResult {
+/** What the model run of a child that the agent spoke last on came to. */
+export type ChildReply = "replied" | "needs-user";
+
+/** The model turn of the start step, and who counts in a thread. The run is in `commands/conductor.ts`. */
+export interface ChildTurn {
+  participants: Participants;
+  /** Reads the thread of the child and the story, posts the reply (not in a dry run) and rejects when the run fails. */
+  reply: (child: StoryChild, story: { id: number; title: string }, dryRun: boolean) => Promise<ChildReply>;
+}
+
+async function startChild(
+  story: { id: number; title: string },
+  label: string,
+  current: StoryChild,
+  discovery: Discovery | null,
+  dryRun: boolean,
+  turn: ChildTurn,
+): Promise<StoryResult> {
   if (discovery === null || (discovery.technique !== "title-contains" && discovery.value.length === 0)) {
     throw new Error("No usable issue discovery setting. Run `automata config`.");
   }
-  if (dryRun) {
-    process.stdout.write(`Conductor: ${label}: a tick would start child #${String(current.number)}.\n`);
+  const child = `child #${String(current.number)}`;
+  const state = classifyChildThread(getIssueSurface(current.number).messages, turn.participants);
+  if (state === "waiting") {
+    process.stdout.write(`Conductor: ${label}: ${child} is waiting for the agent.\n`);
+    return "kept";
+  }
+  if (state === "agent-last") {
+    // The agent spoke last: the conductor answers as the user, then `do-work` takes the child on.
+    process.stdout.write(`Conductor: ${label}: the agent spoke last on ${child}; ${dryRun ? "a tick would answer" : "answering"} it.\n`);
+    const reply = await turn.reply(current, story, dryRun);
+    if (reply === "needs-user" || dryRun) return "kept";
+  } else if (dryRun) {
+    process.stdout.write(`Conductor: ${label}: a tick would start ${child}.\n`);
     return "kept";
   }
   // The comment comes first: if the label then fails, the child is still `next` and the next tick tries both again.
   // The other order would leave a labelled child that no authorized message ever reaches `do-work`.
-  commentOnIssue(current.number, startComment(story));
+  if (state === "empty") commentOnIssue(current.number, startComment(story.id));
   applyDiscovery({ number: current.number, kind: "issue", state: "open", title: current.title, labels: current.labels }, discovery.technique, discovery.value);
-  process.stdout.write(`Conductor: ${label}: started child #${String(current.number)}.\n`);
+  process.stdout.write(`Conductor: ${label}: started ${child}.\n`);
   return "kept";
 }
 
-function conductStory(id: number, discovery: Discovery | null, linkMap: () => OpenPrLinkMap, dryRun: boolean): StoryResult {
+async function conductStory(id: number, discovery: Discovery | null, linkMap: () => OpenPrLinkMap, dryRun: boolean, turn: ChildTurn): Promise<StoryResult> {
   let read: StoryRead;
   try {
     read = readStory(id, discovery, linkMap);
@@ -103,7 +134,7 @@ function conductStory(id: number, discovery: Discovery | null, linkMap: () => Op
         drop(id, "all children closed, parent closed");
         return "dropped";
       case "start":
-        return startChild(id, label, plan.current as StoryChild, discovery, dryRun);
+        return await startChild({ id, title: source.title }, label, plan.current as StoryChild, discovery, dryRun, turn);
       case "empty":
       case "wait":
       case "blocked":
@@ -127,10 +158,19 @@ function activeChild(id: number, discovery: Discovery | null, linkMap: () => Ope
 }
 
 /** The stories part of a tick (or a dry run): `failed` counts the stories that could not be conducted, `open` those that remain. */
-export function conductStories(config: AutomataConfig, linkMap: () => OpenPrLinkMap, dryRun: boolean): { failed: number; open: number; active: number[] } {
+export async function conductStories(
+  config: AutomataConfig,
+  linkMap: () => OpenPrLinkMap,
+  dryRun: boolean,
+  turn: ChildTurn,
+): Promise<{ failed: number; open: number; active: number[] }> {
   const discovery = discoveryOf(config);
   const ids = readStories();
-  const results = ids.map((id) => conductStory(id, discovery, linkMap, dryRun));
+  // One story at a time: each model run reads and writes the same account's conversations.
+  const results = await ids.reduce<Promise<StoryResult[]>>(
+    async (done, id) => [...(await done), await conductStory(id, discovery, linkMap, dryRun, turn)],
+    Promise.resolve([]),
+  );
   const active = ids.flatMap((id, i) => (results[i] === "kept" ? activeChild(id, discovery, linkMap) : []));
   return {
     active,
