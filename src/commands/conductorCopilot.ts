@@ -1,0 +1,68 @@
+import { addCopilotReviewer } from "../config/githubService.js";
+import {
+  decideCopilotRound,
+  describeRoundDecision,
+  roundsAllowReady,
+  surfaceFacts,
+  type RoundDecision,
+} from "../conductor/copilotRounds.js";
+import { COPILOT_ROUNDS_KEY, findSetting, resolveSetting } from "../conductor/settings.js";
+import { readRounds, readSettings, writeRound } from "../conductor/watchStore.js";
+import { getCopilotReviewPending, type PrSurface } from "../github/ghWorkService.js";
+
+const ROUNDS_DEF = findSetting(COPILOT_ROUNDS_KEY);
+
+/** The rounds setting of a pull request: its own, then the issues that link it, then the global one. */
+export function roundsFor(prNumber: number, ownerIds: readonly number[]): number {
+  if (ROUNDS_DEF === undefined) return 0;
+  const value = resolveSetting(readSettings(), ROUNDS_DEF, [prNumber, ...ownerIds]).value;
+  return typeof value === "number" ? value : 0;
+}
+
+/** The decision for one pull request. A pull request with rounds off costs no extra `gh` call. */
+export function copilotDecision(surface: PrSurface, ownerIds: readonly number[]): { decision: RoundDecision; rounds: number } {
+  const number = surface.pr.number;
+  const rounds = roundsFor(number, ownerIds);
+  const facts = surfaceFacts(surface);
+  const pending = rounds > 0 && facts.reviewable ? getCopilotReviewPending(number) : false;
+  const decision = decideCopilotRound({ rounds, record: readRounds()[String(number)], pending, ...facts });
+  return { decision, rounds };
+}
+
+/** Whether the configured rounds allow the `conductor-ready` label. A failed read keeps the label as it is: it throws. */
+export function copilotRoundsDone(surface: PrSurface, ownerIds: readonly number[]): boolean {
+  return roundsAllowReady(copilotDecision(surface, ownerIds).decision);
+}
+
+/**
+ * Ask Copilot for the next round when the decision says so, and report whether the item waits.
+ * A failed request is logged and ends the rounds of that pull request; the conductor goes on without Copilot.
+ * A dry run reports the request and records nothing.
+ */
+export function advanceCopilotRounds(surface: PrSurface, ownerIds: readonly number[], dryRun: boolean): "wait" | "proceed" {
+  const number = surface.pr.number;
+  const { decision, rounds } = copilotDecision(surface, ownerIds);
+  if (decision.kind === "off") return "proceed";
+  if (decision.kind === "wait") {
+    process.stdout.write(`Conductor: PR #${String(number)}: ${describeRoundDecision(decision, rounds)}; waiting.\n`);
+    return "wait";
+  }
+  if (decision.kind !== "request") return "proceed";
+  const text = describeRoundDecision(decision, rounds);
+  if (dryRun) {
+    process.stdout.write(`Conductor: dry run, a tick would ask Copilot for a review of PR #${String(number)} (${text}).\n`);
+    return "proceed";
+  }
+  const headSha = surface.pr.headSha ?? null;
+  try {
+    addCopilotReviewer(number);
+    writeRound(number, { requested: decision.round, headSha });
+    process.stdout.write(`Conductor: PR #${String(number)}: ${text}; waiting for the review.\n`);
+    return "wait";
+  } catch (err) {
+    const message = (err as Error).message;
+    writeRound(number, { requested: readRounds()[String(number)]?.requested ?? 0, headSha, stopped: message });
+    process.stderr.write(`Warning: could not ask Copilot to review PR #${String(number)}, going on without Copilot: ${message}\n`);
+    return "proceed";
+  }
+}

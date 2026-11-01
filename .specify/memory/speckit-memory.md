@@ -75,6 +75,9 @@ Keep entries short. Prefer rules over narratives. Update or remove entries when 
   own children. Make `take…()` return `null` vs `[]` so "no trace was asked for" and "a trace was asked for and
   nothing ran" stay distinguishable. Confirmed: 2026-09-21.
 
+- **A new key in the conductor state file must keep every other section on write**: `watchStore.ts` has one `writeState`; build the next state from `readFileState() ?? emptyState()` and spread it, never from a subset. Why: a writer that rebuilt `{watch, stories}` would silently drop settings and round records. Confirmed: 2026-11-01.
+- **`sonar:local` scans whole changed files**: editing a file that holds an old finding (`src/commands/git.ts`, a control-character regex) fails the gate. Register a new subcommand from `src/index.ts` instead of touching it. A growing `conductItem` also hits `sonarjs/cognitive-complexity` at 15; extract helpers that print and return a boolean. Confirmed: 2026-11-01.
+
 ## Implementation Patterns
 
 - **Pure logic in its own module**: keep `gh`/`git` I/O wrappers in the existing service files (they hold the private `spawnSync` runner) and put decision/formatting logic in a sibling domain module (e.g. `src/github/issueConversation.ts`). Why: the rules become unit-testable without mocking the `gh` CLI, and duplicating the runner would violate the constitution's no-duplication rule. Confirmed: 2026-09-09.

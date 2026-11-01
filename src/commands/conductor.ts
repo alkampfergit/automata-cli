@@ -67,6 +67,9 @@ import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
 import { READY_LABEL, READY_LABEL_DESCRIPTION, readyLabelChange } from "../conductor/readyLabel.js";
+import { advanceCopilotRounds, copilotRoundsDone } from "./conductorCopilot.js";
+import { runConductorConfig } from "./conductorConfig.js";
+import { settingsHelp } from "../conductor/settings.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
@@ -368,12 +371,19 @@ function childLabels(child: number): string[] | null {
  * links it, and the current child of a story. A blocked context blocks the pull request, whichever entry decides.
  * A closed or merged watched pull request is returned apart, for its stale label.
  */
-function readyContexts(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig): { open: Map<number, string[] | null>; closed: WatchTarget[] } {
+function readyContexts(
+  watch: number[],
+  linkMap: () => OpenPrLinkMap,
+  config: AutomataConfig,
+): { open: Map<number, string[] | null>; closed: WatchTarget[]; owners: Map<number, number[]> } {
   const open = new Map<number, string[] | null>();
   const closed: WatchTarget[] = [];
-  const add = (pr: number, labels: string[] | null): void => {
+  // The issues and story children that bring a pull request: their settings apply to it.
+  const owners = new Map<number, number[]>();
+  const add = (pr: number, labels: string[] | null, owner?: number): void => {
     const known = open.get(pr);
     open.set(pr, labels === null || known === null ? null : [...(known ?? []), ...labels]);
+    if (owner !== undefined) owners.set(pr, [...(owners.get(pr) ?? []), owner]);
   };
   for (const id of watch) {
     let target: WatchTarget;
@@ -386,10 +396,10 @@ function readyContexts(watch: number[], linkMap: () => OpenPrLinkMap, config: Au
     if (isWatchClosed(target.state)) {
       if (target.kind === "pr") closed.push(target);
     } else if (target.kind === "pr") add(id, target.labels);
-    else for (const ref of linkMap().byIssue.get(id) ?? []) add(ref.number, target.labels);
+    else for (const ref of linkMap().byIssue.get(id) ?? []) add(ref.number, target.labels, id);
   }
-  for (const [pr, child] of storyCovered(config, linkMap)) add(pr, childLabels(child));
-  return { open, closed };
+  for (const [pr, child] of storyCovered(config, linkMap)) add(pr, childLabels(child), child);
+  return { open, closed, owners };
 }
 
 /**
@@ -398,7 +408,7 @@ function readyContexts(watch: number[], linkMap: () => OpenPrLinkMap, config: Au
  * that closed are all reconciled. It runs before the prune. A dry run changes nothing.
  */
 function reconcileReadyLabels(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig, dryRun: boolean): void {
-  const { open, closed } = readyContexts(watch, linkMap, config);
+  const { open, closed, owners } = readyContexts(watch, linkMap, config);
   for (const target of closed) {
     if (target.labels.some((label) => label.toLowerCase() === READY_LABEL)) changeReadyLabel(target.number, "remove", dryRun);
   }
@@ -406,7 +416,8 @@ function reconcileReadyLabels(watch: number[], linkMap: () => OpenPrLinkMap, con
     if (labels === null) continue;
     try {
       const pr = readPr(number);
-      const change = readyLabelChange(pr.surface, pr.checks, labels);
+      // Rounds that are not done hold the label back. Not read when rounds are off.
+      const change = readyLabelChange(pr.surface, pr.checks, labels, copilotRoundsDone(pr.surface, owners.get(number) ?? []));
       if (change !== null) changeReadyLabel(number, change, dryRun);
     } catch (err) {
       process.stderr.write(`Warning: could not read #${String(number)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
@@ -469,6 +480,39 @@ function idleMessage(decisions: ConductorDecision[], label: string): string {
   return stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
 }
 
+/**
+ * Ask Copilot for the next review round of each pull request of the item, where its settings say so. Returns true when
+ * a review is pending, so the item gets no ordinary reply this tick. A failed read is a warning and does not wait.
+ */
+function advanceRounds(item: WatchedItem, id: number, dryRun: boolean): boolean {
+  const owners = item.target.kind === "issue" ? [id] : [];
+  let waits = false;
+  for (const pr of item.thread.prs) {
+    try {
+      if (advanceCopilotRounds(pr.surface, owners, dryRun) === "wait") waits = true;
+    } catch (err) {
+      process.stderr.write(`Warning: could not check the Copilot review rounds of #${String(pr.surface.pr.number)}: ${(err as Error).message}\n`);
+    }
+  }
+  return waits;
+}
+
+/** A Copilot, rebase or CI-fix turn starts no run while the agent works; the line says so. */
+function waitsForAgent(owed: ConductorDecision, request: AgentRequest | undefined, config: AutomataConfig, label: string): boolean {
+  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
+  if ((!copilotTurn && request === undefined) || !agentIsWorking(config)) return false;
+  const what = waitingReason(copilotTurn, request);
+  process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
+  return true;
+}
+
+/** A pending Copilot review holds an ordinary reply; a rebase or CI-fix request is not held. */
+function holdsForCopilot(pending: boolean, owed: ConductorDecision, label: string): boolean {
+  if (!pending || owed.kind !== "reply") return false;
+  process.stdout.write(`Conductor: ${label} gets no reply: a Copilot review is pending; waiting.\n`);
+  return true;
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -488,6 +532,7 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
+  const copilotWaits = advanceRounds(item, id, dryRun !== undefined);
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
@@ -500,13 +545,9 @@ async function conductItem(
     process.stdout.write(`${idleMessage(verdict.decisions, label)}\n`);
     return "idle";
   }
+  if (holdsForCopilot(copilotWaits, owed, label)) return "idle";
   const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
-  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
-  if ((copilotTurn || request !== undefined) && dryRun === undefined && agentIsWorking(config)) {
-    const what = waitingReason(copilotTurn, request);
-    process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
-    return "idle";
-  }
+  if (dryRun === undefined && waitsForAgent(owed, request, config, label)) return "idle";
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
   const frame = frameFor(frameKey(thread.kind, request), config);
   const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, request });
@@ -1056,6 +1097,15 @@ conductorCommand
   .description("List the watched issues and pull requests")
   .action(() => {
     exitWith(runWatchList());
+  });
+
+conductorCommand
+  .command("config")
+  .description("Show or change conductor settings, for one item or for all: config [<id>|#<id>] set <key> <value> | get <key> | unset <key> | list")
+  .argument("<words...>", "[<id>|#<id>] set <key> <value> | get <key> | unset <key> | list")
+  .addHelpText("after", `${settingsHelp()}\nIn an interactive shell, write the id as 12 or '#12': an unquoted #12 starts a comment.\n`)
+  .action((words: string[]) => {
+    exitWith(runConductorConfig(words));
   });
 
 /** Why a turn waits for the agent: an open Copilot thread, a failed check or a merge conflict. */

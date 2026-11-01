@@ -31,6 +31,11 @@ describe("isReady", () => {
     expect(isReady(surface(), green)).toBe(true);
   });
 
+  it("is not ready while the Copilot review rounds are not done", () => {
+    expect(isReady(surface(), green, [], false)).toBe(false);
+    expect(readyLabelChange(surface({ labels: ["conductor-ready"] }), green, [], false)).toBe("remove");
+  });
+
   it("counts skipped and neutral checks as green", () => {
     const checks: CiCheck[] = [...green, { name: "x", status: "COMPLETED", conclusion: "SKIPPED" }, { name: "y", status: "COMPLETED", conclusion: "NEUTRAL" }];
     expect(isReady(surface(), checks)).toBe(true);

@@ -15,6 +15,7 @@ automata conductor --automatic --interval 30
 automata conductor add <id>     # watch an issue or pull request; a parent with children becomes a story
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
+automata conductor config list  # show the settings, for example the Copilot review rounds
 ```
 
 | Option | Effect |
@@ -50,6 +51,51 @@ each comment, and then resolve the review thread. The conductor run stays read-o
 - While the `do-work` run lock is held the agent is working, and the conductor starts no Copilot turn; it logs this and
   tries again on the next tick.
 - [Loop safety](#loop-safety) applies: the reply limit and the `conductor-blocked` label stop a Copilot turn too.
+
+## Copilot review rounds
+
+The conductor can ask Copilot for a number of review rounds on a pull request before the pull request counts as ready.
+It is off until you set `copilot-review-rounds`. Use it only when the account that runs the conductor has a Copilot
+licence. The request is `gh pr edit <n> --add-reviewer @copilot` (it does not work on GitHub Enterprise Server).
+
+```bash
+automata conductor config set copilot-review-rounds 3      # all items
+automata conductor config 12 set copilot-review-rounds 1   # item 12 only (an issue or a pull request)
+automata conductor config list                             # every key: allowed values, default, value, source
+automata conductor config 12 list                          # the effective values for item 12
+automata conductor config 12 get copilot-review-rounds
+automata conductor config 12 unset copilot-review-rounds
+```
+
+In an interactive shell, write the id as `12` or `'#12'`: an unquoted `#12` starts a comment.
+
+| Key | Allowed | Default | Effect |
+|-----|---------|---------|--------|
+| `copilot-review-rounds` | integer >= 0 | `0` (off) | The number of Copilot review rounds for a pull request. |
+| `copilot-review-type` | `balanced`, `lite` | none | **Not supported yet.** The value is stored, but it is not sent to GitHub: `gh` has no option for a review mode, so every request is a plain `@copilot` request. `set` prints a warning. |
+
+- **Where it is stored.** In the gitignored state file `.automata/conductor-watch.json`, in a `settings` section
+  (`global` and `items`). `config.json` is not changed. `list`, `get` and an `unset` of a key that is not set never
+  create the file. An unknown key fails and names the supported keys.
+- **Which value applies.** The value of the item, then the global value, then the default. A setting on an issue
+  applies to the pull requests linked to it (and to the pull requests of a story child); the pull request's own
+  setting wins.
+- **The rounds.** For an open pull request that is not a draft, a tick does this, in this order:
+  1. A Copilot review is pending (Copilot is a requested reviewer): the item gets no ordinary reply, and the tick waits.
+     A rebase or CI-fix request is not held back.
+  2. Open Copilot review threads: the normal turn runs, and its prompt tells the agent to fix them (see
+     [Copilot review threads](#copilot-review-threads)).
+  3. Fewer rounds asked for than set, and no round yet or a new head commit since the last request: the conductor
+     asks Copilot for a review and records the round and the head commit in the `copilotRounds` section of the state
+     file. The first round is asked for at the first tick that sees the pull request.
+  4. Otherwise the rounds are done: all rounds asked for, or the head commit did not change since the last request
+     (Copilot has seen this code).
+- **The ready label.** `conductor-ready` is applied only when the rounds are off or done, in addition to the other
+  rules of the [ready label](#ready-label).
+- **A failed request** (for example, no Copilot licence) is logged as a warning. The rounds of that pull request end,
+  and the conductor goes on without Copilot. It does not try again on every tick.
+- **`--dry-run`** reports the request that a tick would make and records nothing.
+- A review that stays pending (Copilot never answers) holds the item until a person removes the review request.
 
 ## Rebase check
 

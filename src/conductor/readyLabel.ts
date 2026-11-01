@@ -23,9 +23,9 @@ function checksAreGreen(checks: CiCheck[]): boolean {
 
 /**
  * `itemLabels` are the labels of the watched item, which may be an issue. Open, not a draft, not in conflict, every review thread resolved, green checks, and not blocked.
- * No approving review is needed.
+ * No approving review is needed. `copilotRoundsDone` is false while the configured Copilot review rounds are not finished.
  */
-export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: string[] = []): boolean {
+export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: string[] = [], copilotRoundsDone = true): boolean {
   const labels = [...(surface.pr.labels ?? []), ...itemLabels].map((label) => label.toLowerCase());
   return (
     surface.pr.state === "OPEN" &&
@@ -33,6 +33,7 @@ export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: strin
     surface.pr.mergeable !== "CONFLICTING" &&
     surface.threads.every((thread) => thread.isResolved) &&
     !labels.includes(BLOCKED_LABEL) &&
+    copilotRoundsDone &&
     checksAreGreen(checks)
   );
 }
@@ -40,9 +41,9 @@ export function isReady(surface: PrSurface, checks: CiCheck[], itemLabels: strin
 export type ReadyChange = "add" | "remove" | null;
 
 /** The label change a pull request needs: add when ready and unlabelled, remove when not ready and labelled. */
-export function readyLabelChange(surface: PrSurface, checks: CiCheck[], itemLabels: string[] = []): ReadyChange {
+export function readyLabelChange(surface: PrSurface, checks: CiCheck[], itemLabels: string[] = [], copilotRoundsDone = true): ReadyChange {
   const labelled = (surface.pr.labels ?? []).some((label) => label.toLowerCase() === READY_LABEL);
-  const ready = isReady(surface, checks, itemLabels);
+  const ready = isReady(surface, checks, itemLabels, copilotRoundsDone);
   if (ready && !labelled) return "add";
   if (!ready && labelled) return "remove";
   return null;
