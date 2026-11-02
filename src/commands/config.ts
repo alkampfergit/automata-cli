@@ -238,6 +238,19 @@ function parseBooleanLiteral(value: string, name: string): boolean {
   return normalized === "true";
 }
 
+const configSetDoWorkMaxPromptTokens = new Command("do-work-max-prompt-tokens")
+  .description("Set the estimated token budget of a `do-work` prompt; older conversation messages are dropped above it")
+  .argument("<value>", `Positive integer (default: ${String(DEFAULT_DO_WORK.maxPromptTokens)})`)
+  .action((value: string) => {
+    const tokens = parseNonNegativeInt(value, "do-work-max-prompt-tokens");
+    if (tokens === 0) {
+      process.stderr.write("Error: do-work-max-prompt-tokens must be greater than zero.\n");
+      process.exit(1);
+    }
+    writeDoWork({ maxPromptTokens: tokens });
+    process.stdout.write(`do-work prompt budget set to: ${String(tokens)} tokens\n`);
+  });
+
 const configSetDoWorkDumpOnBlock = new Command("do-work-dump-on-block")
   .description(
     "Set whether `do-work` prints the full health report when a tick exits having done nothing",
@@ -413,6 +426,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
+  .addCommand(configSetDoWorkMaxPromptTokens)
   .addCommand(configSetDoWorkDumpOnBlock)
   .addCommand(configSetDoWorkPostRunLog)
   .addCommand(configSetDoWorkPrompt)

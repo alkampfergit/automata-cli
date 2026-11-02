@@ -285,6 +285,7 @@ describe("doWork configuration", () => {
       executor: "claude",
       maxRunsPerTick: 0,
       lockStaleMinutes: 120,
+      maxPromptTokens: 100000,
       dumpOnBlock: true,
       postRunLog: true,
     });

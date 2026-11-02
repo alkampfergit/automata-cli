@@ -1,4 +1,4 @@
-import { formatMessages } from "./conversation.js";
+import { formatMessages, type AnalyzedMessage } from "./conversation.js";
 import type { WorkItem } from "./workDetection.js";
 import type { ReviewThread } from "./ghWorkService.js";
 
@@ -20,6 +20,21 @@ export interface PromptInput {
   /** The resolved configured prompt for this turn kind. */
   frame: string;
 }
+
+/**
+ * Bytes per token assumed when the budget is checked. Automata has no tokenizer, so the
+ * size is an estimate: 4 bytes per token is the usual rule for English text and code, and
+ * it errs toward counting more tokens for multi-byte text, which is the safe side.
+ */
+export const BYTES_PER_TOKEN = 4;
+
+export function estimatePromptTokens(prompt: string): number {
+  return Math.ceil(Buffer.byteLength(prompt, "utf8") / BYTES_PER_TOKEN);
+}
+
+export type BudgetedPrompt =
+  | { ok: true; prompt: string; omittedMessages: number; estimatedTokens: number }
+  | { ok: false; detail: string; estimatedTokens: number };
 
 /**
  * The branch this turn must integrate with and must not push to.
@@ -53,6 +68,65 @@ function formatThreads(threads: ReviewThread[]): string {
 }
 
 export function composePrompt(input: PromptInput): string {
+  return render(input, new Set());
+}
+
+/**
+ * Compose the prompt and keep it within `maxPromptTokens` (estimated).
+ *
+ * The oldest conversation messages, from the issue and the pull request together, are
+ * dropped first. A message that is new since the last agent message is never dropped, and
+ * neither are the frame, the identifiers or the review threads. When that required part
+ * alone is too large, no prompt is returned and the detail names the setting to raise.
+ */
+export function composePromptWithinBudget(input: PromptInput, maxPromptTokens: number): BudgetedPrompt {
+  const full = render(input, new Set());
+  const fullTokens = estimatePromptTokens(full);
+  if (fullTokens <= maxPromptTokens) {
+    return { ok: true, prompt: full, omittedMessages: 0, estimatedTokens: fullTokens };
+  }
+
+  const droppable = [...input.item.issueAnalysis.messages, ...(input.item.prAnalysis?.messages ?? [])]
+    .filter((message) => !message.isNew)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  // Dropping more never makes the prompt longer, so the smallest count that fits is
+  // found by bisection instead of re-rendering for every message.
+  const tokensWith = (count: number): number =>
+    estimatePromptTokens(render(input, new Set(droppable.slice(0, count))));
+  if (tokensWith(droppable.length) > maxPromptTokens) {
+    return {
+      ok: false,
+      estimatedTokens: tokensWith(droppable.length),
+      detail:
+        `the prompt needs about ${String(tokensWith(droppable.length))} tokens even with all older messages omitted, ` +
+        `above the budget of ${String(maxPromptTokens)} tokens. Shorten the configured prompt or the newest messages, ` +
+        "or raise doWork.maxPromptTokens",
+    };
+  }
+  let low = 1;
+  let high = droppable.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (tokensWith(mid) <= maxPromptTokens) high = mid;
+    else low = mid + 1;
+  }
+  const prompt = render(input, new Set(droppable.slice(0, low)));
+  return { ok: true, prompt, omittedMessages: low, estimatedTokens: estimatePromptTokens(prompt) };
+}
+
+/** A conversation section with the dropped messages replaced by one marker line. */
+function formatConversation(messages: AnalyzedMessage[], dropped: Set<AnalyzedMessage>): string {
+  const omitted = messages.filter((message) => dropped.has(message));
+  const kept = formatMessages(messages.filter((message) => !dropped.has(message)));
+  if (omitted.length === 0) return kept;
+  const first = omitted[0].createdAt;
+  const last = omitted.at(-1)?.createdAt ?? first;
+  const marker = `[${String(omitted.length)} older message(s) from ${first} to ${last} omitted to fit the prompt budget]`;
+  return kept.length > 0 ? `${marker}\n\n${kept}` : marker;
+}
+
+function render(input: PromptInput, dropped: Set<AnalyzedMessage>): string {
   const { item, repo, agentUser, baseBranch, frame } = input;
 
   const lines: string[] = [
@@ -94,7 +168,7 @@ export function composePrompt(input: PromptInput): string {
       "",
       "Full conversation on the issue (authorized accounts and you only, oldest first):",
       "",
-      formatMessages(item.issueAnalysis.messages),
+      formatConversation(item.issueAnalysis.messages, dropped),
     );
   }
 
@@ -103,7 +177,7 @@ export function composePrompt(input: PromptInput): string {
       "",
       "Conversation on the pull request (authorized accounts and you only, oldest first):",
       "",
-      formatMessages(item.prAnalysis.messages),
+      formatConversation(item.prAnalysis.messages, dropped),
     );
   }
 

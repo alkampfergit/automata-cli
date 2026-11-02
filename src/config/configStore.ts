@@ -70,6 +70,11 @@ export interface AutomataDoWorkConfig {
   maxRunsPerTick?: number;
   lockStaleMinutes?: number;
   /**
+   * Estimated token budget of one `do-work` prompt. Above it, the oldest conversation
+   * messages are left out. The default is below the context window of current models.
+   */
+  maxPromptTokens?: number;
+  /**
    * Render the full health report when a tick exits without doing anything.
    *
    * On by default: a blocked tick is precisely the case where one line is not
@@ -195,6 +200,7 @@ export const DEFAULT_DO_WORK = {
   executor: "claude" as Executor,
   maxRunsPerTick: 0,
   lockStaleMinutes: 120,
+  maxPromptTokens: 100000,
   dumpOnBlock: true,
   postRunLog: true,
 };
