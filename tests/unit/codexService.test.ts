@@ -254,3 +254,10 @@ describe("runCodex quiet", () => {
     vi.doUnmock("node:child_process");
   });
 });
+
+describe("buildCodexArgs editOnly", () => {
+  it("uses the workspace-write sandbox even with yolo", async () => {
+    const { buildCodexArgs } = await import("../../src/codex/codexService.js");
+    expect(buildCodexArgs("p", { editOnly: true, yolo: true })).toEqual(["exec", "--sandbox", "workspace-write", "p"]);
+  });
+});

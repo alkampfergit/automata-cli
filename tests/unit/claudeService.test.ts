@@ -313,3 +313,16 @@ describe("buildClaudeArgs readOnly", () => {
     expect(args).toContain("dontAsk");
   });
 });
+
+describe("buildClaudeArgs editOnly", () => {
+  it("allows file edits only and never skips permissions", async () => {
+    const { buildClaudeArgs, editOnlyEnv } = await import("../../src/claude/claudeService.js");
+    const args = buildClaudeArgs("p", { yolo: true, editOnly: true });
+    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args[args.indexOf("--allowed-tools") + 1]).toBe("Read,Edit,Write,Glob,Grep");
+    expect(args[args.indexOf("--disallowed-tools") + 1]).toContain("Bash");
+    process.env["GH_TOKEN"] = "secret";
+    expect(editOnlyEnv()["GH_TOKEN"]).toBeUndefined();
+    delete process.env["GH_TOKEN"];
+  });
+});

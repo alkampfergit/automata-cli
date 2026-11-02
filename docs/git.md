@@ -563,7 +563,8 @@ For each open pull request, in number order:
 3. **Push** a clean result with `git push --force-with-lease=refs/heads/<head>:<old sha> origin HEAD:refs/heads/<head>`.
    If someone pushed to the branch after the fetch, the push is refused and the pull request is `failed`.
 4. On a **conflict**, run the executor (`doWork.executor`, `doWork.models`, `doWork.effort`) inside the worktree with the
-   conflict prompt and the list of conflicted files. The model edits files only. Automata runs `git add` and
+   conflict prompt and the list of conflicted files. The model edits files only: Claude runs with `Read`, `Edit`, `Write`, `Glob` and `Grep` (no shell, no web tools, no GitHub token in its
+   environment), and Codex runs in the `workspace-write` sandbox (writes stay in the worktree, no network). Automata runs `git add` and
    `git rebase --continue`. A later commit can conflict again; every resolution is one attempt.
 5. Run `git.rebasePrs.testCommand` in the worktree when it is set.
 
