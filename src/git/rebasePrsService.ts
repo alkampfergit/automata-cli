@@ -83,8 +83,8 @@ export function createRebaseDeps(settings: ExecutorSettings): RebaseDeps {
     readText: (path) => readFileSync(path, "utf8"),
     runModel: (prompt, cwd) =>
       settings.executor === "codex"
-        ? runCodex(prompt, { model: settings.model, effort: settings.effort, cwd })
-        : runClaude(prompt, { model: settings.model, effort: settings.effort, cwd }),
+        ? runCodex(prompt, { model: settings.model, effort: settings.effort, cwd, editOnly: true })
+        : runClaude(prompt, { model: settings.model, effort: settings.effort, cwd, editOnly: true }),
     runTest: (command, cwd) => {
       const result = spawnSync(command, { shell: true, cwd, encoding: "utf8" });
       return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };

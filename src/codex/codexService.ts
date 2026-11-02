@@ -1,13 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
 import { handleSpawnError, handleExitCode, resolveCommand, feedStdin } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
-import { readOnlyEnv } from "../claude/claudeService.js";
+import { readOnlyEnv, editOnlyEnv } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 
 export interface InvokeCodexOptions {
   yolo?: boolean;
   /** Run in Codex's read-only sandbox. Wins over `yolo`. */
   readOnly?: boolean;
+  /** Run in Codex's workspace-write sandbox: writes stay in the working directory, the network is off. Wins over `yolo`. */
+  editOnly?: boolean;
   verbose?: boolean;
   model?: string;
   /** Reasoning effort, forwarded verbatim. See `InvokeClaudeOptions.effort`. */
@@ -35,6 +37,7 @@ function toTomlBasicString(value: string): string {
 export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {}): string[] {
   const args: string[] = ["exec"];
   if (options.readOnly) args.push("--sandbox", "read-only");
+  else if (options.editOnly) args.push("--sandbox", "workspace-write");
   else if (options.yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (options.model) args.push("--model", options.model);
   // Codex has no effort flag: it reads `model_reasoning_effort` from its TOML
@@ -71,13 +74,14 @@ function invokeCodexCodeSync(prompt: string, options: InvokeCodexOptions): void 
  */
 export function runCodex(
   prompt: string,
-  options: { model?: string; effort?: string; readOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink; cwd?: string } = {},
+  options: { model?: string; effort?: string; readOnly?: boolean; editOnly?: boolean; ghRepo?: string; quiet?: boolean; sink?: RunSink; cwd?: string } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const codexBin = resolveCommand("codex");
     const args = buildCodexArgs(prompt, {
       yolo: true,
       readOnly: options.readOnly,
+      editOnly: options.editOnly,
       model: options.model,
       effort: options.effort,
       promptOn: "stdin",
@@ -85,7 +89,7 @@ export function runCodex(
     const sink = options.sink;
     const child = spawn(codexBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+      env: childEnv(options),
       cwd: options.cwd,
     });
     trackChild(child);
@@ -126,4 +130,9 @@ export function runCodex(
       );
     });
   });
+}
+
+function childEnv(options: { readOnly?: boolean; editOnly?: boolean; ghRepo?: string }): NodeJS.ProcessEnv {
+  if (options.readOnly) return readOnlyEnv(options.ghRepo);
+  return options.editOnly ? editOnlyEnv() : process.env;
 }
