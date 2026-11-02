@@ -1120,10 +1120,19 @@ describe("conductor stories", () => {
     mockApply.mockImplementationOnce(() => {
       throw new Error("label failed");
     });
+    // The issue surface keeps the posted start comment, as GitHub does.
+    const posted: unknown[] = [];
+    mockCommentOnIssue.mockImplementation((_n: number, body: string) => {
+      posted.push({ kind: "issue-comment", author: "alice", body, createdAt: "2026-01-01T00:00:00Z" });
+    });
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, posted));
     expect(await runWith()).toBe(1);
     expect(mockCommentOnIssue).toHaveBeenCalledOnce();
+    // The next tick sees the conductor user's own comment: the child waits, with no second comment and no label attempt.
     expect(await runWith()).toBe(0);
-    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(mockCommentOnIssue).toHaveBeenCalledOnce();
+    expect(mockApply).toHaveBeenCalledOnce();
+    expect(stdout).toMatch(/waiting for the agent/);
   });
 
   it("a failed comment applies no label, so the child stays next", async () => {
