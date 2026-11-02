@@ -408,6 +408,7 @@ describe("do-work preconditions", () => {
     ["a negative run cap", { maxRunsPerTick: -1 }, /maxRunsPerTick must be a non-negative integer/],
     ["a fractional run cap", { maxRunsPerTick: 1.5 }, /maxRunsPerTick must be a non-negative integer/],
     ["a zero lock window", { lockStaleMinutes: 0 }, /lockStaleMinutes must be a positive integer/],
+    ["a zero prompt budget", { maxPromptTokens: 0 }, /maxPromptTokens must be a positive integer/],
     ["an empty base branch", { baseBranch: "  " }, /baseBranch must be a non-empty string/],
     ["a non-string base branch", { baseBranch: 7 }, /baseBranch must be a non-empty string/],
     ["an empty model", { models: { claude: "" } }, /models.claude must be a non-empty string/],

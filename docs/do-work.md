@@ -161,6 +161,20 @@ One tick, in order:
 
 ---
 
+## Prompt budget
+
+The prompt holds the configured frame, the new messages, the full conversation of the issue and of the pull request, and the unresolved review threads. A long discussion can make it larger than a model accepts.
+
+Before it starts the executor, `do-work` estimates the size of the prompt (4 bytes count as 1 token) and compares it with `doWork.maxPromptTokens` (default `100000`; see [config.md](config.md)). If the prompt is larger, `do-work` leaves out the oldest conversation messages first, from the issue and the pull request together, until it fits. Each conversation then starts with a marker such as `[12 older message(s) from 2026-01-02T… to 2026-02-10T… omitted to fit the prompt budget]`, and the progress output says how many messages were omitted.
+
+These parts are never left out: the frame, the repository, issue and pull-request identifiers, the messages that are new since the last agent message, and the unresolved review threads. Because the new messages stay in the prompt, the trigger is answered and the marker logic is unchanged.
+
+If these required parts are alone larger than the budget, no run starts. The marker comment says so and names `doWork.maxPromptTokens`; `--dry-run` shows the same refusal. Raise the setting or shorten the prompt.
+
+The prompt goes to the executor on standard input, so the size of one command-line argument no longer limits it. The budget protects the context window of the model.
+
+---
+
 ## The repository-hygiene pre-flight
 
 Every tick starts by putting the checkout into a known state, once, inside the run lock and before anything is read from GitHub. Three steps, always in this order.

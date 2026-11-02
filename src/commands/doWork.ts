@@ -45,7 +45,7 @@ import {
   type IssueState,
   type WorkItem,
 } from "../github/workDetection.js";
-import { composePrompt } from "../github/workPrompt.js";
+import { composePromptWithinBudget } from "../github/workPrompt.js";
 import {
   describeExecution,
   describeInvalidTool,
@@ -205,6 +205,8 @@ interface Settings {
   configEfforts: DoWorkEffort | undefined;
   maxRuns: number;
   lockStaleMinutes: number;
+  /** Estimated token budget of one prompt; older conversation messages are dropped above it. */
+  maxPromptTokens: number;
   /** Render the health report when the tick exits having done nothing. */
   dumpOnBlock: boolean;
   /** Append diagnostics and save a transcript when a run posts no answer. */
@@ -462,6 +464,7 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
         ? parsePositiveInt(options.maxRuns, "--max-runs")
         : (doWork.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
     lockStaleMinutes: doWork.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes,
+    maxPromptTokens: doWork.maxPromptTokens ?? DEFAULT_DO_WORK.maxPromptTokens,
     dumpOnBlock: doWork.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock,
     postRunLog: doWork.postRunLog ?? DEFAULT_DO_WORK.postRunLog,
     limit: parsePositiveInt(options.limit, "--limit"),
@@ -563,19 +566,28 @@ function toExecution(resolved: Extract<ResolveExecutionResult, { ok: true }>): R
   };
 }
 
+function describePromptOverBudget(detail: string): string {
+  return `the prompt is over budget: ${detail}`;
+}
+
 /**
  * What would be executed for a work item, built with the same argv builders the
  * real invocation uses so `--dry-run` cannot drift from what actually happens.
  */
-function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun {
+function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun | { refusal: string } {
   const repo = getRepoSlug();
-  const prompt = composePrompt({
-    item,
-    repo,
-    agentUser: settings.participants.agentUser,
-    baseBranch: settings.baseBranch,
-    frame: settings.prompts[item.turn],
-  });
+  const composed = composePromptWithinBudget(
+    {
+      item,
+      repo,
+      agentUser: settings.participants.agentUser,
+      baseBranch: settings.baseBranch,
+      frame: settings.prompts[item.turn],
+    },
+    settings.maxPromptTokens,
+  );
+  if (!composed.ok) return { refusal: describePromptOverBudget(composed.detail) };
+  const prompt = composed.prompt;
 
   // The resolved path, not the bare name: this is literally what gets spawned.
   const bin = resolveCommand(execution.executor === "codex" ? "codex" : "claude");
@@ -812,6 +824,7 @@ function validateDoWorkConfig(section: unknown): void {
     1,
     "a positive integer",
   );
+  validateOptionalInt(section, "maxPromptTokens", "doWork.maxPromptTokens", 1, "a positive integer");
   validateOptionalBoolean(section, "dumpOnBlock", "doWork.dumpOnBlock");
   validateOptionalBoolean(section, "postRunLog", "doWork.postRunLog");
 
@@ -1789,13 +1802,30 @@ async function processItem(
     item.actionableThreads.flatMap((thread) => thread.comments),
   ]);
 
-  const prompt = composePrompt({
-    item,
-    repo: getRepoSlug(),
-    agentUser: settings.participants.agentUser,
-    baseBranch: settings.baseBranch,
-    frame: settings.prompts[item.turn],
-  });
+  const composed = composePromptWithinBudget(
+    {
+      item,
+      repo: getRepoSlug(),
+      agentUser: settings.participants.agentUser,
+      baseBranch: settings.baseBranch,
+      frame: settings.prompts[item.turn],
+    },
+    settings.maxPromptTokens,
+  );
+  if (!composed.ok) {
+    const detail = describePromptOverBudget(composed.detail);
+    return refuseBeforeRun(
+      base,
+      marker,
+      detail,
+      `automata do-work: ${detail}. No run was started. ` +
+        "Raise doWork.maxPromptTokens, or shorten the prompt, to have another attempt made.",
+    );
+  }
+  const prompt = composed.prompt;
+  if (composed.omittedMessages > 0) {
+    progress(`  prompt trimmed: ${String(composed.omittedMessages)} older message(s) omitted (budget ${String(settings.maxPromptTokens)} tokens)\n`);
+  }
 
   // Resolved here, because a pre-flight refusal needs the marker to already exist.
   const resolved = resolveItemExecution(item, settings);
@@ -3217,12 +3247,14 @@ async function processItems(
   const reports: ItemReport[] = [];
   const deferred: WorkItem[] = [];
   const preflightCauses = describePreflightFailures(hygiene);
-  let runsUsed = 0;
-
-  for (const [index, item] of items.entries()) {
+  // Items run one after the other, never together: each is a model run that owns the
+  // working tree. A recursive step states that order without an `await` in a loop.
+  const step = async (index: number, runsUsed: number): Promise<void> => {
+    const item = items[index];
+    if (item === undefined) return;
     if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
       deferred.push(item);
-      continue;
+      return step(index + 1, runsUsed);
     }
     // Kept on module state as well as published, so the executor's own heartbeat
     // can keep naming the item without `processItem` taking a parameter it would
@@ -3230,15 +3262,16 @@ async function processItems(
     heartbeatItem = { index: index + 1, total: items.length, subject: itemLabel(item).trim() };
     beat({ phase: "item", item: heartbeatItem });
     const report = await reportForItem(item, settings, options, preflightCauses);
-    // The cap counts model runs. An item that failed before reaching the
-    // executor — a refresh read error, say — did not spend one.
-    if (report.ranExecutor === true) runsUsed++;
     reports.push(report);
     if (report.claudeAuth === true) {
       reports.push(...items.slice(index + 1).map((rest) => skipForClaudeAuth(rest)));
-      break;
+      return;
     }
-  }
+    // The cap counts model runs. An item that failed before reaching the
+    // executor — a refresh read error, say — did not spend one.
+    return step(index + 1, report.ranExecutor === true ? runsUsed + 1 : runsUsed);
+  };
+  await step(0, 0);
 
   return { reports, deferred };
 }
@@ -3405,7 +3438,10 @@ function reportDryRun(
       return { kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) };
     }
     const execution = toExecution(resolved);
-    return { kind: "run", item, execution, run: planRun(item, settings, execution) };
+    const run = planRun(item, settings, execution);
+    return "refusal" in run
+      ? { kind: "refused", item, refusal: run.refusal }
+      : { kind: "run", item, execution, run };
   });
 
   if (options.json) {

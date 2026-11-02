@@ -143,6 +143,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
     },
     "maxRunsPerTick": 0,
     "lockStaleMinutes": 120,
+    "maxPromptTokens": 100000,
     "dumpOnBlock": true,
     "postRunLog": true,
     "prompts": {
@@ -165,6 +166,7 @@ Settings for [`automata do-work`](do-work.md). Every field is optional and has a
 | `effort.codex` | *(none)* | Default reasoning effort when the executor is Codex. |
 | `maxRunsPerTick` | `0` | Maximum model runs per tick; `0` means unlimited. Items beyond the cap are reported as `deferred`. |
 | `lockStaleMinutes` | `120` | How long a run lock **from another host** may be held before it is treated as stale. On this host, liveness decides and age is not consulted. |
+| `maxPromptTokens` | `100000` | Estimated token budget of one `do-work` prompt (4 bytes count as 1 token). Above it, the oldest conversation messages are left out. Raise it for a model with a larger context window. See [do-work.md](do-work.md#prompt-budget). |
 | `dumpOnBlock` | `true` | Print the full six-section health report when a tick exits having done nothing — a held run lock, an unusable configuration, a failed pre-flight, no candidate picked up, or every item skipped. Set `false` for the one-line behaviour. See [do-work.md](do-work.md#when-a-tick-does-nothing). |
 | `postRunLog` | `true` | When an agent run posts no answer, add its exit code, duration, repository changes and a redacted output excerpt to the comment, and save the full transcript to `.automata/runs/`. Set `false` for the plain one-sentence comment. See [do-work.md](do-work.md#diagnostics-when-no-answer-was-posted). |
 | `prompts.issueDiscuss` | built-in | Instructions for a discussion turn. |
@@ -183,6 +185,7 @@ automata config set do-work-effort claude high
 automata config set do-work-effort codex medium
 automata config set do-work-max-runs 2
 automata config set do-work-lock-stale-minutes 45
+automata config set do-work-max-prompt-tokens 150000
 automata config set do-work-dump-on-block false
 automata config set do-work-post-run-log false
 automata config set do-work-prompt issue-discuss do-work-issue-discuss.md
@@ -235,7 +238,7 @@ These prompts are where a **skill** gets named — automata itself has no concep
 | Prompts → Do Work — Discuss | `.automata/do-work-issue-discuss.md` |
 | Prompts → Do Work — PR | `.automata/do-work-pr-work.md` |
 
-The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick`, `lockStaleMinutes`, `dumpOnBlock` and `postRunLog`, so every `doWork` setting is reachable interactively as well as through `config set`. The last screen, *Diagnostics for a Silent Run*, is the one that writes the whole section — leaving the wizard before it changes nothing.
+The `Do Work` entry on the main menu sets `baseBranch`, `protectedBranches`, `executor`, both models, both effort levels, `maxRunsPerTick`, `lockStaleMinutes`, `dumpOnBlock` and `postRunLog`. `maxPromptTokens` is set with `config set` or by editing the file; the wizard keeps its value. The last screen, *Diagnostics for a Silent Run*, is the one that writes the whole section — leaving the wizard before it changes nothing.
 
 ---
 

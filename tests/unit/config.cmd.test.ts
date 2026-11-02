@@ -325,6 +325,18 @@ describe("automata config set do-work-*", () => {
     );
   });
 
+  it("sets the prompt token budget", () => {
+    const output = run(["config", "set", "do-work-max-prompt-tokens", "150000"]);
+    expect(output.trim()).toBe("do-work prompt budget set to: 150000 tokens");
+    expect(readConfigFile().doWork).toEqual({ maxPromptTokens: 150000 });
+  });
+
+  it("rejects a zero prompt token budget", () => {
+    expect(runExpectingFailure(["config", "set", "do-work-max-prompt-tokens", "0"])).toMatch(
+      /must be greater than zero/,
+    );
+  });
+
   it("turns the blocked-exit report off", () => {
     const output = run(["config", "set", "do-work-dump-on-block", "false"]);
     expect(output.trim()).toBe("do-work dump on block set to: false");

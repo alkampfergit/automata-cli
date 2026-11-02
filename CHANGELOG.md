@@ -12,6 +12,11 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
+- `do-work` keeps its prompt within a token budget. When the estimated size is above `doWork.maxPromptTokens`
+  (default `100000`, set with `config set do-work-max-prompt-tokens`), the oldest conversation messages are left
+  out and a marker says how many. The frame, the new messages and the review threads are kept; if they alone are
+  too large, no run starts and the marker comment says why. See `docs/do-work.md` (#176)
+
 - `automata conductor` applies the label `conductor-ready` to a watched pull request (or one linked to a watched
   issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
   checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`
