@@ -1,3 +1,4 @@
+import { decideConversation } from "./replyDecision.js";
 import { analyzeSurface, lastAuthorClass, type Participants, type RawMessage } from "../github/conversation.js";
 
 /**
@@ -10,10 +11,20 @@ export function classifyChildThread(messages: RawMessage[], participants: Partic
   const comments = analyzeSurface(messages, participants).messages.filter((message) => message.kind !== "issue-body");
   switch (lastAuthorClass(comments, participants)) {
     case "agent":
-      return "agent-last";
+      return agentRunInFlight(messages, participants) ? "waiting" : "agent-last";
     case "authorized":
       return "waiting";
     default:
       return "empty";
   }
+}
+
+/**
+ * A `working…` marker of the agent that no real agent message or later human message follows means a
+ * `do-work` run is answering now (for example from `do-work --issue N`). The conductor's reply rule decides
+ * that, with its timestamp-tie and stale-marker handling, so the start step reuses it.
+ */
+function agentRunInFlight(messages: RawMessage[], participants: Participants): boolean {
+  const decision = decideConversation({ kind: "issue", number: 0, state: "open", messages }, participants);
+  return decision.kind === "skip" && decision.reason === "agent-working";
 }
