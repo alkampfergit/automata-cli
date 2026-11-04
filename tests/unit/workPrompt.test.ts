@@ -330,6 +330,34 @@ describe("composePromptWithinBudget", () => {
     expect(result.detail).toContain("doWork.maxPromptTokens");
   });
 
+  it("finds a fitting count when dropping a short last message would add a marker", () => {
+    // The short pull request message is the newest droppable one. Dropping it adds the
+    // pull request's own marker, which is longer than the message, so the prompt grows.
+    const issueHistory: RawMessage[] = [message("alice", "2026-01-01T00:00:00Z", "please add it", "issue-body")];
+    for (let i = 0; i < 6; i += 1) {
+      issueHistory.push(message(i % 2 === 0 ? "automata-bot" : "alice", `2026-02-0${String(i + 1)}T00:00:00Z`, `OLD-${String(i)} ${"x".repeat(4000)}`));
+    }
+    issueHistory.push(message("alice", "2026-03-30T00:00:00Z", "SHORT NEW TRIGGER"));
+    const prHistory = [message("automata-bot", "2026-02-21T00:00:00Z", "ok", "pr-comment")];
+    const item = prItem({ issueAnalysis: analyzeSurface(issueHistory, P), prAnalysis: analyzeSurface(prHistory, P), actionableThreads: [] });
+    const droppable = [...item.issueAnalysis.messages, ...(item.prAnalysis?.messages ?? [])].filter((m) => !m.isNew).length;
+    // Whether a budget is feasible only grows with the budget, so the smallest feasible one
+    // is found by bisection. Dropping every message is then not what reaches it.
+    let low = 1;
+    let high = 20000;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (composePromptWithinBudget({ item, ...INPUT_BASE }, mid).ok) high = mid;
+      else low = mid + 1;
+    }
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, low);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.omittedMessages).toBeGreaterThan(0);
+    expect(result.omittedMessages).toBeLessThan(droppable);
+    expect(result.prompt).toContain("SHORT NEW TRIGGER");
+  });
+
   it("never drops a new message even when it is large", () => {
     const history = [
       message("alice", "2026-01-01T00:00:00Z", "please add it", "issue-body"),

@@ -90,29 +90,27 @@ export function composePromptWithinBudget(input: PromptInput, maxPromptTokens: n
     .filter((message) => !message.isNew)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
-  // Dropping more never makes the prompt longer, so the smallest count that fits is
-  // found by bisection instead of re-rendering for every message.
-  const tokensWith = (count: number): number =>
-    estimatePromptTokens(render(input, new Set(droppable.slice(0, count))));
-  if (tokensWith(droppable.length) > maxPromptTokens) {
-    return {
-      ok: false,
-      estimatedTokens: tokensWith(droppable.length),
-      detail:
-        `the prompt needs about ${String(tokensWith(droppable.length))} tokens even with all older messages omitted, ` +
-        `above the budget of ${String(maxPromptTokens)} tokens. Shorten the configured prompt or the newest messages, ` +
-        "or raise doWork.maxPromptTokens",
-    };
+  // Dropping more usually shortens the prompt, but not always: the first drop on a
+  // surface adds that surface's omission marker, which can outweigh a short message. A
+  // bisection would be wrong there, so the smallest fitting count is found by a scan.
+  let smallest = Number.POSITIVE_INFINITY;
+  for (let count = 1; count <= droppable.length; count++) {
+    const prompt = render(input, new Set(droppable.slice(0, count)));
+    const tokens = estimatePromptTokens(prompt);
+    if (tokens <= maxPromptTokens) {
+      return { ok: true, prompt, omittedMessages: count, estimatedTokens: tokens };
+    }
+    smallest = Math.min(smallest, tokens);
   }
-  let low = 1;
-  let high = droppable.length;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if (tokensWith(mid) <= maxPromptTokens) high = mid;
-    else low = mid + 1;
-  }
-  const prompt = render(input, new Set(droppable.slice(0, low)));
-  return { ok: true, prompt, omittedMessages: low, estimatedTokens: estimatePromptTokens(prompt) };
+  const needed = Math.min(smallest, fullTokens);
+  return {
+    ok: false,
+    estimatedTokens: needed,
+    detail:
+      `the prompt needs about ${String(needed)} tokens even with older messages omitted, ` +
+      `above the budget of ${String(maxPromptTokens)} tokens. Shorten the configured prompt or the newest messages, ` +
+      "or raise doWork.maxPromptTokens",
+  };
 }
 
 /** A conversation section with the dropped messages replaced by one marker line. */
