@@ -56,12 +56,13 @@ function compose(thread: ConductorThread): string {
   return composeConductorPrompt({ thread, repo, participants, frame: "FRAME  \n" });
 }
 
-describe("composeConductorPrompt — posting instruction", () => {
-  it("tells the model how to post on the issue, after the thread, whatever the frame says", () => {
+describe("composeConductorPrompt — reply instruction", () => {
+  it("tells the model to write the reply, after the thread, whatever the frame says, and not to post it", () => {
     const text = compose({ kind: "issue", issue, prs: [] });
-    expect(text).toContain("gh issue comment 7 --body-file -");
-    expect(text).toMatch(/What you print is discarded/);
-    expect(text.indexOf("gh issue comment")).toBeGreaterThan(text.indexOf("Only the messages above exist"));
+    expect(text).toContain("Write your reply to issue #7.");
+    expect(text).toContain("automata posts it for you");
+    expect(text).not.toMatch(/--body-file/);
+    expect(text.indexOf("Write your reply")).toBeGreaterThan(text.indexOf("Only the messages above exist"));
   });
 
   it("names the pull request when the reply belongs there", () => {
@@ -72,8 +73,7 @@ describe("composeConductorPrompt — posting instruction", () => {
       frame: "F",
       replyTo: { kind: "pr", number: 9 },
     });
-    expect(text).toContain("gh pr comment 9 --body-file -");
-    expect(text).not.toContain("gh issue comment");
+    expect(text).toContain("Write your reply to pull request #9.");
   });
 });
 

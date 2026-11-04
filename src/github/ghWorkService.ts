@@ -176,9 +176,9 @@ interface RawComment {
   created_at: string;
 }
 
-function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
+function run(cmd: string, args: string[], input?: string): { stdout: string; stderr: string; status: number } {
   const startedAt = Date.now();
-  const result = spawnSync(cmd, args, { encoding: "utf8" });
+  const result = spawnSync(cmd, args, { encoding: "utf8", ...(input === undefined ? {} : { input }) });
   // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
   // `-1` for a command that never started, which is a different fact from one
   // that ran and failed, and the distinction is what the trace exists for.
@@ -837,6 +837,16 @@ export function getStorySource(id: number): StorySource {
 export function commentOnIssue(number: number, comment: string): void {
   const { stderr, status } = run("gh", ["issue", "comment", String(number), "--body", comment]);
   if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(number)}.`);
+}
+
+/**
+ * Post a comment on an issue or a pull request. The body goes on standard input, so its length and its
+ * characters never meet a shell or an argument limit.
+ */
+export function postComment(target: { kind: "issue" | "pr"; number: number }, body: string): void {
+  const args = [target.kind === "pr" ? "pr" : "issue", "comment", String(target.number), "--body-file", "-"];
+  const { stderr, status } = run("gh", args, body);
+  if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(target.number)}.`);
 }
 
 /** Close an issue with a comment, in one call, so a failed close cannot leave the comment to be posted again. */

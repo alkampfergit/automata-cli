@@ -25,6 +25,12 @@ const mockIssueSurface = vi.fn();
 const mockPrSurface = vi.fn();
 const mockChecks = vi.fn();
 const mockRunClaude = vi.fn();
+const mockPostComment = vi.fn();
+/** A model run that prints a reply, as the conductor now expects. */
+function printedReply(_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }): Promise<void> {
+  options.sink?.output("stdout", JSON.stringify({ type: "result", result: "My reply." }) + "\n");
+  return Promise.resolve();
+}
 const mockRunCodex = vi.fn();
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
@@ -53,6 +59,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
   removeLabel: (...a: unknown[]) => mockRemoveLabel(...a),
   postMarker: (...a: unknown[]) => mockPostMarker(...a),
+  postComment: (...a: unknown[]) => mockPostComment(...a),
   getOpenPrLinkMap: () => mockLinks(),
   getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
   getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
@@ -320,11 +327,13 @@ describe("conductor tick replies", () => {
   it("runs claude read-only on a watched issue the agent spoke last on, and reports the post", async () => {
     watching({ models: { claude: "opus" }, effort: { claude: "high" } });
     agentSpokeLast(true);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     expect(await run()).toBe(0);
     const [prompt, options] = mockRunClaude.mock.calls[0] as [string, Record<string, unknown>];
     expect(options).toMatchObject({ readOnly: true, model: "opus", effort: "high", ghRepo: "acme/widget" });
-    expect(prompt).toContain("gh issue comment 7 --body-file -");
+    expect(options).not.toHaveProperty("replyTo");
+    expect(prompt).not.toContain("--body-file");
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "issue", number: 7 }, "My reply.\n\n<!-- automata:conductor -->");
     expect(stdout).toMatch(/posted a reply on issue #7/);
     expect(mockRunCodex).not.toHaveBeenCalled();
   });
@@ -341,10 +350,30 @@ describe("conductor tick replies", () => {
   it("exits 1 and says so when the run posted nothing", async () => {
     watching();
     agentSpokeLast(false);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     expect(await run()).toBe(1);
     expect(stderr).toMatch(/posted no comment on issue #7/);
     expect(mockRelease).toHaveBeenCalledOnce();
+  });
+
+  it("exits 1 and says so when the model produced no answer, posting nothing", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockResolvedValue(undefined);
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/failed and posted no comment.*the model produced no answer/);
+    expect(mockPostComment).not.toHaveBeenCalled();
+  });
+
+  it("exits 1 when the post itself fails", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockImplementation(printedReply);
+    mockPostComment.mockImplementationOnce(() => {
+      throw new Error("gh: HTTP 403");
+    });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/failed and posted no comment.*HTTP 403/);
   });
 
   it("exits 1 when the run fails without posting", async () => {
@@ -577,7 +606,7 @@ describe("conductor loop safety", () => {
   it("defaults the limit to 5", async () => {
     watching();
     conversation(4);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     mockRunClaude.mockClear();
@@ -609,6 +638,7 @@ describe("conductor loop safety", () => {
     expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
     expect(stdout).toMatch(/needs a human \(the choice is a policy call\)/);
     expect(stderr).not.toMatch(/posted no comment/);
+    expect(mockPostComment).not.toHaveBeenCalled();
   });
 
   it("removes conductor-ready from a linked pull request when the model says it needs a human", async () => {
@@ -771,7 +801,7 @@ describe("conductor --automatic", () => {
     expect(mockRunClaude).not.toHaveBeenCalled();
 
     mockInspectRun.mockReturnValue({ kind: "free" });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await runWith({});
     expect(mockRunClaude).toHaveBeenCalledOnce();
   });
@@ -800,19 +830,20 @@ describe("conductor rebase check", () => {
 
   it("rebases a blocked pull request with a conflict, with the configured prompt and the rebase marker", async () => {
     watchingPr("CONFLICTING", spoke, ["conductor-blocked"], { prompts: { rebase: "REBASE NOW" } });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     const [prompt] = mockRunClaude.mock.calls[0] as [string];
     expect(prompt.startsWith("REBASE NOW")).toBe(true);
-    expect(prompt).toContain("gh pr comment 9 --body-file -");
-    expect(prompt).toContain(rebaseMark(SHA));
+    expect(prompt).toContain("Write your reply to pull request #9.");
+    expect(prompt).not.toContain(rebaseMark(SHA));
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "pr", number: 9 }, `My reply.\n\n${rebaseMark(SHA)}`);
     expect(stdout).toMatch(/needs a rebase request on pull request #9/);
   });
 
   it("uses the default prompt of the issue", async () => {
     watchingPr("CONFLICTING", spoke);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
   });
@@ -825,7 +856,7 @@ describe("conductor rebase check", () => {
 
   it("ignores a rebase marker written by an account other than the agent", async () => {
     watchingPr("CONFLICTING", [...spoke, comment("mallory", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`)]);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
   });
@@ -840,7 +871,7 @@ describe("conductor rebase check", () => {
   it("has its own limit: replies do not use it up, and rebases do not use up the replies", async () => {
     const replies = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${MARK}`));
     watchingPr("CONFLICTING", [...spoke, ...replies], ["conductor-blocked"], { maxRepliesPerItem: 2 });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
 
@@ -898,19 +929,20 @@ describe("conductor CI-fix check", () => {
 
   it("asks for a fix on a blocked pull request, with the configured prompt and the CI-fix marker", async () => {
     watchingPr(FAILED, spoke, { prompts: { ciFix: "FIX THE BUILD" } });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     const [prompt] = mockRunClaude.mock.calls[0] as [string];
     expect(prompt.startsWith("FIX THE BUILD")).toBe(true);
-    expect(prompt).toContain("gh pr comment 9 --body-file -");
-    expect(prompt).toContain(fixMark(SHA));
+    expect(prompt).toContain("Write your reply to pull request #9.");
+    expect(prompt).not.toContain(fixMark(SHA));
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "pr", number: 9 }, `My reply.\n\n${fixMark(SHA)}`);
     expect(stdout).toMatch(/needs a CI-fix request on pull request #9/);
   });
 
   it("uses the default prompt", async () => {
     watchingPr(FAILED);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^A check failed on this pull request/);
   });
@@ -933,7 +965,7 @@ describe("conductor CI-fix check", () => {
 
   it("asks for the rebase first on a conflicting pull request", async () => {
     watchingPr(FAILED, spoke, {}, "CONFLICTING");
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
   });
@@ -1097,7 +1129,7 @@ describe("conductor stories", () => {
 
     it("leaves the child next and exits 1 when the run posted nothing", async () => {
       mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
-      mockRunClaude.mockResolvedValue(undefined);
+      mockRunClaude.mockImplementation(printedReply);
       expect(await runWith()).toBe(1);
       expect(mockApply).not.toHaveBeenCalled();
     });

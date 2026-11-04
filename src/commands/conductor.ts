@@ -25,6 +25,7 @@ import {
   addLabel,
   removeLabel,
   postMarker,
+  postComment,
   type StorySource,
   type WatchTarget,
 } from "../github/ghWorkService.js";
@@ -43,6 +44,7 @@ import {
   type AgentRequest,
   type ConductorThread,
   type ReplyTarget,
+  replyMarkerFor,
   type ThreadPr,
 } from "../conductor/thread.js";
 import {
@@ -164,10 +166,22 @@ function readTargetMessages(target: ReplyTarget) {
     : prConversation(getPrSurface(target.number)).messages;
 }
 
-/** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
-function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
+/**
+ * Read-only: the model has no permission to comment. It writes the reply, and the conductor posts it with its own
+ * `gh` call, so a refused `gh` can no longer block a reply. A `NEEDS-HUMAN:` reply is not posted.
+ */
+async function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, request: AgentRequest | undefined, captured: CapturedStdout): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun, echoResult: false });
+  try {
+    await runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun, echoResult: false });
+  } finally {
+    reportDenials(captured.text(), `#${String(replyTo.number)}`);
+  }
+  const reply = extractDryRunReply(execution.executor, captured.text());
+  if (reply === null) throw new Error("the model produced no answer");
+  if (parseNeedsHuman(reply) !== null) return;
+  const marker = replyMarkerFor(request);
+  postComment(replyTo, reply.includes(marker) ? reply : `${reply}\n\n${marker}`);
 }
 
 /**
@@ -196,8 +210,13 @@ function reportCommandTrace(): void {
   for (const traced of trace) process.stderr.write(`  ${describeTracedCommand(traced)}\n`);
 }
 
+interface CapturedStdout {
+  sink: RunSink;
+  text: () => string;
+}
+
 /** A sink that keeps what the run printed on stdout. */
-function captureStdout(): { sink: RunSink; text: () => string } {
+function captureStdout(): CapturedStdout {
   let stdout = "";
   const sink: RunSink = {
     output: (stream, text) => {
@@ -499,9 +518,8 @@ async function conductItem(
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
-    run: () => runModel(prompt, execution, replyTo, captured.sink),
+    run: () => runModel(prompt, execution, replyTo, request, captured),
   });
-  reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
     if (request !== undefined) noteRequestStop(replyTo, request, needsHuman, label);
@@ -558,9 +576,8 @@ async function replyToChild(
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
-    run: () => runModel(prompt, execution, replyTo, captured.sink),
+    run: () => runModel(prompt, execution, replyTo, undefined, captured),
   });
-  reportDenials(captured.text(), label);
   const needsUser = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsUser !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
     process.stdout.write(`Conductor: story #${String(story.id)}: ${label} needs you: ${needsUser}\n`);

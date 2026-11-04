@@ -33,6 +33,9 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 - The conductor prompt tells the model to run `gh` and `git` commands exactly as written. A project rule that
   prefixes commands (for example with `rtk`) no longer makes the run refuse every command (#163).
+- The conductor posts its own replies. The model only writes the reply (or `NEEDS-HUMAN: <question>`); the
+  conductor posts it with its own `gh` call and adds the marker. A refused `gh` permission can no longer block a
+  reply, and a run that prints no answer fails with `the model produced no answer`. `do-work` is not changed (#179).
 
 ## [0.13.0] - 2026-10-19
 
