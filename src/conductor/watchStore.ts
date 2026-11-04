@@ -127,6 +127,11 @@ export function readWatch(options: { migrate?: boolean } = {}): number[] {
   return legacy;
 }
 
+/** The state to extend: the file, or a new state that keeps the entries of the legacy `conductor.watch` key. */
+function stateToWrite(): WatchState {
+  return readFileState() ?? { ...emptyState(), watch: normalizeWatch(readRawConfig().conductor?.watch) };
+}
+
 /** The conductor settings. Read-only: a missing file gives empty settings and is not created. */
 export function readSettings(): SettingsState {
   return readFileState()?.settings ?? emptySettings();
@@ -134,7 +139,7 @@ export function readSettings(): SettingsState {
 
 /** Set (`value` given) or remove (`value` null) one setting; `id` null is the global scope. Keeps every other section. */
 export function writeSetting(key: string, id: number | null, value: SettingValue | null): void {
-  const state = readFileState() ?? emptyState();
+  const state = stateToWrite();
   writeState({ ...state, settings: withSetting(state.settings, key, id, value) });
 }
 
@@ -145,6 +150,6 @@ export function readRounds(): Record<string, RoundRecord> {
 
 /** Record the rounds of one pull request. Keeps every other section. */
 export function writeRound(pr: number, record: RoundRecord): void {
-  const state = readFileState() ?? emptyState();
+  const state = stateToWrite();
   writeState({ ...state, rounds: { ...state.rounds, [String(pr)]: record } });
 }

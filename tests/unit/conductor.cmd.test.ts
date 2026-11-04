@@ -1343,6 +1343,26 @@ describe("conductor Copilot review rounds", () => {
     expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50 }), "conductor-ready", expect.any(String));
   });
 
+  it("applies an issue-level value to a watched pull request that its issue does not handle", async () => {
+    watchingPr(50);
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    settingsState.items["5"] = { "copilot-review-rounds": 1 };
+    await run();
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+  });
+
+  it("reads the surface again once no review is pending, so a finished review is not missed", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    const open = { id: "t1", isResolved: false, comments: [{ author: "copilot-pull-request-reviewer", body: "x" }] };
+    let reads = 0;
+    mockPrSurface.mockImplementation((id: number) => prSurface(id, {}, [], ++reads === 1 ? [] : [open]));
+    await run();
+    expect(reads).toBeGreaterThan(1);
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
   it("a dry run reports the request and records nothing", async () => {
     watchingPr(50);
     settingsState.global["copilot-review-rounds"] = 1;
