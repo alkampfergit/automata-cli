@@ -169,7 +169,7 @@ Before it starts the executor, `do-work` estimates the size of the prompt (4 byt
 
 These parts are never left out: the frame, the repository, issue and pull-request identifiers, the messages that are new since the last agent message, and the unresolved review threads. Because the new messages stay in the prompt, the trigger is answered and the marker logic is unchanged.
 
-If these required parts are alone larger than the budget, no run starts. The marker comment says so and names `doWork.maxPromptTokens`; `--dry-run` shows the same refusal. Raise the setting or shorten the prompt.
+If these required parts are alone larger than the budget, no run starts. The marker comment says so and names `doWork.maxPromptTokens`; `--dry-run` shows the same refusal. Raise the setting or shorten the prompt, and then post a new comment, because the refusal moves the answer boundary past the message that was not answered.
 
 The prompt goes to the executor on standard input, so the size of one command-line argument no longer limits it. The budget protects the context window of the model.
 

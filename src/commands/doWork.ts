@@ -1819,7 +1819,7 @@ async function processItem(
       marker,
       detail,
       `automata do-work: ${detail}. No run was started. ` +
-        "Raise doWork.maxPromptTokens, or shorten the prompt, to have another attempt made.",
+        "Raise doWork.maxPromptTokens, or shorten the prompt, and then post a new comment here to have another attempt made.",
     );
   }
   const prompt = composed.prompt;
