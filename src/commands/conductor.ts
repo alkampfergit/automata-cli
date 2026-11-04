@@ -417,7 +417,7 @@ function reconcileReadyLabels(watch: number[], linkMap: () => OpenPrLinkMap, con
     try {
       const pr = readPr(number);
       // Rounds that are not done hold the label back. Not read when rounds are off.
-      const change = readyLabelChange(pr.surface, pr.checks, labels, copilotRoundsDone(pr.surface, owners.get(number) ?? []));
+      const change = readyLabelChange(pr.surface, pr.checks, labels, copilotRoundsDone(pr.surface, [...new Set([...(owners.get(number) ?? []), ...issueOwnersOf(number, linkMap)])]));
       if (change !== null) changeReadyLabel(number, change, dryRun);
     } catch (err) {
       process.stderr.write(`Warning: could not read #${String(number)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
@@ -480,16 +480,22 @@ function idleMessage(decisions: ConductorDecision[], label: string): string {
   return stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
 }
 
+/** The issues that close a pull request, whichever item handles it, so an issue-level setting always reaches it. */
+function issueOwnersOf(pr: number, linkMap: () => OpenPrLinkMap): number[] {
+  const owners: number[] = [];
+  for (const [issue, refs] of linkMap().byIssue) if (refs.some((ref) => ref.number === pr)) owners.push(issue);
+  return owners;
+}
+
 /**
  * Ask Copilot for the next review round of each pull request of the item, where its settings say so. Returns true when
  * a review is pending, so the item gets no ordinary reply this tick. A failed read is a warning and does not wait.
  */
-function advanceRounds(item: WatchedItem, id: number, dryRun: boolean): boolean {
-  const owners = item.target.kind === "issue" ? [id] : [];
+function advanceRounds(item: WatchedItem, dryRun: boolean, linkMap: () => OpenPrLinkMap): boolean {
   let waits = false;
   for (const pr of item.thread.prs) {
     try {
-      if (advanceCopilotRounds(pr.surface, owners, dryRun) === "wait") waits = true;
+      if (advanceCopilotRounds(pr.surface, issueOwnersOf(pr.surface.pr.number, linkMap), dryRun) === "wait") waits = true;
     } catch (err) {
       process.stderr.write(`Warning: could not check the Copilot review rounds of #${String(pr.surface.pr.number)}: ${(err as Error).message}\n`);
     }
@@ -532,7 +538,7 @@ async function conductItem(
     return "idle";
   }
   const { thread, conversations } = item;
-  const copilotWaits = advanceRounds(item, id, dryRun !== undefined);
+  const copilotWaits = advanceRounds(item, dryRun !== undefined, dryRun?.linkMap ?? linkMap ?? getOpenPrLinkMap);
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.

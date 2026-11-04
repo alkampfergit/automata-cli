@@ -14,7 +14,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getStorySource: () => ({ via: "none", state: "open", title: "", children: [] }),
 }));
 
-import { readWatch, writeWatch } from "../../src/conductor/watchStore.js";
+import { readWatch, writeRound, writeSetting, writeWatch } from "../../src/conductor/watchStore.js";
 import { pruneWatchList, runWatchAdd, runWatchRemove } from "../../src/commands/conductor.js";
 
 let dir: string;
@@ -94,6 +94,15 @@ describe("watch store", () => {
     writeConfigFile({ conductor: { watch: [7, 8] } });
     expect(readWatch({ migrate: false })).toEqual([7, 8]);
     expect(existsSync(watchFile())).toBe(false);
+  });
+
+  it("keeps the legacy watch entries when a setting or a round is the first write", () => {
+    writeConfigFile({ conductor: { watch: [7, 8] } });
+    writeSetting("copilot-review-rounds", null, 2);
+    expect(readWatch()).toEqual([7, 8]);
+    rmSync(watchFile());
+    writeRound(7, { requested: 1, headSha: "abc" });
+    expect(readWatch()).toEqual([7, 8]);
   });
 
   it("leaves no temporary file behind after a write", () => {

@@ -8,7 +8,7 @@ import {
 } from "../conductor/copilotRounds.js";
 import { COPILOT_ROUNDS_KEY, findSetting, resolveSetting } from "../conductor/settings.js";
 import { readRounds, readSettings, writeRound } from "../conductor/watchStore.js";
-import { getCopilotReviewPending, type PrSurface } from "../github/ghWorkService.js";
+import { getCopilotReviewPending, getPrSurface, type PrSurface } from "../github/ghWorkService.js";
 
 const ROUNDS_DEF = findSetting(COPILOT_ROUNDS_KEY);
 
@@ -19,14 +19,29 @@ export function roundsFor(prNumber: number, ownerIds: readonly number[]): number
   return typeof value === "number" ? value : 0;
 }
 
-/** The decision for one pull request. A pull request with rounds off costs no extra `gh` call. */
-export function copilotDecision(surface: PrSurface, ownerIds: readonly number[]): { decision: RoundDecision; rounds: number } {
-  const number = surface.pr.number;
+/**
+ * The decision for one pull request. A pull request with rounds off costs no extra `gh` call.
+ * The pending status is read first; when no review is pending the surface is read again, so a review that finished
+ * after the supplied surface was read cannot hide its threads. The returned surface is the one the decision used.
+ */
+export function copilotDecision(
+  supplied: PrSurface,
+  ownerIds: readonly number[],
+): { decision: RoundDecision; rounds: number; surface: PrSurface } {
+  const number = supplied.pr.number;
   const rounds = roundsFor(number, ownerIds);
-  const facts = surfaceFacts(surface);
-  const pending = rounds > 0 && facts.reviewable ? getCopilotReviewPending(number) : false;
+  let surface = supplied;
+  let facts = surfaceFacts(surface);
+  let pending = false;
+  if (rounds > 0 && facts.reviewable) {
+    pending = getCopilotReviewPending(number);
+    if (!pending) {
+      surface = getPrSurface(number);
+      facts = surfaceFacts(surface);
+    }
+  }
   const decision = decideCopilotRound({ rounds, record: readRounds()[String(number)], pending, ...facts });
-  return { decision, rounds };
+  return { decision, rounds, surface };
 }
 
 /** Whether the configured rounds allow the `conductor-ready` label. A failed read keeps the label as it is: it throws. */
@@ -39,9 +54,9 @@ export function copilotRoundsDone(surface: PrSurface, ownerIds: readonly number[
  * A failed request is logged and ends the rounds of that pull request; the conductor goes on without Copilot.
  * A dry run reports the request and records nothing.
  */
-export function advanceCopilotRounds(surface: PrSurface, ownerIds: readonly number[], dryRun: boolean): "wait" | "proceed" {
-  const number = surface.pr.number;
-  const { decision, rounds } = copilotDecision(surface, ownerIds);
+export function advanceCopilotRounds(supplied: PrSurface, ownerIds: readonly number[], dryRun: boolean): "wait" | "proceed" {
+  const number = supplied.pr.number;
+  const { decision, rounds, surface } = copilotDecision(supplied, ownerIds);
   if (decision.kind === "off") return "proceed";
   if (decision.kind === "wait") {
     process.stdout.write(`Conductor: PR #${String(number)}: ${describeRoundDecision(decision, rounds)}; waiting.\n`);
@@ -51,7 +66,7 @@ export function advanceCopilotRounds(surface: PrSurface, ownerIds: readonly numb
   const text = describeRoundDecision(decision, rounds);
   if (dryRun) {
     process.stdout.write(`Conductor: dry run, a tick would ask Copilot for a review of PR #${String(number)} (${text}).\n`);
-    return "proceed";
+    return "wait";
   }
   const headSha = surface.pr.headSha ?? null;
   try {
