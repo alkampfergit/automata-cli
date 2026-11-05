@@ -14,9 +14,9 @@ not publish anything to SonarCloud. It reads the rules from the public SonarClou
 ## Daily use
 
 ```bash
-npm run sonar:local                      # files in src/ that differ from origin/develop
+npm run sonar:local                      # files in src/ and scripts/ that differ from origin/develop
 npm run sonar:local -- --base <ref>      # compare with another ref
-npm run sonar:local -- --all             # every file in src/
+npm run sonar:local -- --all             # every file in src/ and scripts/
 npm run sonar:sync                       # download the quality profile again (needs network)
 ```
 
@@ -144,7 +144,7 @@ stays in `eslint.config.js` and is not changed. `scripts/sonar-local.sh` selects
 ## Shell scripts
 
 SonarCloud also analyses the shell scripts (`*.sh`), and SonarJS does not. `scripts/sonar-shell-check.mjs` checks every
-tracked `*.sh` file for the five shell rules that fire on this repository: `S7688` (use `[[` instead of `[`), `S131`
+`*.sh` file in the repository for the five shell rules that fire on this repository: `S7688` (use `[[` instead of `[`), `S131`
 (`case` without a `*)` branch), `S1066` (mergeable `if`), `S1192` (a literal used seven times or more) and `S7679` (a
 positional parameter used without a local variable). `npm run sonar:local` runs it on every call. On the `develop` branch
 before issue 181, it found the 123 shell findings that SonarCloud reported, at the same lines. It is a line-based
@@ -164,7 +164,7 @@ reports, at the same lines. It also reports eight findings that SonarCloud does 
   check does not compute them.
 - **Duplication.** `jscpd` counts tokens differently from Sonar. At 100 tokens it reported 2.05% where SonarCloud
   reported 0.0%. This repository uses 150 tokens (0.40%). Calibrate this value for every repository.
-- **Tests.** SonarCloud reports no rule finding in `tests/` for this repository, so the rules cover `src/` only. This
+- **Tests.** SonarCloud reports no rule finding in `tests/` for this repository, so the rules cover `src/` and `scripts/` only. This
   can be different in another repository.
 - **SonarJS layout.** The sync script reads the `master` branch of the SonarJS repository. If SonarJS moves its rule
   folders, a rule gets no `meta.ts`, and the script puts it in the `skipped` list without an error. Compare the number of
