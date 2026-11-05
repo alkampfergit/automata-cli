@@ -68,6 +68,15 @@ describe("hasConflictMarkers", () => {
 });
 
 describe("text", () => {
+  it("redacts a secret in the detail before it cuts the tail", () => {
+    const secret = "ghp_" + "a".repeat(36);
+    const text = blockedComment(pr(), "test-failed", `${"x".repeat(1480)}token=${secret}`);
+    expect(text).not.toContain(secret);
+  });
+  it("uses the marker size it is given", () => {
+    expect(hasConflictMarkers("<<< HEAD\n", 3)).toBe(true);
+    expect(hasConflictMarkers("<<< HEAD\n")).toBe(false);
+  });
   it("lists the files and the attempt in the prompt", () => {
     const text = buildConflictPrompt("Resolve.", pr(), ["a.txt", "b.txt"], 2, 3);
     expect(text).toContain("Resolve.");
@@ -98,6 +107,8 @@ describe("rebasePullRequests with a real git repository", () => {
   let resolver: (cwd: string) => void;
   let testResult: { ok: boolean; output: string };
   let tempDirs: string[];
+  let refreshed: OpenPr | null | undefined;
+  let cancelled: boolean;
   let previousCwd: string;
 
   function git(cwd: string, ...args: string[]): string {
@@ -140,7 +151,9 @@ describe("rebasePullRequests with a real git repository", () => {
       resolver(cwd);
       return Promise.resolve();
     },
-    runTest: () => testResult,
+    runTest: () => Promise.resolve(testResult),
+    refreshPr: (p) => (refreshed === undefined ? p : refreshed),
+    isCancelled: () => cancelled,
     notifyBlocked: (p, comment) => {
       notices.push({ number: p.number, comment });
     },
@@ -155,6 +168,8 @@ describe("rebasePullRequests with a real git repository", () => {
     remote = join(root, "remote.git");
     work = join(root, "work");
     tempDirs = [];
+    refreshed = undefined;
+    cancelled = false;
     notices = [];
     cleared = [];
     prompts = [];
@@ -310,6 +325,66 @@ describe("rebasePullRequests with a real git repository", () => {
     };
     const [outcome] = await rebasePullRequests([pr()], OPTIONS, racing);
     expect(outcome.status).toBe("failed");
+  });
+
+  it("does not push a pull request that was closed during the run", async () => {
+    branchFromDevelop("feature/a", "a.txt", "a\n");
+    advanceDevelop("other.txt", "other\n");
+    const tip = remoteSha("feature/a");
+    refreshed = null;
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "skipped", reason: "changed" });
+    expect(remoteSha("feature/a")).toBe(tip);
+  });
+
+  it("does not push a pull request that was retargeted during the run", async () => {
+    branchFromDevelop("feature/a", "a.txt", "a\n");
+    advanceDevelop("other.txt", "other\n");
+    refreshed = pr({ baseRefName: "release" });
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "skipped", reason: "changed" });
+  });
+
+  it("stops without a notice or a push when interrupted during the model run", async () => {
+    branchFromDevelop("feature/a", "shared.txt", "branch\n");
+    branchFromDevelop("feature/b", "b.txt", "b\n");
+    advanceDevelop("shared.txt", "develop\n");
+    const tip = remoteSha("feature/a");
+    const interrupted = deps();
+    interrupted.runModel = () => {
+      cancelled = true;
+      return Promise.reject(new Error("killed"));
+    };
+    const outcomes = await rebasePullRequests([pr(), pr({ number: 2, headRefName: "feature/b" })], OPTIONS, interrupted);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ status: "failed", detail: "interrupted" });
+    expect(notices).toEqual([]);
+    expect(remoteSha("feature/a")).toBe(tip);
+    expect(git(work, "worktree", "list")).not.toContain("automata-rebase-test");
+  });
+
+  it("does not move a local branch when rebase.updateRefs is on", async () => {
+    branchFromDevelop("feature/a", "a.txt", "a\n");
+    git(work, "branch", "local-copy", "feature/a");
+    git(work, "config", "rebase.updateRefs", "true");
+    advanceDevelop("other.txt", "other\n");
+    const before = git(work, "rev-parse", "local-copy").trim();
+    await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(git(work, "rev-parse", "local-copy").trim()).toBe(before);
+  });
+
+  it("honours a conflict-marker-size smaller than seven", async () => {
+    git(work, "checkout", "--quiet", "-b", "feature/a", "develop");
+    commitFile(work, ".gitattributes", "shared.txt conflict-marker-size=3\n", "attrs");
+    commitFile(work, "shared.txt", "branch\n", "branch");
+    git(work, "push", "--quiet", "origin", "feature/a");
+    git(work, "checkout", "--quiet", "develop");
+    advanceDevelop("shared.txt", "develop\n");
+    const tip = remoteSha("feature/a");
+    resolver = () => undefined;
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "blocked", reason: "markers-left" });
+    expect(remoteSha("feature/a")).toBe(tip);
   });
 
   it("isolates a failing pull request and honours --max-prs", async () => {

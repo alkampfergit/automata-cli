@@ -570,11 +570,12 @@ For each open pull request, in number order:
 
 ### When a pull request is blocked
 
-A pull request is **blocked** when the model leaves a conflict marker (`<<<<<<<` or `>>>>>>>`), the executor fails, the
+A pull request is **blocked** when the model leaves a conflict marker (`<<<<<<<` or `>>>>>>>`; the length that the `conflict-marker-size` attribute of the file sets, read before the model runs), the executor fails, the
 test command exits non-zero, `git.rebasePrs.maxAttempts` resolutions are spent, or git stops with no conflicted file.
 Automata then runs `git rebase --abort`, pushes nothing, adds the label `rebase-blocked` and posts one comment that names
 the reason. A pull request that already has the label gets no second comment. A later successful rebase removes the
-label. The comment is posted before the label, so a failed comment is retried on the next run.
+label. The comment is posted before the label, so a failed comment is retried on the next run. Secrets in the test
+output are masked before the comment is posted.
 
 One pull request that blocks or fails does not stop the others.
 
@@ -583,8 +584,14 @@ One pull request that blocks or fails does not stop the others.
 The command takes the `do-work` run lock for its run, so a `do-work` tick cannot start while it works. When `do-work`
 (or another `rebase-prs`) holds the lock, the command prints that and exits 0 without work. A lock that looks alive but
 is older than `doWork.lockStaleMinutes` exits 1, as `do-work` does. A value of `doWork.lockStaleMinutes` that is not a
-positive integer stops the command with exit 1. On `SIGINT` or `SIGTERM` the command stops the executor, releases the
-lock and exits 130; a temporary worktree can remain, and `git worktree prune` removes its record.
+positive integer stops the command with exit 1. On `SIGINT` or `SIGTERM` the command starts no further pull request,
+stops the executor and the test command, aborts the rebase, removes the worktree, then releases the lock and exits 130.
+If a child process cannot be confirmed gone, the lock stays and a temporary worktree can remain; `git worktree prune`
+removes its record.
+
+Before it pushes, the command reads the pull request again. A pull request that is now closed, a draft (unless
+included), not owned or retargeted is skipped (`changed`). The rebase runs with `rebase.updateRefs` off, so no other
+local branch moves. All `gh` calls are scoped to the repository of `origin`, whatever `GH_REPO` says.
 
 ### Configuration
 

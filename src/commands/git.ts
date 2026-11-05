@@ -36,7 +36,7 @@ import {
   DEFAULT_REBASE_PRS_PROMPT,
   readConfig,
 } from "../config/configStore.js";
-import { getAuthenticatedLogin } from "../github/ghWorkService.js";
+import { getAuthenticatedLogin, getRepoSlug } from "../github/ghWorkService.js";
 import { acquireRunLock, inspectRunLock } from "../run/runLock.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -617,11 +617,13 @@ Exits 0 while a do-work run holds the run lock. Exits 1 when a pull request was 
 
     const release = takeRunLock(dryRun, staleMinutes);
     if (release === null) return;
-    const onSignal = interruptRebase(release);
+    const interrupt = { requested: false };
+    const onSignal = interruptRebase(interrupt);
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
     try {
-      await runRebasePrs(config, { dryRun, only, maxPrs, owners, fetch: options.fetch });
+      await runRebasePrs(config, { dryRun, only, maxPrs, owners, fetch: options.fetch }, () => interrupt.requested);
+      if (interrupt.requested) process.exitCode = 130;
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`);
       process.exitCode = 1;
@@ -633,20 +635,20 @@ Exits 0 while a do-work run holds the run lock. Exits 1 when a pull request was 
   });
 
 /**
- * Stop the executor before releasing the run lock, as `do-work` does: a model that outlives
- * its parent would keep editing while the next tick takes the freed lock. The worktree is
- * removed by the `finally` blocks of the interrupted run only when the process ends normally,
- * so a signal leaves it for `git worktree prune`.
+ * Stop the executor and the test command, then let the run unwind, as `do-work` does: a child that
+ * outlives its parent would keep working while the next tick takes the freed lock. The flag stops
+ * any further pull request; the interrupted one aborts its rebase and removes its worktree on the
+ * way out, and the caller releases the run lock last. When a child cannot be confirmed gone, the
+ * lock stays in place and the process exits at once.
  */
-function interruptRebase(release: () => void): () => void {
-  let shuttingDown = false;
+function interruptRebase(interrupt: { requested: boolean }): () => void {
   return (): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
+    if (interrupt.requested) return;
+    interrupt.requested = true;
     process.stderr.write("\nInterrupted: stopping the executor before releasing the run lock…\n");
     void terminateTrackedChildren().then((allExited) => {
-      if (allExited) release();
-      else process.stderr.write("Warning: could not confirm the executor exited; leaving the run lock in place.\n");
+      if (allExited) return;
+      process.stderr.write("Warning: could not confirm the executor exited; leaving the run lock in place.\n");
       process.exit(130);
     });
   };
@@ -679,7 +681,14 @@ interface RebasePrsRun {
   fetch: boolean;
 }
 
-async function runRebasePrs(config: ReturnType<typeof readConfig>, run: RebasePrsRun): Promise<void> {
+async function runRebasePrs(
+  config: ReturnType<typeof readConfig>,
+  run: RebasePrsRun,
+  isCancelled: () => boolean,
+): Promise<void> {
+  // git uses origin; every gh call must name the same repository, whatever GH_REPO or gh's default says.
+  const slug = getRepoSlug();
+  process.env.GH_REPO = `${slug.owner}/${slug.repo}`;
   if (run.fetch) {
     const fetched = fetchOrigin();
     if (!fetched.ok) {
@@ -702,7 +711,7 @@ async function runRebasePrs(config: ReturnType<typeof readConfig>, run: RebasePr
       prompt: rebase.prompt ?? DEFAULT_REBASE_PRS_PROMPT,
       maxPrs: run.maxPrs,
     },
-    createRebaseDeps({ executor, model: doWork.models?.[executor], effort: doWork.effort?.[executor] }),
+    createRebaseDeps({ executor, model: doWork.models?.[executor], effort: doWork.effort?.[executor] }, isCancelled),
     (outcome) => process.stdout.write(`${describeOutcome(outcome)}\n`),
   );
   process.stdout.write(`${run.dryRun ? "Dry-run: " : ""}${String(outcomes.length)} pull request(s) examined.\n`);
