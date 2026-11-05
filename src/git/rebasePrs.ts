@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { redactSecrets } from "../run/runTranscript.js";
 import { REBASE_STRATEGY_ARGS } from "./gitService.js";
 
 /** The label a pull request carries while `git rebase-prs` waits for a person. */
@@ -16,7 +17,7 @@ export interface OpenPr {
   labels: string[];
 }
 
-export type SkipReason = "draft" | "fork" | "not-owned" | "ref-missing" | "up-to-date";
+export type SkipReason = "draft" | "fork" | "not-owned" | "ref-missing" | "up-to-date" | "changed";
 
 export type BlockReason = "attempt-limit" | "markers-left" | "executor-failed" | "test-failed" | "rebase-failed";
 
@@ -43,7 +44,12 @@ export interface RebaseDeps {
   readText(path: string): string;
   /** Runs the executor with `prompt` inside `cwd`. Rejects when the executor fails. */
   runModel(prompt: string, cwd: string): Promise<void>;
-  runTest(command: string, cwd: string): { ok: boolean; output: string };
+  /** Runs the test command in `cwd`. The child is tracked, so a shutdown can stop it. */
+  runTest(command: string, cwd: string): Promise<{ ok: boolean; output: string }>;
+  /** The current state of the pull request, or null when it is no longer open. */
+  refreshPr(pr: OpenPr): OpenPr | null;
+  /** True once a shutdown signal has arrived: no further model run, test or push may start. */
+  isCancelled(): boolean;
   /** Adds the `rebase-blocked` label and posts the comment. May throw. */
   notifyBlocked(pr: OpenPr, comment: string): void;
   /** Takes the label off after a successful rebase. May throw. */
@@ -76,9 +82,18 @@ export function decideSkip(pr: OpenPr, options: Pick<RebaseOptions, "includeDraf
  * Only the opening and closing markers count. A bare `=======` line is a valid
  * Markdown heading underline, so matching it would block a correct resolution.
  */
-export function hasConflictMarkers(text: string): boolean {
-  // `conflict-marker-size` in .gitattributes can make Git write more than seven characters.
-  return /^(<{7,}|>{7,})( |$)/m.test(text);
+export function hasConflictMarkers(text: string, size = DEFAULT_MARKER_SIZE): boolean {
+  // `conflict-marker-size` in .gitattributes makes Git write that many characters, more or fewer than seven.
+  return new RegExp(`^(<{${String(size)},}|>{${String(size)},})( |$)`, "m").test(text);
+}
+
+const DEFAULT_MARKER_SIZE = 7;
+
+/** The marker size Git uses for `file`. Read before the model runs: the model must not be able to change it. */
+function markerSize(deps: RebaseDeps, worktree: string, file: string): number {
+  const value = deps.git(["check-attr", "-z", "conflict-marker-size", "--", file], worktree).stdout.split("\0")[2];
+  const size = Number.parseInt(value ?? "", 10);
+  return Number.isSafeInteger(size) && size > 0 && String(size) === value ? size : DEFAULT_MARKER_SIZE;
 }
 
 export function buildConflictPrompt(prompt: string, pr: OpenPr, files: string[], attempt: number, maxAttempts: number): string {
@@ -110,7 +125,8 @@ export function blockedComment(pr: OpenPr, reason: BlockReason, detail: string):
     `automata could not rebase \`${pr.headRefName}\` onto \`${pr.baseRefName}\` on its own. ${describeBlockReason(reason)}`,
     "The branch is unchanged. A person must rebase it.",
   ];
-  const trimmed = detail.trim();
+  // Redact the whole detail first: a cut made before it could hide the start of a secret from the redactor.
+  const trimmed = redactSecrets(detail).trim();
   if (trimmed.length > 0) lines.push("", "```", trimmed.slice(-1500), "```");
   return lines.join("\n");
 }
@@ -132,6 +148,9 @@ function readResolved(deps: RebaseDeps, path: string): string | null {
     throw err;
   }
 }
+
+/** `rebase.updateRefs` would let a detached worktree move other local branches that point at the replayed commits. */
+const NO_UPDATE_REFS = ["-c", "rebase.updateRefs=false"];
 
 type RebaseResult =
   | { ok: true; conflictsResolved: number }
@@ -156,21 +175,22 @@ async function rebaseWithModel(
     const files = conflictedFiles(deps, worktree);
     if (files.length === 0) return abort("rebase-failed", [result.stdout, result.stderr].join("\n"));
     if (attempts >= options.maxAttempts) return abort("attempt-limit", files.join("\n"));
+    const sizes = files.map((file) => markerSize(deps, worktree, file));
     try {
       await deps.runModel(buildConflictPrompt(options.prompt, pr, files, attempts + 1, options.maxAttempts), worktree);
     } catch (err) {
       return abort("executor-failed", (err as Error).message);
     }
-    const remaining = files.filter((file) => {
+    const remaining = files.filter((file, index) => {
       const text = readResolved(deps, join(worktree, file));
-      return text !== null && hasConflictMarkers(text);
+      return text !== null && hasConflictMarkers(text, sizes[index]);
     });
     if (remaining.length > 0) return abort("markers-left", remaining.join("\n"));
     deps.git(["add", "-A", "--", ...files], worktree);
-    return resolveFrom(deps.git(["-c", "core.editor=true", "rebase", "--continue"], worktree), attempts + 1);
+    return resolveFrom(deps.git([...NO_UPDATE_REFS, "-c", "core.editor=true", "rebase", "--continue"], worktree), attempts + 1);
   };
 
-  return resolveFrom(deps.git([...REBASE_STRATEGY_ARGS, base], worktree), 0);
+  return resolveFrom(deps.git([...NO_UPDATE_REFS, ...REBASE_STRATEGY_ARGS, base], worktree), 0);
 }
 
 function block(pr: OpenPr, reason: BlockReason, detail: string, deps: RebaseDeps): PrOutcome {
@@ -181,6 +201,21 @@ function block(pr: OpenPr, reason: BlockReason, detail: string, deps: RebaseDeps
   } catch (err) {
     return { pr, status: "blocked", reason, detail, notifyError: (err as Error).message };
   }
+}
+
+function clearBlockedLabel(pr: OpenPr, deps: RebaseDeps): void {
+  if (!pr.labels.includes(REBASE_BLOCKED_LABEL)) return;
+  try {
+    deps.clearBlocked(pr);
+  } catch {
+    // The branch is already pushed; a stale label is cosmetic.
+  }
+}
+
+/** Is the pull request closed, no longer eligible or retargeted since it was listed? */
+function changedSince(pr: OpenPr, options: RebaseOptions, deps: RebaseDeps): boolean {
+  const current = deps.refreshPr(pr);
+  return current === null || decideSkip(current, options) !== null || current.baseRefName !== pr.baseRefName;
 }
 
 /** Rebases one pull request. Never throws for a git or executor failure; the outcome says what happened. */
@@ -199,25 +234,24 @@ export async function rebaseOne(pr: OpenPr, options: RebaseOptions, deps: Rebase
     if (!added.ok) return { pr, status: "failed", detail: added.stderr.trim() };
     try {
       const rebased = await rebaseWithModel(pr, base, dir, options, deps);
+      if (deps.isCancelled()) return { pr, status: "failed", detail: "interrupted" };
       if (!rebased.ok) return block(pr, rebased.reason, rebased.detail, deps);
 
       if (options.testCommand !== undefined) {
-        const tested = deps.runTest(options.testCommand, dir);
+        const tested = await deps.runTest(options.testCommand, dir);
+        if (deps.isCancelled()) return { pr, status: "failed", detail: "interrupted" };
         if (!tested.ok) return block(pr, "test-failed", tested.output, deps);
       }
+
+      // The model and the tests can run for minutes; the pull request may have been closed or retargeted meanwhile.
+      if (changedSince(pr, options, deps)) return { pr, status: "skipped", reason: "changed" };
 
       const pushed = deps.git(
         ["push", `--force-with-lease=refs/heads/${pr.headRefName}:${headSha}`, "origin", `HEAD:refs/heads/${pr.headRefName}`],
         dir,
       );
       if (!pushed.ok) return { pr, status: "failed", detail: pushed.stderr.trim() };
-      if (pr.labels.includes(REBASE_BLOCKED_LABEL)) {
-        try {
-          deps.clearBlocked(pr);
-        } catch {
-          // The branch is already pushed; a stale label is cosmetic.
-        }
-      }
+      clearBlockedLabel(pr, deps);
       return { pr, status: "rebased", conflictsResolved: rebased.conflictsResolved };
     } finally {
       deps.git(["worktree", "remove", "--force", dir]);
@@ -250,7 +284,7 @@ export async function rebasePullRequests(
 
   // Recursion, not a loop: the pull requests are handled one after the other, never in parallel.
   const next = async (index: number, needed: number, done: PrOutcome[]): Promise<PrOutcome[]> => {
-    if (index >= prs.length || (options.maxPrs > 0 && needed >= options.maxPrs)) return done;
+    if (deps.isCancelled() || index >= prs.length || (options.maxPrs > 0 && needed >= options.maxPrs)) return done;
     const outcome = await handle(prs[index]);
     onOutcome(outcome);
     return next(index + 1, outcome.status === "skipped" ? needed : needed + 1, [...done, outcome]);

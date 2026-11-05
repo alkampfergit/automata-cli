@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { trackChild, untrackChild } from "../cli/childRegistry.js";
 import { resolveCommand } from "../cli/spawnUtils.js";
 import { runClaude } from "../claude/claudeService.js";
 import { runCodex } from "../codex/codexService.js";
@@ -60,6 +61,36 @@ export function listOpenPrs(only?: number): OpenPr[] {
   return raw.map(toOpenPr).sort((a, b) => a.number - b.number);
 }
 
+/** The current state of one pull request, or null when it is no longer open. */
+export function refreshOpenPr(pr: OpenPr): OpenPr | null {
+  const raw = JSON.parse(gh(["pr", "view", String(pr.number), "--json", PR_FIELDS])) as RawPr;
+  return raw.state === "OPEN" ? toOpenPr(raw) : null;
+}
+
+const TEST_OUTPUT_LIMIT = 200_000;
+
+/** Runs the test command asynchronously and tracked, so a shutdown signal can stop it and the event loop stays free. */
+function runTestCommand(command: string, cwd: string): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, { shell: true, cwd, stdio: ["ignore", "pipe", "pipe"] });
+    trackChild(child);
+    let output = "";
+    const collect = (chunk: Buffer): void => {
+      output = (output + chunk.toString("utf8")).slice(-TEST_OUTPUT_LIMIT);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.on("error", (err) => {
+      untrackChild(child);
+      resolve({ ok: false, output: `${output}${err.message}` });
+    });
+    child.on("close", (code) => {
+      untrackChild(child);
+      resolve({ ok: code === 0, output });
+    });
+  });
+}
+
 export function fetchOrigin(): GitResult {
   return runGit(["fetch", "origin"]);
 }
@@ -75,7 +106,7 @@ export interface ExecutorSettings {
   effort?: string;
 }
 
-export function createRebaseDeps(settings: ExecutorSettings): RebaseDeps {
+export function createRebaseDeps(settings: ExecutorSettings, isCancelled: () => boolean = () => false): RebaseDeps {
   return {
     git: runGit,
     makeTempDir: () => mkdtempSync(join(tmpdir(), "automata-rebase-")),
@@ -85,10 +116,9 @@ export function createRebaseDeps(settings: ExecutorSettings): RebaseDeps {
       settings.executor === "codex"
         ? runCodex(prompt, { model: settings.model, effort: settings.effort, cwd, editOnly: true })
         : runClaude(prompt, { model: settings.model, effort: settings.effort, cwd, editOnly: true }),
-    runTest: (command, cwd) => {
-      const result = spawnSync(command, { shell: true, cwd, encoding: "utf8" });
-      return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
-    },
+    runTest: runTestCommand,
+    refreshPr: refreshOpenPr,
+    isCancelled,
     notifyBlocked: (pr, comment) => {
       // The label is the "already told" signal, so it goes last: a failed comment leaves no label and the next run retries.
       gh(["pr", "comment", String(pr.number), "--body-file", "-"], comment);
