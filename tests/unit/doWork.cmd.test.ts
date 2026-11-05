@@ -2126,6 +2126,17 @@ describe("do-work invalid tool directive", () => {
     expect(stdout).not.toMatch(/deferred/);
   });
 
+  it("does not count a refusal against the run cap in --dry-run", async () => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) =>
+      n === 42 ? withDirective(n, "tool:codexx") : needsWork(n),
+    );
+    await runDoWork(["--dry-run", "--max-runs", "1"]);
+    expect(stdout).toContain("Executor     refused —");
+    expect(stdout).toContain("#43");
+    expect(stdout).not.toMatch(/deferred by the run cap/);
+  });
+
   it("shows the refusal in --dry-run without a command", async () => {
     await runDoWork(["--dry-run"]);
     expect(stdout).toContain("Executor     refused —");

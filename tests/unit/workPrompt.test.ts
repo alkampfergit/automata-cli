@@ -317,6 +317,18 @@ describe("composePromptWithinBudget", () => {
     expect(one).toMatchObject({ ok: true, omittedMessages: result.omittedMessages });
   });
 
+  it("never returns a prompt over the budget, and the size scan agrees with the rendered prompt", () => {
+    const item = longItem(12);
+    const full = estimatePromptTokens(composePrompt({ item, ...INPUT_BASE }));
+    for (let budget = full; budget > 500; budget -= 337) {
+      const result = composePromptWithinBudget({ item, ...INPUT_BASE }, budget);
+      if (result.ok) {
+        expect(estimatePromptTokens(result.prompt)).toBeLessThanOrEqual(budget);
+        expect(result.estimatedTokens).toBe(estimatePromptTokens(result.prompt));
+      }
+    }
+  });
+
   it("counts bytes, so multi-byte text uses more of the budget", () => {
     expect(estimatePromptTokens("a".repeat(400))).toBe(100);
     expect(estimatePromptTokens("é".repeat(400))).toBe(200);

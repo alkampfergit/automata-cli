@@ -3428,21 +3428,31 @@ function reportDryRun(
   options: DoWorkOptions,
   hygiene: HygieneReport,
 ): void {
-  const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-  // An unrecognised `tool:` is described as the refusal a real tick would
-  // perform, rather than as a command: a dry run must show the typo, not a
-  // plausible command line that would never be launched.
-  const planned: DryRunEntry[] = describable.map((item) => {
+  // A refusal runs no executor, so a real tick spends no run slot on it. Only runnable
+  // plans count toward the cap, and planning stops once the cap is reached.
+  const planned: DryRunEntry[] = [];
+  let runnable = 0;
+  let described = 0;
+  for (const item of items) {
+    if (settings.maxRuns > 0 && runnable >= settings.maxRuns) break;
+    described++;
+    // An unrecognised `tool:` is described as the refusal a real tick would
+    // perform, rather than as a command: a dry run must show the typo, not a
+    // plausible command line that would never be launched.
     const resolved = resolveItemExecution(item, settings);
     if (!resolved.ok) {
-      return { kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) };
+      planned.push({ kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) });
+      continue;
     }
     const execution = toExecution(resolved);
     const run = planRun(item, settings, execution);
-    return "refusal" in run
-      ? { kind: "refused", item, refusal: run.refusal }
-      : { kind: "run", item, execution, run };
-  });
+    if ("refusal" in run) {
+      planned.push({ kind: "refused", item, refusal: run.refusal });
+    } else {
+      planned.push({ kind: "run", item, execution, run });
+      runnable++;
+    }
+  }
 
   if (options.json) {
     out(
@@ -3469,7 +3479,7 @@ function reportDryRun(
           : describePlannedRun(entry.item, settings, entry.run, entry.execution)),
     );
   }
-  const deferred = items.length - describable.length;
+  const deferred = items.length - described;
   if (deferred > 0) {
     out(`\n(${String(deferred)} further item(s) deferred by the run cap.)\n`);
   }
