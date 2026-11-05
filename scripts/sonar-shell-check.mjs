@@ -55,9 +55,8 @@ function updateMultiline(state, raw, n) {
 }
 
 function checkBrackets(code, n, add) {
-  for (const _match of code.matchAll(COMMAND_START)) {
-    add('shell:S7688', n, "Use '[[' instead of '[' for conditional tests.");
-  }
+  const count = [...code.matchAll(COMMAND_START)].length;
+  for (let i = 0; i < count; i++) add('shell:S7688', n, "Use '[[' instead of '[' for conditional tests.");
 }
 
 function collectLiterals(state, raw, n) {
@@ -75,9 +74,8 @@ function checkPositionals(state, raw, n, add) {
   if (/^\s*\w+\s*\(\)\s*\{/.test(raw) || /^\s*function\s+\w+/.test(raw)) state.inFunction = !oneLiner;
   const assigned = /^\s*local\s+\w+=/.test(raw) || /^\s*\w+=["']?\$[1-9]/.test(raw);
   if ((state.inFunction || oneLiner) && !assigned) {
-    for (const _match of raw.replace(/\becho\s+"[^"]*"/g, '').matchAll(/\$[1-9]/g)) {
-      add('shell:S7679', n, 'Assign this positional parameter to a local variable.');
-    }
+    const count = [...raw.replace(/\becho\s+"[^"]*"/g, '').matchAll(/\$[1-9]/g)].length;
+    for (let i = 0; i < count; i++) add('shell:S7679', n, 'Assign this positional parameter to a local variable.');
   }
   if (raw.startsWith('}')) state.inFunction = false;
 }
