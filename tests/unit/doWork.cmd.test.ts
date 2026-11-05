@@ -2154,6 +2154,81 @@ describe("do-work invalid tool directive", () => {
   });
 });
 
+/* ── prompt budget ──────────────────────────────────────────────────────── */
+
+describe("do-work prompt budget", () => {
+  const BIG = "x".repeat(40_000);
+
+  /** A long old discussion, an agent answer, then a short new trigger from alice. */
+  function longHistory(number: number): IssueSurface {
+    return {
+      ...needsWork(number),
+      messages: [
+        { kind: "issue-body", author: "alice", body: BIG, createdAt: "2026-01-01T00:00:00Z" },
+        message("automata-bot", "2026-01-02T00:00:00Z"),
+        { kind: "issue-comment", author: "alice", body: "short trigger", createdAt: "2026-01-03T00:00:00Z" },
+      ],
+    };
+  }
+
+  /** The new trigger itself is too large, so no amount of trimming makes it fit. */
+  function hugeTrigger(number: number): IssueSurface {
+    return {
+      ...needsWork(number),
+      messages: [{ kind: "issue-body", author: "alice", body: BIG, createdAt: "2026-01-01T00:00:00Z" }],
+    };
+  }
+
+  beforeEach(() => {
+    gh.listCandidateIssues.mockReturnValue([issue(42), issue(43)]);
+    gh.getIssueSurface.mockImplementation((n: number) => (n === 42 ? hugeTrigger(n) : needsWork(n)));
+  });
+
+  it("refuses without running either executor and tells the operator to comment again", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { maxPromptTokens: 10 } });
+    await runDoWork(["--max-runs", "1"]);
+    const refused = gh.updateMarker.mock.calls.find((call) => /over budget/.test(call[1] as string));
+    expect(refused).toBeDefined();
+    const body = refused?.[1] as string;
+    expect(body).toMatch(/No run was started/);
+    expect(body).toMatch(/doWork\.maxPromptTokens/);
+    expect(body).toMatch(/post a new comment here/);
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+    expect(stdout).toMatch(/#42 issue-discuss failed/);
+  });
+
+  it("lets the next item use the run slot a refusal did not spend", async () => {
+    // Only #42 is over budget: its new message cannot be trimmed, while #43 is small.
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { maxPromptTokens: 1000 } });
+    gh.getIssueSurface.mockImplementation((n: number) => (n === 42 ? hugeTrigger(n) : needsWork(n)));
+    await runDoWork(["--max-runs", "1"]);
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    expect(mockInvokeClaude.mock.calls[0][0] as string).toContain("Issue #43");
+  });
+
+  it("reports the refusal in --dry-run and still plans the next item", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { maxPromptTokens: 1000 } });
+    gh.getIssueSurface.mockImplementation((n: number) => (n === 42 ? hugeTrigger(n) : needsWork(n)));
+    await runDoWork(["--dry-run", "--max-runs", "1"]);
+    expect(stdout).toMatch(/Executor {5}refused — the prompt is over budget/);
+    expect(stdout).toContain("#43");
+    expect(mockInvokeClaude).not.toHaveBeenCalled();
+  });
+
+  it("trims the oldest history and hands the executor the retained trigger", async () => {
+    mockReadConfig.mockReturnValue({ ...CONFIG, doWork: { maxPromptTokens: 3000 } });
+    gh.listCandidateIssues.mockReturnValue([issue(42)]);
+    gh.getIssueSurface.mockImplementation((n: number) => longHistory(n));
+    await runDoWork();
+    expect(mockInvokeClaude).toHaveBeenCalledTimes(1);
+    const prompt = mockInvokeClaude.mock.calls[0][0] as string;
+    expect(prompt).toContain("short trigger");
+    expect(prompt).not.toContain(BIG);
+    expect(prompt).toMatch(/older message\(s\) from .* omitted to fit the prompt budget/);
+    expect(Math.ceil(Buffer.byteLength(prompt, "utf8") / 4)).toBeLessThanOrEqual(3000);
+  });
+});
+
 /* ── pre-flight repository hygiene ──────────────────────────────────────── */
 
 describe("do-work pre-flight repository hygiene", () => {
