@@ -10,6 +10,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-05
+
 ### Added
 
 - `do-work` keeps its prompt within a token budget. When the estimated size is above `doWork.maxPromptTokens`
