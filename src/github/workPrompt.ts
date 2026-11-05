@@ -86,23 +86,35 @@ export function composePromptWithinBudget(input: PromptInput, maxPromptTokens: n
     return { ok: true, prompt: full, omittedMessages: 0, estimatedTokens: fullTokens };
   }
 
-  const droppable = [...input.item.issueAnalysis.messages, ...(input.item.prAnalysis?.messages ?? [])]
-    .filter((message) => !message.isNew)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const surfaces: Surface[] = [];
+  if (input.item.issue) surfaces.push(newSurface(input.item.issueAnalysis.messages));
+  if (input.item.prAnalysis) surfaces.push(newSurface(input.item.prAnalysis.messages));
+  const droppable = surfaces
+    .flatMap((surface, surfaceIndex) =>
+      surface.messages.map((message, index) => ({ message, surfaceIndex, index })),
+    )
+    .filter(({ message }) => !message.isNew)
+    .sort((a, b) => a.message.createdAt.localeCompare(b.message.createdAt));
 
   // Dropping more usually shortens the prompt, but not always: the first drop on a
   // surface adds that surface's omission marker, which can outweigh a short message. A
-  // bisection would be wrong there, so the smallest fitting count is found by a scan.
-  let smallest = Number.POSITIVE_INFINITY;
+  // bisection would be wrong there, so the smallest fitting count is found by a scan. The
+  // scan tracks byte sizes per surface instead of rendering each candidate, so it costs
+  // one pass over the messages; only the chosen count is rendered.
+  const fullBytes = Buffer.byteLength(full, "utf8");
+  const fixedBytes = fullBytes - surfaces.reduce((sum, surface) => sum + sectionBytes(surface), 0);
+  let smallest = fullBytes;
   for (let count = 1; count <= droppable.length; count++) {
-    const prompt = render(input, new Set(droppable.slice(0, count)));
-    const tokens = estimatePromptTokens(prompt);
-    if (tokens <= maxPromptTokens) {
-      return { ok: true, prompt, omittedMessages: count, estimatedTokens: tokens };
+    const { surfaceIndex, index } = droppable[count - 1];
+    dropFrom(surfaces[surfaceIndex], index);
+    const bytes = fixedBytes + surfaces.reduce((sum, each) => sum + sectionBytes(each), 0);
+    smallest = Math.min(smallest, bytes);
+    if (Math.ceil(bytes / BYTES_PER_TOKEN) <= maxPromptTokens) {
+      const prompt = render(input, new Set(droppable.slice(0, count).map((entry) => entry.message)));
+      return { ok: true, prompt, omittedMessages: count, estimatedTokens: estimatePromptTokens(prompt) };
     }
-    smallest = Math.min(smallest, tokens);
   }
-  const needed = Math.min(smallest, fullTokens);
+  const needed = Math.ceil(smallest / BYTES_PER_TOKEN);
   return {
     ok: false,
     estimatedTokens: needed,
@@ -113,6 +125,59 @@ export function composePromptWithinBudget(input: PromptInput, maxPromptTokens: n
   };
 }
 
+/** The size state of one conversation section while messages are dropped from it. */
+interface Surface {
+  messages: AnalyzedMessage[];
+  /** Byte length of each message as `formatMessages` renders it. */
+  formatted: number[];
+  keptCount: number;
+  keptBytes: number;
+  omittedCount: number;
+  firstOmitted: number;
+  lastOmitted: number;
+}
+
+function newSurface(messages: AnalyzedMessage[]): Surface {
+  const formatted = messages.map((message) => Buffer.byteLength(formatMessages([message]), "utf8"));
+  return {
+    messages,
+    formatted,
+    keptCount: messages.length,
+    keptBytes: formatted.reduce((sum, bytes) => sum + bytes, 0),
+    omittedCount: 0,
+    firstOmitted: Number.POSITIVE_INFINITY,
+    lastOmitted: -1,
+  };
+}
+
+function dropFrom(surface: Surface, index: number): void {
+  surface.keptBytes -= surface.formatted[index];
+  surface.keptCount--;
+  surface.omittedCount++;
+  surface.firstOmitted = Math.min(surface.firstOmitted, index);
+  surface.lastOmitted = Math.max(surface.lastOmitted, index);
+}
+
+/** Byte length of the section `formatConversation` renders for the surface's current state. */
+function sectionBytes(surface: Surface): number {
+  // Messages are joined by a blank line, so `keptCount` messages carry `keptCount - 1` separators.
+  const kept = surface.keptCount > 0 ? surface.keptBytes + 2 * (surface.keptCount - 1) : 0;
+  if (surface.omittedCount === 0) return kept;
+  const marker = Buffer.byteLength(
+    omissionMarker(
+      surface.omittedCount,
+      surface.messages[surface.firstOmitted].createdAt,
+      surface.messages[surface.lastOmitted].createdAt,
+    ),
+    "utf8",
+  );
+  return kept > 0 ? marker + 2 + kept : marker;
+}
+
+function omissionMarker(count: number, from: string, to: string): string {
+  return `[${String(count)} older message(s) from ${from} to ${to} omitted to fit the prompt budget]`;
+}
+
 /** A conversation section with the dropped messages replaced by one marker line. */
 function formatConversation(messages: AnalyzedMessage[], dropped: Set<AnalyzedMessage>): string {
   const omitted = messages.filter((message) => dropped.has(message));
@@ -120,7 +185,7 @@ function formatConversation(messages: AnalyzedMessage[], dropped: Set<AnalyzedMe
   if (omitted.length === 0) return kept;
   const first = omitted[0].createdAt;
   const last = omitted.at(-1)?.createdAt ?? first;
-  const marker = `[${String(omitted.length)} older message(s) from ${first} to ${last} omitted to fit the prompt budget]`;
+  const marker = omissionMarker(omitted.length, first, last);
   return kept.length > 0 ? `${marker}\n\n${kept}` : marker;
 }
 
