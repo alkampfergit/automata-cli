@@ -73,7 +73,7 @@ import { settingsHelp } from "../conductor/settings.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
-import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
+import { readStories, readWatch, updateWatchList, writeStories } from "../conductor/watchStore.js";
 import type { StoryChild } from "../conductor/story.js";
 import { checkStories, conductStories, listStoryLines, storyCovered, type ChildReply, type ChildTurn } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
@@ -91,10 +91,7 @@ function fail(message: string): number {
  * snapshot taken earlier in the command (the network calls in between are slow).
  */
 function updateWatch(change: (current: number[]) => number[]): void {
-  const current = readWatch();
-  const next = change(current);
-  if (next.length === current.length && next.every((id, i) => id === current[i])) return;
-  writeWatch(next);
+  updateWatchList(change);
 }
 
 function describe(target: WatchTarget): string {
@@ -488,19 +485,35 @@ function issueOwnersOf(pr: number, linkMap: () => OpenPrLinkMap): number[] {
 }
 
 /**
- * Ask Copilot for the next review round of each pull request of the item, where its settings say so. Returns true when
- * a review is pending, so the item gets no ordinary reply this tick. A failed read is a warning and does not wait.
+ * Ask Copilot for the next review round of each pull request of the item, where its settings say so. `waits` is true
+ * when a review is pending or its status cannot be read, so the item gets no ordinary reply this tick; the next tick
+ * tries again. `item` is read again from the surfaces the rounds used, so a review that finished meanwhile reaches the
+ * reply decision and the prompt.
  */
-function advanceRounds(item: WatchedItem, dryRun: boolean, linkMap: () => OpenPrLinkMap): boolean {
+function advanceRounds(item: WatchedItem, dryRun: boolean, linkMap: () => OpenPrLinkMap): { waits: boolean; item: WatchedItem } {
   let waits = false;
-  for (const pr of item.thread.prs) {
+  let changed = false;
+  const prs = item.thread.prs.map((pr) => {
     try {
-      if (advanceCopilotRounds(pr.surface, issueOwnersOf(pr.surface.pr.number, linkMap), dryRun) === "wait") waits = true;
+      const result = advanceCopilotRounds(pr.surface, issueOwnersOf(pr.surface.pr.number, linkMap), dryRun);
+      if (result.outcome === "wait") waits = true;
+      if (result.surface === pr.surface) return pr;
+      changed = true;
+      return { ...pr, surface: result.surface };
     } catch (err) {
       process.stderr.write(`Warning: could not check the Copilot review rounds of #${String(pr.surface.pr.number)}: ${(err as Error).message}\n`);
+      waits = true;
+      return pr;
     }
-  }
-  return waits;
+  });
+  return { waits, item: changed ? withPrs(item, prs) : item };
+}
+
+/** The item with its pull requests replaced (same order), and the conversations built again from them. */
+function withPrs(item: WatchedItem, prs: ThreadPr[]): WatchedItem {
+  const prConversations = prs.map((pr) => prConversation(pr.surface, pr.checks));
+  if (item.thread.kind === "pr") return { ...item, thread: { kind: "pr", prs: [prs[0] ?? item.thread.prs[0]] }, conversations: prConversations };
+  return { ...item, thread: { ...item.thread, prs }, conversations: [issueConversation(item.thread.issue), ...prConversations] };
 }
 
 /** A Copilot, rebase or CI-fix turn starts no run while the agent works; the line says so. */
@@ -537,8 +550,10 @@ async function conductItem(
     process.stderr.write(`Warning: could not read ${label}, skipping it this tick: ${(err as Error).message}\n`);
     return "idle";
   }
+  const advanced = advanceRounds(item, dryRun !== undefined, dryRun?.linkMap ?? linkMap ?? getOpenPrLinkMap);
+  const copilotWaits = advanced.waits;
+  item = advanced.item;
   const { thread, conversations } = item;
-  const copilotWaits = advanceRounds(item, dryRun !== undefined, dryRun?.linkMap ?? linkMap ?? getOpenPrLinkMap);
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.

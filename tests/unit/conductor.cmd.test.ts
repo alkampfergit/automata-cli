@@ -48,6 +48,10 @@ vi.mock("../../src/config/configStore.js", async (importOriginal) => {
 vi.mock("../../src/conductor/watchStore.js", () => ({
   readWatch: () => watchState,
   writeWatch: (list: number[]) => mockWriteWatch(list),
+  updateWatchList: (change: (current: number[]) => number[]) => {
+    const next = change(watchState);
+    if (next.length !== watchState.length || next.some((id, i) => id !== watchState[i])) mockWriteWatch(next);
+  },
   readStories: () => storyState,
   writeStories: (list: number[]) => {
     storyState = list;
@@ -1361,6 +1365,38 @@ describe("conductor Copilot review rounds", () => {
     await run();
     expect(reads).toBeGreaterThan(1);
     expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  const spokenLast = [
+    { kind: "pr-comment", author: "alice", body: "go", createdAt: "2026-10-01T09:00:00Z" },
+    { kind: "pr-comment", author: "bot", body: "question?", createdAt: "2026-10-01T10:00:00Z" },
+  ];
+
+  it("holds an ordinary reply when the review status cannot be read, and retries next tick", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    mockPrSurface.mockImplementation((id: number) => ({ ...prSurface(id), messages: spokenLast }));
+    mockPending.mockImplementation(() => {
+      throw new Error("network");
+    });
+    expect(await run()).toBe(0);
+    expect(stderr).toMatch(/could not check the Copilot review rounds of #50: network/);
+    expect(stdout).toMatch(/a Copilot review is pending; waiting/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("builds the prompt from the surface read after the review finished", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    const open = { id: "t1", isResolved: false, path: "src/a.ts", line: 3, comments: [{ author: "copilot-pull-request-reviewer", body: "FRESH-COMMENT" }] };
+    let reads = 0;
+    mockPrSurface.mockImplementation((id: number) => ({ ...prSurface(id, {}, [], ++reads === 1 ? [] : [open]), messages: spokenLast }));
+    mockRunClaude.mockImplementation(printedReply);
+    await run();
+    const [prompt] = mockRunClaude.mock.calls[0] as [string];
+    expect(prompt).toContain("FRESH-COMMENT");
   });
 
   it("a dry run reports the request and records nothing", async () => {

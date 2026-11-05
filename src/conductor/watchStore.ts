@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readRawConfig } from "../config/configStore.js";
 import { WATCH_RELATIVE_PATH } from "../run/runLock.js";
@@ -14,6 +14,53 @@ import type { RoundRecord } from "./copilotRounds.js";
  */
 function watchPath(): string {
   return join(process.cwd(), WATCH_RELATIVE_PATH);
+}
+
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 30_000;
+const LOCK_POLL_MS = 20;
+let lockDepth = 0;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Remove a lock directory whose holder died: it is older than the stale limit. */
+function removeStaleLock(lock: string): void {
+  try {
+    if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
+  } catch {
+    // The holder released it between the check and the removal.
+  }
+}
+
+/**
+ * Run a read-modify-write of the state file while holding a lock shared by every writer (`config`, `add`, `remove`,
+ * the prune and the rounds), so no writer replaces another's update with an older snapshot. Re-entrant in a process.
+ */
+export function withStateLock<T>(action: () => T): T {
+  if (lockDepth > 0) return action();
+  const lock = `${watchPath()}.lock`;
+  mkdirSync(dirname(lock), { recursive: true });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      removeStaleLock(lock);
+      if (Date.now() > deadline) throw new Error(`could not lock ${WATCH_RELATIVE_PATH}: another command holds it`, { cause: err });
+      sleepSync(LOCK_POLL_MS);
+    }
+  }
+  lockDepth++;
+  try {
+    return action();
+  } finally {
+    lockDepth--;
+    rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 interface WatchState {
@@ -93,7 +140,17 @@ function readFileState(): WatchState | null {
 
 /** Writes the watch list and keeps every other section. */
 export function writeWatch(list: number[]): void {
-  writeState({ ...(readFileState() ?? emptyState()), watch: list });
+  withStateLock(() => writeState({ ...(readFileState() ?? emptyState()), watch: list }));
+}
+
+/** Change the watch list as it is on disk right now, under the state lock. Writes nothing when it is unchanged. */
+export function updateWatchList(change: (current: number[]) => number[]): void {
+  withStateLock(() => {
+    const current = readWatch();
+    const next = change(current);
+    if (next.length === current.length && next.every((id, i) => id === current[i])) return;
+    writeWatch(next);
+  });
 }
 
 /** The parent issues the conductor drives child by child. The same file as the watch list. */
@@ -103,8 +160,10 @@ export function readStories(): number[] {
 
 /** Writes the stories and keeps the watch list (with the one-time copy of the legacy key). */
 export function writeStories(list: number[]): void {
-  const watch = readWatch({ migrate: false });
-  writeState({ ...(readFileState() ?? emptyState()), watch, stories: list });
+  withStateLock(() => {
+    const watch = readWatch({ migrate: false });
+    writeState({ ...(readFileState() ?? emptyState()), watch, stories: list });
+  });
 }
 
 /**
@@ -139,8 +198,10 @@ export function readSettings(): SettingsState {
 
 /** Set (`value` given) or remove (`value` null) one setting; `id` null is the global scope. Keeps every other section. */
 export function writeSetting(key: string, id: number | null, value: SettingValue | null): void {
-  const state = stateToWrite();
-  writeState({ ...state, settings: withSetting(state.settings, key, id, value) });
+  withStateLock(() => {
+    const state = stateToWrite();
+    writeState({ ...state, settings: withSetting(state.settings, key, id, value) });
+  });
 }
 
 /** The Copilot review rounds recorded so far, by pull request number. Read-only. */
@@ -150,6 +211,8 @@ export function readRounds(): Record<string, RoundRecord> {
 
 /** Record the rounds of one pull request. Keeps every other section. */
 export function writeRound(pr: number, record: RoundRecord): void {
-  const state = stateToWrite();
-  writeState({ ...state, rounds: { ...state.rounds, [String(pr)]: record } });
+  withStateLock(() => {
+    const state = stateToWrite();
+    writeState({ ...state, rounds: { ...state.rounds, [String(pr)]: record } });
+  });
 }

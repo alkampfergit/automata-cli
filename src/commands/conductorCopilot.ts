@@ -54,30 +54,30 @@ export function copilotRoundsDone(surface: PrSurface, ownerIds: readonly number[
  * A failed request is logged and ends the rounds of that pull request; the conductor goes on without Copilot.
  * A dry run reports the request and records nothing.
  */
-export function advanceCopilotRounds(supplied: PrSurface, ownerIds: readonly number[], dryRun: boolean): "wait" | "proceed" {
+export function advanceCopilotRounds(supplied: PrSurface, ownerIds: readonly number[], dryRun: boolean): { outcome: "wait" | "proceed"; surface: PrSurface } {
   const number = supplied.pr.number;
   const { decision, rounds, surface } = copilotDecision(supplied, ownerIds);
-  if (decision.kind === "off") return "proceed";
+  if (decision.kind === "off") return { outcome: "proceed", surface };
   if (decision.kind === "wait") {
     process.stdout.write(`Conductor: PR #${String(number)}: ${describeRoundDecision(decision, rounds)}; waiting.\n`);
-    return "wait";
+    return { outcome: "wait", surface };
   }
-  if (decision.kind !== "request") return "proceed";
+  if (decision.kind !== "request") return { outcome: "proceed", surface };
   const text = describeRoundDecision(decision, rounds);
   if (dryRun) {
     process.stdout.write(`Conductor: dry run, a tick would ask Copilot for a review of PR #${String(number)} (${text}).\n`);
-    return "wait";
+    return { outcome: "wait", surface };
   }
   const headSha = surface.pr.headSha ?? null;
   try {
     addCopilotReviewer(number);
     writeRound(number, { requested: decision.round, headSha });
     process.stdout.write(`Conductor: PR #${String(number)}: ${text}; waiting for the review.\n`);
-    return "wait";
+    return { outcome: "wait", surface };
   } catch (err) {
     const message = (err as Error).message;
     writeRound(number, { requested: readRounds()[String(number)]?.requested ?? 0, headSha, stopped: message });
     process.stderr.write(`Warning: could not ask Copilot to review PR #${String(number)}, going on without Copilot: ${message}\n`);
-    return "proceed";
+    return { outcome: "proceed", surface };
   }
 }
