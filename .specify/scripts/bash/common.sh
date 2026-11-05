@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Common functions and variables for all scripts
 
+# Template composition strategy that replaces lower layers instead of merging with them
+STRATEGY_REPLACE=replace
+
 # Find repository root by searching upward for .specify directory
 # This is the primary marker for spec-kit projects
 find_specify_root() {
@@ -10,12 +13,12 @@ find_specify_root() {
     dir="$(cd -- "$dir" 2>/dev/null && pwd)" || return 1
     local prev_dir=""
     while true; do
-        if [ -d "$dir/.specify" ]; then
+        if [[ -d "$dir/.specify" ]]; then
             echo "$dir"
             return 0
         fi
         # Stop if we've reached filesystem root or dirname stops changing
-        if [ "$dir" = "/" ] || [ "$dir" = "$prev_dir" ]; then
+        if [[ "$dir" = "/" ]] || [[ "$dir" = "$prev_dir" ]]; then
             break
         fi
         prev_dir="$dir"
@@ -105,16 +108,13 @@ read_feature_json_feature_directory() {
     # never reach the grep/sed fallback -- leaving feature.json unreadable even
     # though it is valid (issue #3304).
     local _fd=''
-    if command -v jq >/dev/null 2>&1; then
-        if ! _fd=$(jq -r '.feature_directory // empty' "$fj" 2>/dev/null); then
-            _fd=''
-        fi
+    if command -v jq >/dev/null 2>&1 && ! _fd=$(jq -r '.feature_directory // empty' "$fj" 2>/dev/null); then
+        _fd=''
     fi
-    if [[ -z "$_fd" ]] && command -v python3 >/dev/null 2>&1; then
-        # Use Python so pretty-printed/multi-line JSON still parses correctly.
-        if ! _fd=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('feature_directory'); print(v if v else '')" "$fj" 2>/dev/null); then
-            _fd=''
-        fi
+    # Use Python so pretty-printed/multi-line JSON still parses correctly.
+    if [[ -z "$_fd" ]] && command -v python3 >/dev/null 2>&1 \
+        && ! _fd=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('feature_directory'); print(v if v else '')" "$fj" 2>/dev/null); then
+        _fd=''
     fi
     if [[ -z "$_fd" ]]; then
         # Last-resort single-line grep/sed fallback. The `|| true` guards against
@@ -269,6 +269,7 @@ get_invoke_separator() {
             if jq_separator=$(jq -r '(.default_integration // .integration // "") as $k | if $k == "" then "." else (.integration_settings[$k].invoke_separator // ".") end' "$integration_json" 2>/dev/null); then
                 case "$jq_separator" in
                     "."|"-") separator="$jq_separator"; parsed=1 ;;
+                    *) ;;
                 esac
             fi
         fi
@@ -296,6 +297,7 @@ PY
 ); then
                 case "$py_separator" in
                     "."|"-") separator="$py_separator"; parsed=1 ;;
+                    *) ;;
                 esac
             fi
         fi
@@ -347,6 +349,7 @@ PY
             ' "$integration_json" 2>/dev/null)
             case "$awk_separator" in
                 "."|"-") separator="$awk_separator" ;;
+                *) ;;
             esac
         fi
     fi
@@ -404,8 +407,16 @@ json_escape() {
     done
 }
 
-check_file() { [[ -f "$1" ]] && echo "  ✓ $2" || echo "  ✗ $2"; }
-check_dir() { [[ -d "$1" && -n $(ls -A "$1" 2>/dev/null) ]] && echo "  ✓ $2" || echo "  ✗ $2"; }
+check_file() {
+    local file_path="$1"
+    local label="$2"
+    [[ -f "$file_path" ]] && echo "  ✓ $label" || echo "  ✗ $label"
+}
+check_dir() {
+    local dir_path="$1"
+    local label="$2"
+    [[ -d "$dir_path" && -n $(ls -A "$dir_path" 2>/dev/null) ]] && echo "  ✓ $label" || echo "  ✗ $label"
+}
 
 _python3_command() {
     if command -v python3 >/dev/null 2>&1 &&
@@ -484,8 +495,8 @@ for _, ext_id in sorted(ranked):
         fi
     fi
 
-    if [ -e "$ext_dir/.registry" ] || [ -L "$ext_dir/.registry" ]; then
-        if [ ! -f "$ext_dir/.registry" ] || [ ! -r "$ext_dir/.registry" ]; then
+    if [[ -e "$ext_dir/.registry" ]] || [[ -L "$ext_dir/.registry" ]]; then
+        if [[ ! -f "$ext_dir/.registry" ]] || [[ ! -r "$ext_dir/.registry" ]]; then
             echo "Error: invalid extension registry $ext_dir/.registry" >&2
             return 1
         fi
@@ -495,9 +506,9 @@ for _, ext_id in sorted(ranked):
 
     local ext extension_id
     for ext in "$ext_dir"/*/; do
-        [ -d "$ext" ] || continue
+        [[ -d "$ext" ]] || continue
         extension_id=$(basename "$ext")
-        case "$extension_id" in *[!a-z0-9-]*) continue ;; esac
+        case "$extension_id" in *[!a-z0-9-]*) continue ;; *) ;; esac
         printf '%s\n' "$extension_id"
     done
 }
@@ -512,22 +523,22 @@ resolve_template() {
     local repo_root="$2"
     local base="$repo_root/.specify/templates"
 
-    case "$template_name" in ""|*[!a-z0-9-]*) return 1 ;; esac
+    case "$template_name" in ""|*[!a-z0-9-]*) return 1 ;; *) ;; esac
 
     # Priority 1: Project overrides
     local override="$base/overrides/${template_name}.md"
-    [ -f "$override" ] && echo "$override" && return 0
+    [[ -f "$override" ]] && echo "$override" && return 0
 
     # Priority 2: Installed presets (sorted by priority from .registry)
     local presets_dir="$repo_root/.specify/presets"
-    if [ -d "$presets_dir" ]; then
+    if [[ -d "$presets_dir" ]]; then
         local registry_file="$presets_dir/.registry"
         local python_spec=""
         local -a python_cmd=()
         if python_spec=$(_python3_command); then
             read -r -a python_cmd <<< "$python_spec"
         fi
-        if [ -f "$registry_file" ] && [ "${#python_cmd[@]}" -gt 0 ]; then
+        if [[ -f "$registry_file" ]] && [[ "${#python_cmd[@]}" -gt 0 ]]; then
             # Read preset IDs sorted by priority (lower number = higher precedence).
             # The python3 call is wrapped in an if-condition so that set -e does not
             # abort the function when python3 exits non-zero (e.g. invalid JSON).
@@ -552,57 +563,57 @@ try:
 except Exception:
     sys.exit(1)
 " 2>/dev/null); then
-                if [ -n "$sorted_presets" ]; then
+                if [[ -n "$sorted_presets" ]]; then
                     # python3 succeeded and returned preset IDs — search in priority order
                     while IFS= read -r preset_id; do
                         local candidate="$presets_dir/$preset_id/templates/${template_name}.md"
-                        [ -f "$candidate" ] && echo "$candidate" && return 0
+                        [[ -f "$candidate" ]] && echo "$candidate" && return 0
                         candidate="$presets_dir/$preset_id/${template_name}.md"
-                        [ -f "$candidate" ] && echo "$candidate" && return 0
+                        [[ -f "$candidate" ]] && echo "$candidate" && return 0
                     done <<< "$sorted_presets"
                 fi
                 # python3 succeeded but registry has no presets — nothing to search
             else
                 # python3 failed (missing, or registry parse error) — fall back to unordered directory scan
                 for preset in "$presets_dir"/*/; do
-                    [ -d "$preset" ] || continue
+                    [[ -d "$preset" ]] || continue
                     local candidate="$preset/templates/${template_name}.md"
-                    [ -f "$candidate" ] && echo "$candidate" && return 0
+                    [[ -f "$candidate" ]] && echo "$candidate" && return 0
                     candidate="$preset/${template_name}.md"
-                    [ -f "$candidate" ] && echo "$candidate" && return 0
+                    [[ -f "$candidate" ]] && echo "$candidate" && return 0
                 done
             fi
         else
             # Fallback: alphabetical directory order (no python3 available)
             for preset in "$presets_dir"/*/; do
-                [ -d "$preset" ] || continue
+                [[ -d "$preset" ]] || continue
                 local candidate="$preset/templates/${template_name}.md"
-                [ -f "$candidate" ] && echo "$candidate" && return 0
+                [[ -f "$candidate" ]] && echo "$candidate" && return 0
                 candidate="$preset/${template_name}.md"
-                [ -f "$candidate" ] && echo "$candidate" && return 0
+                [[ -f "$candidate" ]] && echo "$candidate" && return 0
             done
         fi
     fi
 
     # Priority 3: Extension-provided templates
     local ext_dir="$repo_root/.specify/extensions"
-    if [ -d "$ext_dir" ]; then
+    if [[ -d "$ext_dir" ]]; then
         local sorted_extensions=""
         if ! sorted_extensions=$(_sorted_extension_ids "$ext_dir"); then
             return 2
         fi
         while IFS= read -r extension_id; do
-            [ -n "$extension_id" ] || continue
+            [[ -n "$extension_id" ]] || continue
             local ext="$ext_dir/$extension_id"
             local candidate="$ext/templates/${template_name}.md"
-            [ -f "$candidate" ] || candidate="$ext/${template_name}.md"
-            [ -f "$candidate" ] && echo "$candidate" && return 0
+            [[ -f "$candidate" ]] || candidate="$ext/${template_name}.md"
+            [[ -f "$candidate" ]] && echo "$candidate" && return 0
         done <<< "$sorted_extensions"
     fi
 
     # Priority 4: Core templates
     local core="$base/${template_name}.md"
-    [ -f "$core" ] && echo "$core" && return 0
+    [[ -f "$core" ]] && echo "$core" && return 0
 
     # Template not found in any location.
     # Return 1 so callers can distinguish "not found" from "found".
@@ -621,7 +632,7 @@ resolve_template_content() {
     local repo_root="$2"
     local base="$repo_root/.specify/templates"
 
-    case "$template_name" in ""|*[!a-z0-9-]*) return 1 ;; esac
+    case "$template_name" in ""|*[!a-z0-9-]*) return 1 ;; *) ;; esac
 
     # Collect all layers (highest priority first)
     local -a layer_paths=()
@@ -629,7 +640,7 @@ resolve_template_content() {
 
     # Priority 1: Project overrides (always "replace")
     local override="$base/overrides/${template_name}.md"
-    if [ -f "$override" ]; then
+    if [[ -f "$override" ]]; then
         if ! cat "$override"; then
             echo "Error: failed to read template layer $override" >&2
             return 2
@@ -641,7 +652,7 @@ resolve_template_content() {
 
     # Priority 2: Installed presets (sorted by priority from .registry)
     local presets_dir="$repo_root/.specify/presets"
-    if [ -d "$presets_dir" ]; then
+    if [[ -d "$presets_dir" ]]; then
         local registry_file="$presets_dir/.registry"
         local sorted_presets=""
         local registry_parsed=false
@@ -650,8 +661,8 @@ resolve_template_content() {
         if python_spec=$(_python3_command); then
             read -r -a python_cmd <<< "$python_spec"
         fi
-        if [ -f "$registry_file" ] && [ "${#python_cmd[@]}" -gt 0 ]; then
-            if sorted_presets=$(SPECKIT_REGISTRY="$registry_file" "${python_cmd[@]}" -c "
+        if [[ -f "$registry_file" ]] && [[ "${#python_cmd[@]}" -gt 0 ]] \
+            && sorted_presets=$(SPECKIT_REGISTRY="$registry_file" "${python_cmd[@]}" -c "
 import json, re, sys, os
 try:
     with open(os.environ['SPECKIT_REGISTRY'], encoding='utf-8') as f:
@@ -671,27 +682,26 @@ try:
 except Exception:
     sys.exit(1)
 " 2>/dev/null); then
-                registry_parsed=true
-            fi
+            registry_parsed=true
         fi
-        if [ "$registry_parsed" = false ]; then
+        if [[ "$registry_parsed" = false ]]; then
             for preset in "$presets_dir"/*/; do
-                [ -d "$preset" ] || continue
+                [[ -d "$preset" ]] || continue
                 local fallback_id
                 fallback_id=$(basename "$preset")
-                case "$fallback_id" in *[!a-z0-9-]*) continue ;; esac
+                case "$fallback_id" in *[!a-z0-9-]*) continue ;; *) ;; esac
                 sorted_presets+="${sorted_presets:+$'\n'}$fallback_id"
             done
         fi
 
-        if [ -n "$sorted_presets" ]; then
+        if [[ -n "$sorted_presets" ]]; then
             while IFS= read -r preset_id; do
-                local strategy="replace"
+                local strategy="$STRATEGY_REPLACE"
                 local manifest_file=""
                 local manifest="$presets_dir/$preset_id/preset.yml"
                 local manifest_declared=false
-                if [ -f "$manifest" ]; then
-                    if [ "${#python_cmd[@]}" -eq 0 ]; then
+                if [[ -f "$manifest" ]]; then
+                    if [[ "${#python_cmd[@]}" -eq 0 ]]; then
                         echo "Error: Python 3 and PyYAML are required to resolve preset template composition" >&2
                         return 2
                     fi
@@ -758,8 +768,8 @@ except Exception as exc:
                     else
                         parse_status=$?
                     fi
-                    if [ "$parse_status" -ne 0 ]; then
-                        if [ "$parse_status" -eq 2 ]; then
+                    if [[ "$parse_status" -ne 0 ]]; then
+                        if [[ "$parse_status" -eq 2 ]]; then
                             echo "Error: PyYAML is required to resolve preset template composition" >&2
                         else
                             echo "Error: invalid preset manifest $manifest" >&2
@@ -767,37 +777,38 @@ except Exception as exc:
                         rm -f "$py_stderr"
                         return 2
                     fi
-                    if [ -n "$result" ]; then
+                    if [[ -n "$result" ]]; then
                         local declaration
                         IFS=$'\t' read -r declaration strategy manifest_file <<< "$result"
-                        [ "$declaration" = "found" ] && manifest_declared=true
+                        [[ "$declaration" = "found" ]] && manifest_declared=true
                         strategy=$(printf '%s' "$strategy" | tr '[:upper:]' '[:lower:]')
                     fi
                     rm -f "$py_stderr"
                 fi
 
                 local candidate=""
-                if [ -n "$manifest_file" ]; then
+                if [[ -n "$manifest_file" ]]; then
                     case "$manifest_file" in
                         /*|*../*|../*) manifest_file="" ;;
+                        *) ;;
                     esac
                 fi
-                if [ -n "$manifest_file" ]; then
+                if [[ -n "$manifest_file" ]]; then
                     local mf="$presets_dir/$preset_id/$manifest_file"
-                    [ -f "$mf" ] && candidate="$mf"
+                    [[ -f "$mf" ]] && candidate="$mf"
                 fi
-                if [ -z "$candidate" ] && [ "$manifest_declared" = false ]; then
+                if [[ -z "$candidate" ]] && [[ "$manifest_declared" = false ]]; then
                     local cf="$presets_dir/$preset_id/templates/${template_name}.md"
-                    [ -f "$cf" ] && candidate="$cf"
-                    if [ -z "$candidate" ]; then
+                    [[ -f "$cf" ]] && candidate="$cf"
+                    if [[ -z "$candidate" ]]; then
                         cf="$presets_dir/$preset_id/${template_name}.md"
-                        [ -f "$cf" ] && candidate="$cf"
+                        [[ -f "$cf" ]] && candidate="$cf"
                     fi
                 fi
-                if [ -n "$candidate" ]; then
+                if [[ -n "$candidate" ]]; then
                     layer_paths+=("$candidate")
                     layer_strategies+=("$strategy")
-                    if [ "$strategy" = "replace" ]; then
+                    if [[ "$strategy" = "$STRATEGY_REPLACE" ]]; then
                         effective_base_found=true
                         break
                     fi
@@ -806,46 +817,46 @@ except Exception as exc:
         fi
     fi
 
-    # Priority 3: Extension-provided templates (always "replace")
+    # Priority 3: Extension-provided templates (always replace)
     local ext_dir="$repo_root/.specify/extensions"
-    if [ "$effective_base_found" = false ] && [ -d "$ext_dir" ]; then
+    if [[ "$effective_base_found" = false ]] && [[ -d "$ext_dir" ]]; then
         local sorted_extensions=""
         if ! sorted_extensions=$(_sorted_extension_ids "$ext_dir"); then
             return 2
         fi
         while IFS= read -r extension_id; do
-            [ -n "$extension_id" ] || continue
+            [[ -n "$extension_id" ]] || continue
             local ext="$ext_dir/$extension_id"
             local candidate="$ext/templates/${template_name}.md"
-            [ -f "$candidate" ] || candidate="$ext/${template_name}.md"
-            if [ -f "$candidate" ]; then
+            [[ -f "$candidate" ]] || candidate="$ext/${template_name}.md"
+            if [[ -f "$candidate" ]]; then
                 layer_paths+=("$candidate")
-                layer_strategies+=("replace")
+                layer_strategies+=("$STRATEGY_REPLACE")
                 effective_base_found=true
                 break
             fi
         done <<< "$sorted_extensions"
     fi
 
-    # Priority 4: Core templates (always "replace")
+    # Priority 4: Core templates (always replace)
     local core="$base/${template_name}.md"
-    if [ "$effective_base_found" = false ] && [ -f "$core" ]; then
+    if [[ "$effective_base_found" = false ]] && [[ -f "$core" ]]; then
         layer_paths+=("$core")
-        layer_strategies+=("replace")
+        layer_strategies+=("$STRATEGY_REPLACE")
     fi
 
     local count=${#layer_paths[@]}
-    [ "$count" -eq 0 ] && return 1
+    [[ "$count" -eq 0 ]] && return 1
 
     # Check if any layer uses a non-replace strategy
     local has_composition=false
     for s in "${layer_strategies[@]}"; do
-        [ "$s" != "replace" ] && has_composition=true && break
+        [[ "$s" != "$STRATEGY_REPLACE" ]] && has_composition=true && break
     done
 
     # If the top (highest-priority) layer is replace, it wins entirely —
     # lower layers are irrelevant regardless of their strategies.
-    if [ "${layer_strategies[0]}" = "replace" ]; then
+    if [[ "${layer_strategies[0]}" = "$STRATEGY_REPLACE" ]]; then
         if ! cat "${layer_paths[0]}"; then
             echo "Error: failed to read template layer ${layer_paths[0]}" >&2
             return 2
@@ -853,7 +864,7 @@ except Exception as exc:
         return 0
     fi
 
-    if [ "$has_composition" = false ]; then
+    if [[ "$has_composition" = false ]]; then
         if ! cat "${layer_paths[0]}"; then
             echo "Error: failed to read template layer ${layer_paths[0]}" >&2
             return 2
@@ -866,13 +877,13 @@ except Exception as exc:
     local base_idx=-1
     local i
     for (( i=0; i<count; i++ )); do
-        if [ "${layer_strategies[$i]}" = "replace" ]; then
+        if [[ "${layer_strategies[$i]}" = "$STRATEGY_REPLACE" ]]; then
             base_idx=$i
             break
         fi
     done
 
-    if [ $base_idx -lt 0 ]; then
+    if [[ $base_idx -lt 0 ]]; then
         echo "Error: template '$template_name' has composing layers but no replace base" >&2
         return 2
     fi

@@ -23,7 +23,7 @@ A command-line interface tool built with TypeScript and commander.js.
 - Code is not good, and you must not commit it, until all checks pass with no open finding. Before each commit, run
   `npm run lint`, `npm run typecheck`, `npm test` and `npm run sonar:local`. Fix every error that they report. Fix
   every warning too, or state in the commit message why you keep it. Do not suppress a rule, lower a threshold or
-  skip a test to get a pass. `sonar:local` is an approximation, so also check the SonarCloud result of the pull
+  skip a test to get a pass. `sonar:local` covers the SonarJS rules on `src/`, the shell rules on every `*.sh` file and duplication. It is an approximation, so also check the SonarCloud result of the pull
   request. See `docs/maintenance.md`.
 - After any dependency change, run `npm run audit:prod`. It also runs via `prepublishOnly`, so a production advisory aborts `npm publish`. See `docs/maintenance.md`.
 - Prefer minimal, targeted edits that preserve the existing CLI structure.
