@@ -273,6 +273,28 @@ the same shape as above.
 
 ---
 
+## `automata git request-copilot-review`
+
+Ask Copilot to review a pull request. The conductor makes the same request for its
+[Copilot review rounds](conductor.md#copilot-review-rounds).
+
+```bash
+automata git request-copilot-review        # the pull request of the current branch
+automata git request-copilot-review 42     # pull request 42 (42 or #42)
+```
+
+It runs `gh pr edit <n> --add-reviewer @copilot`. Run it again to ask for another review. GitHub only; it does not
+work on GitHub Enterprise Server, and it needs a Copilot licence.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The review was requested |
+| `1` | No pull request, the pull request is not open, the request failed, or the remote is Azure DevOps |
+
+---
+
 ## `automata git finish-feature`
 
 Clean up a merged feature branch in one step: checkout `develop`, pull the latest, and delete the local branch.

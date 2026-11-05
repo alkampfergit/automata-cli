@@ -45,7 +45,7 @@ import {
   type IssueState,
   type WorkItem,
 } from "../github/workDetection.js";
-import { composePrompt } from "../github/workPrompt.js";
+import { composePromptWithinBudget } from "../github/workPrompt.js";
 import {
   describeExecution,
   describeInvalidTool,
@@ -120,7 +120,10 @@ import {
   type CheckSection,
   type LockContext,
 } from "../run/checkReport.js";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { version } from "../version.js";
 import { runClaude, buildClaudeArgs } from "../claude/claudeService.js";
 import { runCodex, buildCodexArgs } from "../codex/codexService.js";
@@ -202,6 +205,8 @@ interface Settings {
   configEfforts: DoWorkEffort | undefined;
   maxRuns: number;
   lockStaleMinutes: number;
+  /** Estimated token budget of one prompt; older conversation messages are dropped above it. */
+  maxPromptTokens: number;
   /** Render the health report when the tick exits having done nothing. */
   dumpOnBlock: boolean;
   /** Append diagnostics and save a transcript when a run posts no answer. */
@@ -459,6 +464,7 @@ function buildSettings(options: DoWorkOptions, verifyIdentity: boolean): Setting
         ? parsePositiveInt(options.maxRuns, "--max-runs")
         : (doWork.maxRunsPerTick ?? DEFAULT_DO_WORK.maxRunsPerTick),
     lockStaleMinutes: doWork.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes,
+    maxPromptTokens: doWork.maxPromptTokens ?? DEFAULT_DO_WORK.maxPromptTokens,
     dumpOnBlock: doWork.dumpOnBlock ?? DEFAULT_DO_WORK.dumpOnBlock,
     postRunLog: doWork.postRunLog ?? DEFAULT_DO_WORK.postRunLog,
     limit: parsePositiveInt(options.limit, "--limit"),
@@ -512,7 +518,9 @@ interface PlannedRun {
   prompt: string;
   bin: string;
   args: string[];
-  /** The argv rendered as a shell-pasteable command line. */
+  /** Holds the exact bytes the real run writes to the executor's stdin. */
+  promptFile: string;
+  /** The argv and the stdin redirect rendered as a shell-pasteable command line. */
   command: string;
 }
 
@@ -558,18 +566,28 @@ function toExecution(resolved: Extract<ResolveExecutionResult, { ok: true }>): R
   };
 }
 
+function describePromptOverBudget(detail: string): string {
+  return `the prompt is over budget: ${detail}`;
+}
+
 /**
  * What would be executed for a work item, built with the same argv builders the
  * real invocation uses so `--dry-run` cannot drift from what actually happens.
  */
-function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun {
-  const prompt = composePrompt({
-    item,
-    repo: getRepoSlug(),
-    agentUser: settings.participants.agentUser,
-    baseBranch: settings.baseBranch,
-    frame: settings.prompts[item.turn],
-  });
+function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecution): PlannedRun | { refusal: string } {
+  const repo = getRepoSlug();
+  const composed = composePromptWithinBudget(
+    {
+      item,
+      repo,
+      agentUser: settings.participants.agentUser,
+      baseBranch: settings.baseBranch,
+      frame: settings.prompts[item.turn],
+    },
+    settings.maxPromptTokens,
+  );
+  if (!composed.ok) return { refusal: describePromptOverBudget(composed.detail) };
+  const prompt = composed.prompt;
 
   // The resolved path, not the bare name: this is literally what gets spawned.
   const bin = resolveCommand(execution.executor === "codex" ? "codex" : "claude");
@@ -577,15 +595,55 @@ function planRun(item: WorkItem, settings: Settings, execution: ResolvedExecutio
   // child stays cancellable; `--silent` suppresses printing, not the flags.
   const args =
     execution.executor === "codex"
-      ? buildCodexArgs(prompt, { yolo: true, model: execution.model, effort: execution.effort })
+      ? buildCodexArgs(prompt, { yolo: true, model: execution.model, effort: execution.effort, promptOn: "stdin" })
       : buildClaudeArgs(prompt, {
           yolo: true,
           verbose: true,
           model: execution.model,
           effort: execution.effort,
+          promptOn: "stdin",
         });
 
-  return { prompt, bin, args, command: [bin, ...args].map(shellQuote).join(" ") };
+  // The one thing a dry run writes: the prompt, where the printed `<` redirect reads it.
+  const promptFile = writePromptFile(item, repo, prompt);
+  const command = `${[bin, ...args].map(shellQuote).join(" ")} < ${shellQuote(promptFile)}`;
+  return { prompt, bin, args, promptFile, command };
+}
+
+/**
+ * Write a dry run's prompt into a private directory under the temporary
+ * directory. The name is fixed per repository, subject and turn, so repeated
+ * dry runs overwrite one file instead of piling up.
+ *
+ * The prompt holds private issue conversations, so the directory is owner-only
+ * (`0700`) and the file is `0600`. An existing file is removed first and
+ * recreated with `wx`, so a planted symlink is never followed. The repository
+ * part of the name carries a hash of `owner/repo`, because joining the two with
+ * a hyphen alone maps `a/b-c` and `a-b/c` to the same name.
+ */
+function writePromptFile(item: WorkItem, repo: { owner: string; repo: string }, prompt: string): string {
+  const subject = item.issue !== null ? `issue-${String(item.issue.number)}` : `pr-${String(item.pr?.number ?? 0)}`;
+  const identity = createHash("sha256").update(`${repo.owner}/${repo.repo}`).digest("hex").slice(0, 12);
+  const label = `${repo.owner}-${repo.repo}`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+  const name = `automata-prompt-${label}-${identity}-${subject}-${item.turn}.txt`.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+  const file = join(privatePromptDir(), name);
+  rmSync(file, { force: true });
+  writeFileSync(file, prompt, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  return file;
+}
+
+/** The owner-only directory for dry-run prompt files; refuses one that is not ours or not private. */
+function privatePromptDir(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const dir = join(tmpdir(), uid === undefined ? "automata-prompts" : `automata-prompts-${String(uid)}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  const foreign = uid !== undefined && stat.uid !== uid;
+  const open = process.platform !== "win32" && (stat.mode & 0o077) !== 0;
+  if (!stat.isDirectory() || foreign || open) {
+    throw new Error(`Refusing to write the dry-run prompt: ${dir} is not a private directory owned by you.`);
+  }
+  return dir;
 }
 
 /**
@@ -664,11 +722,7 @@ function describePlannedRun(
     "  Permissions  bypassed (do-work always runs unattended)",
     `  Prompt       ${String(run.prompt.length)} chars — frame + assembled context`,
     "",
-    "  Command that would be launched:",
-    // Printed flush-left and unindented on purpose: the prompt is a multi-line
-    // quoted argument, so indenting the continuation lines would inject leading
-    // whitespace into the prompt itself and the command would no longer be the
-    // one that runs.
+    "  Command that would be launched (the prompt is read from the file on stdin):",
     rule,
     run.command,
     rule,
@@ -770,6 +824,7 @@ function validateDoWorkConfig(section: unknown): void {
     1,
     "a positive integer",
   );
+  validateOptionalInt(section, "maxPromptTokens", "doWork.maxPromptTokens", 1, "a positive integer");
   validateOptionalBoolean(section, "dumpOnBlock", "doWork.dumpOnBlock");
   validateOptionalBoolean(section, "postRunLog", "doWork.postRunLog");
 
@@ -1747,27 +1802,32 @@ async function processItem(
     item.actionableThreads.flatMap((thread) => thread.comments),
   ]);
 
-  const prompt = composePrompt({
-    item,
-    repo: getRepoSlug(),
-    agentUser: settings.participants.agentUser,
-    baseBranch: settings.baseBranch,
-    frame: settings.prompts[item.turn],
-  });
-
-  const oversized = describeOversizedPrompt(prompt);
-  if (oversized !== null) {
+  const composed = composePromptWithinBudget(
+    {
+      item,
+      repo: getRepoSlug(),
+      agentUser: settings.participants.agentUser,
+      baseBranch: settings.baseBranch,
+      frame: settings.prompts[item.turn],
+    },
+    settings.maxPromptTokens,
+  );
+  if (!composed.ok) {
+    const detail = describePromptOverBudget(composed.detail);
     return refuseBeforeRun(
       base,
       marker,
-      oversized,
-      `automata do-work: could not start a run because ${oversized} ` +
-        "Summarise the discussion in a new issue, or shorten the thread, and try again.",
+      detail,
+      `automata do-work: ${detail}. No run was started. ` +
+        "Raise doWork.maxPromptTokens, or shorten the prompt, and then post a new comment here to have another attempt made.",
     );
   }
+  const prompt = composed.prompt;
+  if (composed.omittedMessages > 0) {
+    progress(`  prompt trimmed: ${String(composed.omittedMessages)} older message(s) omitted (budget ${String(settings.maxPromptTokens)} tokens)\n`);
+  }
 
-  // Resolved here, beside the oversized-prompt refusal, because both are
-  // pre-flight refusals that need the marker to already exist.
+  // Resolved here, because a pre-flight refusal needs the marker to already exist.
   const resolved = resolveItemExecution(item, settings);
   if (!resolved.ok) {
     const detail = describeInvalidTool(resolved.invalidTool);
@@ -1926,20 +1986,6 @@ function describeRunEffects(
     headAfter: after.head,
     pr,
   };
-}
-
-// Linux caps a single argv entry at 128 KiB (MAX_ARG_STRLEN), and the prompt is
-// passed as one. A long-lived issue with many authorized comments can reach
-// that, and the raw failure is an opaque E2BIG from spawn. Fail legibly instead;
-// piping the prompt through stdin is the real fix and is tracked separately.
-function describeOversizedPrompt(prompt: string): string | null {
-  const MAX_PROMPT_BYTES = 96 * 1024;
-  const promptBytes = Buffer.byteLength(prompt, "utf8");
-  if (promptBytes <= MAX_PROMPT_BYTES) return null;
-  return (
-    `the composed prompt is ${String(Math.round(promptBytes / 1024))} KiB, over the ${String(MAX_PROMPT_BYTES / 1024)} KiB ` +
-    "limit for a single command-line argument. The conversation is too long to hand to the executor this way."
-  );
 }
 
 function adjustOutcome(
@@ -3201,12 +3247,14 @@ async function processItems(
   const reports: ItemReport[] = [];
   const deferred: WorkItem[] = [];
   const preflightCauses = describePreflightFailures(hygiene);
-  let runsUsed = 0;
-
-  for (const [index, item] of items.entries()) {
+  // Items run one after the other, never together: each is a model run that owns the
+  // working tree. A recursive step states that order without an `await` in a loop.
+  const step = async (index: number, runsUsed: number): Promise<void> => {
+    const item = items[index];
+    if (item === undefined) return;
     if (settings.maxRuns > 0 && runsUsed >= settings.maxRuns) {
       deferred.push(item);
-      continue;
+      return step(index + 1, runsUsed);
     }
     // Kept on module state as well as published, so the executor's own heartbeat
     // can keep naming the item without `processItem` taking a parameter it would
@@ -3214,15 +3262,16 @@ async function processItems(
     heartbeatItem = { index: index + 1, total: items.length, subject: itemLabel(item).trim() };
     beat({ phase: "item", item: heartbeatItem });
     const report = await reportForItem(item, settings, options, preflightCauses);
-    // The cap counts model runs. An item that failed before reaching the
-    // executor — a refresh read error, say — did not spend one.
-    if (report.ranExecutor === true) runsUsed++;
     reports.push(report);
     if (report.claudeAuth === true) {
       reports.push(...items.slice(index + 1).map((rest) => skipForClaudeAuth(rest)));
-      break;
+      return;
     }
-  }
+    // The cap counts model runs. An item that failed before reaching the
+    // executor — a refresh read error, say — did not spend one.
+    return step(index + 1, report.ranExecutor === true ? runsUsed + 1 : runsUsed);
+  };
+  await step(0, 0);
 
   return { reports, deferred };
 }
@@ -3349,6 +3398,7 @@ function toRunJson(entry: DryRunEntry): Record<string, unknown> {
       args: null,
       command: null,
       prompt: null,
+      promptFile: null,
     };
   }
   return {
@@ -3366,6 +3416,7 @@ function toRunJson(entry: DryRunEntry): Record<string, unknown> {
     args: entry.run.args,
     command: entry.run.command,
     prompt: entry.run.prompt,
+    promptFile: entry.run.promptFile,
   };
 }
 
@@ -3377,18 +3428,31 @@ function reportDryRun(
   options: DoWorkOptions,
   hygiene: HygieneReport,
 ): void {
-  const describable = settings.maxRuns > 0 ? items.slice(0, settings.maxRuns) : items;
-  // An unrecognised `tool:` is described as the refusal a real tick would
-  // perform, rather than as a command: a dry run must show the typo, not a
-  // plausible command line that would never be launched.
-  const planned: DryRunEntry[] = describable.map((item) => {
+  // A refusal runs no executor, so a real tick spends no run slot on it. Only runnable
+  // plans count toward the cap, and planning stops once the cap is reached.
+  const planned: DryRunEntry[] = [];
+  let runnable = 0;
+  let described = 0;
+  for (const item of items) {
+    if (settings.maxRuns > 0 && runnable >= settings.maxRuns) break;
+    described++;
+    // An unrecognised `tool:` is described as the refusal a real tick would
+    // perform, rather than as a command: a dry run must show the typo, not a
+    // plausible command line that would never be launched.
     const resolved = resolveItemExecution(item, settings);
     if (!resolved.ok) {
-      return { kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) };
+      planned.push({ kind: "refused", item, refusal: describeInvalidTool(resolved.invalidTool) });
+      continue;
     }
     const execution = toExecution(resolved);
-    return { kind: "run", item, execution, run: planRun(item, settings, execution) };
-  });
+    const run = planRun(item, settings, execution);
+    if ("refusal" in run) {
+      planned.push({ kind: "refused", item, refusal: run.refusal });
+    } else {
+      planned.push({ kind: "run", item, execution, run });
+      runnable++;
+    }
+  }
 
   if (options.json) {
     out(
@@ -3415,7 +3479,7 @@ function reportDryRun(
           : describePlannedRun(entry.item, settings, entry.run, entry.execution)),
     );
   }
-  const deferred = items.length - describable.length;
+  const deferred = items.length - described;
   if (deferred > 0) {
     out(`\n(${String(deferred)} further item(s) deferred by the run cap.)\n`);
   }

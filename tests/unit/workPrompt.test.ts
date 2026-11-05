@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { composePrompt } from "../../src/github/workPrompt.js";
+import { composePrompt, composePromptWithinBudget, estimatePromptTokens } from "../../src/github/workPrompt.js";
 import { analyzeSurface, type Participants, type RawMessage } from "../../src/github/conversation.js";
 import type { WorkItem } from "../../src/github/workDetection.js";
 import type { PullRequestRef, ReviewThread } from "../../src/github/ghWorkService.js";
@@ -265,5 +265,118 @@ describe("composePrompt — an orphan pull request", () => {
   it("places the orphan frame first and verbatim", () => {
     const prompt = compose(orphanItem(), DEFAULT_DO_WORK_PR_ORPHAN_PROMPT);
     expect(prompt.startsWith(DEFAULT_DO_WORK_PR_ORPHAN_PROMPT)).toBe(true);
+  });
+});
+
+describe("composePromptWithinBudget", () => {
+  const INPUT_BASE = { repo: REPO, agentUser: "automata-bot", baseBranch: "develop", frame: "FRAME TEXT" };
+
+  /** A long history of old messages and one short new trigger, on the issue. */
+  function longItem(count: number): WorkItem {
+    const history: RawMessage[] = [message("alice", "2026-01-01T00:00:00Z", "please add it", "issue-body")];
+    for (let i = 0; i < count; i += 1) {
+      const day = String(i + 2).padStart(2, "0");
+      history.push(
+        message(i % 2 === 0 ? "automata-bot" : "alice", `2026-02-${day}T00:00:00Z`, `OLD-${String(i)} ${"x".repeat(4000)}`),
+      );
+    }
+    // The agent spoke last at index count-1 when count is odd; make the trigger newer than it.
+    history.push(message("alice", "2026-03-30T00:00:00Z", "SHORT NEW TRIGGER"));
+    return discussItem({ issueAnalysis: analyzeSurface(history, P) });
+  }
+
+  it("returns the prompt unchanged when it fits", () => {
+    const item = longItem(3);
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, 1_000_000);
+    expect(result).toMatchObject({ ok: true, omittedMessages: 0 });
+    expect(result.ok && result.prompt).toBe(composePrompt({ item, ...INPUT_BASE }));
+  });
+
+  it("drops the oldest messages first, keeps the trigger and frame, and fits the budget", () => {
+    const item = longItem(20);
+    const budget = 6000;
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, budget);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.estimatedTokens).toBeLessThanOrEqual(budget);
+    expect(estimatePromptTokens(result.prompt)).toBeLessThanOrEqual(budget);
+    expect(result.omittedMessages).toBeGreaterThan(0);
+    expect(result.prompt.startsWith("FRAME TEXT")).toBe(true);
+    expect(result.prompt).toContain("SHORT NEW TRIGGER");
+    expect(result.prompt).not.toContain("OLD-0 ");
+    expect(result.prompt).toContain("OLD-19 ".trim());
+    expect(result.prompt).toContain(`${String(result.omittedMessages)} older message(s) from`);
+    expect(result.prompt).toContain("omitted to fit the prompt budget");
+  });
+
+  it("drops only as many messages as needed", () => {
+    const item = longItem(20);
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, 6000);
+    if (!result.ok) throw new Error("expected a prompt");
+    const one = composePromptWithinBudget({ item, ...INPUT_BASE }, result.estimatedTokens);
+    expect(one).toMatchObject({ ok: true, omittedMessages: result.omittedMessages });
+  });
+
+  it("never returns a prompt over the budget, and the size scan agrees with the rendered prompt", () => {
+    const item = longItem(12);
+    const full = estimatePromptTokens(composePrompt({ item, ...INPUT_BASE }));
+    for (let budget = full; budget > 500; budget -= 337) {
+      const result = composePromptWithinBudget({ item, ...INPUT_BASE }, budget);
+      if (result.ok) {
+        expect(estimatePromptTokens(result.prompt)).toBeLessThanOrEqual(budget);
+        expect(result.estimatedTokens).toBe(estimatePromptTokens(result.prompt));
+      }
+    }
+  });
+
+  it("counts bytes, so multi-byte text uses more of the budget", () => {
+    expect(estimatePromptTokens("a".repeat(400))).toBe(100);
+    expect(estimatePromptTokens("é".repeat(400))).toBe(200);
+  });
+
+  it("refuses with the setting name when the required part alone exceeds the budget", () => {
+    const item = longItem(4);
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, 50);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toContain("doWork.maxPromptTokens");
+  });
+
+  it("finds a fitting count when dropping a short last message would add a marker", () => {
+    // The short pull request message is the newest droppable one. Dropping it adds the
+    // pull request's own marker, which is longer than the message, so the prompt grows.
+    const issueHistory: RawMessage[] = [message("alice", "2026-01-01T00:00:00Z", "please add it", "issue-body")];
+    for (let i = 0; i < 6; i += 1) {
+      issueHistory.push(message(i % 2 === 0 ? "automata-bot" : "alice", `2026-02-0${String(i + 1)}T00:00:00Z`, `OLD-${String(i)} ${"x".repeat(4000)}`));
+    }
+    issueHistory.push(message("alice", "2026-03-30T00:00:00Z", "SHORT NEW TRIGGER"));
+    const prHistory = [message("automata-bot", "2026-02-21T00:00:00Z", "ok", "pr-comment")];
+    const item = prItem({ issueAnalysis: analyzeSurface(issueHistory, P), prAnalysis: analyzeSurface(prHistory, P), actionableThreads: [] });
+    const droppable = [...item.issueAnalysis.messages, ...(item.prAnalysis?.messages ?? [])].filter((m) => !m.isNew).length;
+    // Whether a budget is feasible only grows with the budget, so the smallest feasible one
+    // is found by bisection. Dropping every message is then not what reaches it.
+    let low = 1;
+    let high = 20000;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (composePromptWithinBudget({ item, ...INPUT_BASE }, mid).ok) high = mid;
+      else low = mid + 1;
+    }
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, low);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.omittedMessages).toBeGreaterThan(0);
+    expect(result.omittedMessages).toBeLessThan(droppable);
+    expect(result.prompt).toContain("SHORT NEW TRIGGER");
+  });
+
+  it("never drops a new message even when it is large", () => {
+    const history = [
+      message("alice", "2026-01-01T00:00:00Z", "please add it", "issue-body"),
+      message("alice", "2026-01-02T00:00:00Z", "BIG NEW " + "y".repeat(2000)),
+    ];
+    const item = discussItem({ issueAnalysis: analyzeSurface(history, P) });
+    const result = composePromptWithinBudget({ item, ...INPUT_BASE }, 100000);
+    expect(result.ok && result.prompt).toContain("BIG NEW");
   });
 });

@@ -238,6 +238,19 @@ function parseBooleanLiteral(value: string, name: string): boolean {
   return normalized === "true";
 }
 
+const configSetDoWorkMaxPromptTokens = new Command("do-work-max-prompt-tokens")
+  .description("Set the estimated token budget of a `do-work` prompt; older conversation messages are dropped above it")
+  .argument("<value>", `Positive integer (default: ${String(DEFAULT_DO_WORK.maxPromptTokens)})`)
+  .action((value: string) => {
+    const tokens = parseNonNegativeInt(value, "do-work-max-prompt-tokens");
+    if (tokens === 0) {
+      process.stderr.write("Error: do-work-max-prompt-tokens must be greater than zero.\n");
+      process.exit(1);
+    }
+    writeDoWork({ maxPromptTokens: tokens });
+    process.stdout.write(`do-work prompt budget set to: ${String(tokens)} tokens\n`);
+  });
+
 const configSetDoWorkDumpOnBlock = new Command("do-work-dump-on-block")
   .description(
     "Set whether `do-work` prints the full health report when a tick exits having done nothing",
@@ -295,10 +308,10 @@ const configSetDoWorkPrompt = new Command("do-work-prompt")
     process.stdout.write(`do-work ${turnKind} prompt set.\n`);
   });
 
-const CONDUCTOR_PROMPT_KINDS = ["issue", "pr", "rebase", "ciFix"] as const;
+const CONDUCTOR_PROMPT_KINDS = ["issue", "pr", "rebase", "ciFix", "child"] as const;
 
 const configSetConductorPrompt = new Command("conductor-prompt")
-  .description("Set the instructions for the conductor on a watched issue, a watched pull request, a rebase request or a CI-fix request (prompt text or a .md filename)")
+  .description("Set the instructions for the conductor on a watched issue, a watched pull request, a rebase request, a CI-fix request or the answer to a story child (prompt text or a .md filename)")
   .argument("<kind>", `Kind of watched item: ${CONDUCTOR_PROMPT_KINDS.join(", ")}`)
   .argument("<value>", "Prompt text, or a plain .md filename inside .automata/")
   .action((kind: string, value: string) => {
@@ -413,6 +426,7 @@ const configSet = new Command("set")
   .addCommand(configSetDoWorkEffort)
   .addCommand(configSetDoWorkMaxRuns)
   .addCommand(configSetDoWorkLockStaleMinutes)
+  .addCommand(configSetDoWorkMaxPromptTokens)
   .addCommand(configSetDoWorkDumpOnBlock)
   .addCommand(configSetDoWorkPostRunLog)
   .addCommand(configSetDoWorkPrompt)

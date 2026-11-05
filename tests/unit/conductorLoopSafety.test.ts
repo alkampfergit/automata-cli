@@ -8,7 +8,7 @@ import {
   REPLY_MARKER,
 } from "../../src/conductor/loopSafety.js";
 import { decideConductorReply, loopStateOf, type Conversation } from "../../src/conductor/replyDecision.js";
-import { postingInstruction, dryRunInstruction } from "../../src/conductor/thread.js";
+import { replyInstruction, replyMarkerFor, dryRunInstruction } from "../../src/conductor/thread.js";
 import type { RawMessage } from "../../src/github/conversation.js";
 
 const msg = (kind: RawMessage["kind"], author: string, createdAt: string, body: string): RawMessage => ({ kind, author, createdAt, body });
@@ -93,10 +93,22 @@ describe("decideConductorReply with loop safety", () => {
 
 describe("instructions", () => {
   const target = { kind: "issue" as const, number: 7 };
-  it("a live reply carries the marker and the needs-a-human line", () => {
-    const text = postingInstruction(target);
-    expect(text).toContain(REPLY_MARKER);
+  it("a live reply asks for the text only: no gh post, no marker, and the needs-a-human line", () => {
+    const text = replyInstruction(target);
+    expect(text).not.toContain(REPLY_MARKER);
+    expect(text).toContain("automata posts it for you");
     expect(text).toContain("NEEDS-HUMAN:");
+  });
+  it("the conductor, not the model, owns the marker", () => {
+    expect(replyMarkerFor()).toBe(REPLY_MARKER);
+    expect(replyMarkerFor({ kind: "rebase", headSha: "abc" })).toContain("conductor-rebase");
+    expect(replyMarkerFor({ kind: "ci-fix", headSha: "abc" })).toContain("conductor-ci-fix");
+  });
+  it("both tell the model to run gh and git commands exactly as written", () => {
+    for (const text of [replyInstruction(target), dryRunInstruction(target)]) {
+      expect(text).toContain("exactly as written");
+      expect(text).toContain("`rtk`");
+    }
   });
   it("a dry run offers the needs-a-human line only", () => {
     const text = dryRunInstruction(target);

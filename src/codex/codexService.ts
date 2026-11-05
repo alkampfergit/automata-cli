@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
+import { handleSpawnError, handleExitCode, resolveCommand, feedStdin } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
 import { readOnlyEnv } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
@@ -12,6 +12,8 @@ export interface InvokeCodexOptions {
   model?: string;
   /** Reasoning effort, forwarded verbatim. See `InvokeClaudeOptions.effort`. */
   effort?: string;
+  /** Where the prompt travels. See `InvokeClaudeOptions.promptOn`. Codex reads `-` as "take it from stdin". */
+  promptOn?: "argv" | "stdin";
 }
 
 /**
@@ -40,7 +42,7 @@ export function buildCodexArgs(prompt: string, options: InvokeCodexOptions = {})
   // encoded because `-c` parses that half as TOML, where a bare word is not a
   // string.
   if (options.effort) args.push("-c", `model_reasoning_effort=${toTomlBasicString(options.effort)}`);
-  args.push(prompt);
+  args.push(options.promptOn === "stdin" ? "-" : prompt);
   return args;
 }
 
@@ -78,13 +80,15 @@ export function runCodex(
       readOnly: options.readOnly,
       model: options.model,
       effort: options.effort,
+      promptOn: "stdin",
     });
     const sink = options.sink;
     const child = spawn(codexBin, args, {
-      stdio: ["inherit", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
     });
     trackChild(child);
+    feedStdin(child, prompt);
 
     // Piped only so the transcript can see the output; it still reaches the terminal
     // unless the caller discards the model output.

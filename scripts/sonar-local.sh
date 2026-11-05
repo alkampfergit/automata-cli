@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run a local approximation of the SonarCloud quality gate, with no build and no token.
 #   1. SonarJS rules (the same rules SonarCloud applies) -> code smells, bugs, vulnerabilities
-#   2. jscpd with the Sonar thresholds                    -> duplication (gate limit: 3%)
+#   2. scripts/sonar-shell-check.mjs                      -> shell rules (S7688, S131, S1066, S1192, S7679)
+#   3. jscpd with the Sonar thresholds                    -> duplication (gate limit: 3%)
 #
 # The gate looks at new code only, so by default the rules run on the files that differ
 # from the base branch (default: origin/develop) and on uncommitted files.
@@ -9,7 +10,7 @@
 #   scripts/sonar-local.sh --base <ref>    changed files against another ref
 #   scripts/sonar-local.sh --all           every file in src
 # Duplication always covers src and tests, because it is a ratio of the whole code.
-# The rules cover src only: SonarCloud reports no rule finding in tests for this project.
+# The rules cover src and the scripts folder only: SonarCloud reports no rule finding in tests for this project.
 # jscpd counts tokens differently from Sonar, so 150 tokens here matches the real result best.
 # Exit code is 0 when both checks pass, 1 otherwise.
 set -uo pipefail
@@ -28,7 +29,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 PATHS=(src tests)
-RULE_PATHS=(src)
+RULE_PATHS=(src scripts)
 DUPLICATION_LIMIT=3
 status=0
 
@@ -44,11 +45,17 @@ else
   while IFS= read -r file; do
     [[ -f "$file" ]] && FILES+=("$file")
   done < <({ git diff --name-only --diff-filter=d "$BASE"...HEAD; git diff --name-only --diff-filter=d HEAD; git ls-files --others --exclude-standard; } \
-    | sort -u | grep -E '^src/.*\.(ts|tsx)$')
+    | sort -u | grep -E '^(src/.*\.(ts|tsx)|scripts/.*\.mjs)$')
   echo "== SonarJS rules (${#FILES[@]} files changed against $BASE) =="
 fi
 
 if [[ "${#FILES[@]}" -gt 0 ]] && ! npx --no-install eslint --config eslint.sonar.config.js --report-unused-disable-directives-severity off "${FILES[@]}"; then
+  status=1
+fi
+
+echo
+echo "== Shell rules (every *.sh file) =="
+if ! node scripts/sonar-shell-check.mjs; then
   status=1
 fi
 

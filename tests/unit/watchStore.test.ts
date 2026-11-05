@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -14,7 +14,7 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   getStorySource: () => ({ via: "none", state: "open", title: "", children: [] }),
 }));
 
-import { readWatch, writeWatch } from "../../src/conductor/watchStore.js";
+import { readRounds, readSettings, readWatch, withStateLock, writeRound, writeSetting, writeWatch } from "../../src/conductor/watchStore.js";
 import { pruneWatchList, runWatchAdd, runWatchRemove } from "../../src/commands/conductor.js";
 
 let dir: string;
@@ -94,6 +94,35 @@ describe("watch store", () => {
     writeConfigFile({ conductor: { watch: [7, 8] } });
     expect(readWatch({ migrate: false })).toEqual([7, 8]);
     expect(existsSync(watchFile())).toBe(false);
+  });
+
+  it("keeps the legacy watch entries when a setting or a round is the first write", () => {
+    writeConfigFile({ conductor: { watch: [7, 8] } });
+    writeSetting("copilot-review-rounds", null, 2);
+    expect(readWatch()).toEqual([7, 8]);
+    rmSync(watchFile());
+    writeRound(7, { requested: 1, headSha: "abc" });
+    expect(readWatch()).toEqual([7, 8]);
+  });
+
+  it("keeps a round recorded by another writer between a read and a write", () => {
+    writeSetting("copilot-review-rounds", null, 2);
+    withStateLock(() => {
+      writeRound(7, { requested: 1, headSha: "abc" });
+      writeSetting("copilot-review-type", null, "lite");
+    });
+    expect(readRounds()["7"]?.requested).toBe(1);
+    expect(readSettings().global["copilot-review-type"]).toBe("lite");
+  });
+
+  it("releases the lock after a failing action and waits no longer for a stale lock", () => {
+    expect(() => withStateLock(() => { throw new Error("boom"); })).toThrow("boom");
+    expect(existsSync(`${watchFile()}.lock`)).toBe(false);
+    mkdirSync(`${watchFile()}.lock`, { recursive: true });
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(`${watchFile()}.lock`, old, old);
+    writeWatch([3]);
+    expect(readWatch()).toEqual([3]);
   });
 
   it("leaves no temporary file behind after a write", () => {

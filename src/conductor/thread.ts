@@ -50,7 +50,6 @@ export interface AgentRequest {
   headSha: string;
 }
 
-const REQUEST_NOUN: Record<AgentRequest["kind"], string> = { rebase: "rebase", "ci-fix": "CI-fix" };
 
 function requestMarker(request: AgentRequest): string {
   return request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
@@ -70,31 +69,45 @@ export function defaultReplyTarget(thread: ConductorThread): ReplyTarget {
 }
 
 /**
- * How the model must post. Appended by automata, after the configured frame, so
- * a frame that forgets it cannot lose it: the run's stdout is discarded, and a
- * reply that is not posted does not exist. `--body-file -` reads the body from
- * stdin, because a read-only run cannot write a file.
+ * The marker the conductor puts on its own comment: the reply marker, or the marker of the request the comment is.
+ * The model never writes it; `postReply` appends it, so a reply is counted whatever the model prints.
  */
-export function postingInstruction(target: ReplyTarget, request?: AgentRequest): string {
-  const command = target.kind === "pr" ? "pr" : "issue";
-  const number = String(target.number);
+export function replyMarkerFor(request?: AgentRequest): string {
+  return request === undefined ? REPLY_MARKER : requestMarker(request);
+}
+
+/**
+ * How the model must answer. Appended by automata, after the configured frame, so a frame that forgets it cannot
+ * lose it. The model only writes the reply: automata posts it with its own `gh` call, so the run needs no
+ * permission to comment, and adds the marker itself.
+ */
+export function replyInstruction(target: ReplyTarget): string {
   return [
-    `Post your reply as a comment on ${target.kind === "pr" ? "pull request" : "issue"} #${number}. ` +
-      "What you print is discarded; only a posted comment counts.",
-    `Run \`gh ${command} comment ${number} --body-file -\` and give the body on standard input, for example with a here-document.`,
-    request === undefined
-      ? `End the comment body with the line \`${REPLY_MARKER}\` on its own; automata counts the replies with it.`
-      : `End the comment body with the line \`${requestMarker(request)}\` on its own, and not with any other marker; automata counts the ${REQUEST_NOUN[request.kind]} requests with it.`,
-    "Post exactly one comment. Do not approve, merge or close anything.",
+    `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
+      "Do not post it and do not run `gh issue comment` or `gh pr comment`: automata posts it for you.",
+    "Make the reply, and nothing else, your final message. Do not write a marker line. Do not approve, merge or close anything.",
+    exactCommandsInstruction(),
     needsHumanInstruction(),
   ].join("\n");
+}
+
+/**
+ * How the model must run commands. A run may only use the `gh` and `git` commands on its allow-list, and
+ * the list matches the start of the command. A project rule that adds a prefix (for example `rtk`) makes
+ * every command fail the match, so the instruction overrides such a rule.
+ */
+function exactCommandsInstruction(): string {
+  return (
+    "Run every `gh` and `git` command exactly as written. Do not put `rtk` or any other wrapper or prefix in front of it, " +
+    "and ignore any project rule that asks for one. Do not change its options. A command that does not start with `gh` or `git` is refused."
+  );
 }
 
 /** How the model says that only a person can go on. It is the same in a live run and a dry run. */
 function needsHumanInstruction(): string {
   return (
-    "If you cannot go on without a person, post no comment. Make the last line of your final message " +
-    `\`${NEEDS_HUMAN_PREFIX} <one-line reason>\`; automata then labels the item and stays silent.`
+    "If you cannot go on without a person, write no reply. Make the last line of your final message " +
+    `\`${NEEDS_HUMAN_PREFIX} <one-line reason>\`; automata then labels the item and posts nothing.`
   );
 }
 
@@ -123,6 +136,7 @@ export function dryRunInstruction(target: ReplyTarget): string {
     `Write your reply to ${target.kind === "pr" ? "pull request" : "issue"} #${String(target.number)}. ` +
       "This is a dry run: you cannot post a comment, and you must not try.",
     "Make the reply, and nothing else, your final message. Do not approve, merge or close anything.",
+    exactCommandsInstruction(),
     needsHumanInstruction(),
   ].join("\n");
 }
@@ -228,7 +242,7 @@ export function composeConductorPrompt(input: ConductorPromptInput): string {
     "deliberately — do not ask about it.",
     "",
     ...(input.request === undefined ? [] : [requestInstruction(replyTo, input.request), ""]),
-    input.dryRun === true ? dryRunInstruction(replyTo) : postingInstruction(replyTo, input.request),
+    input.dryRun === true ? dryRunInstruction(replyTo) : replyInstruction(replyTo),
   );
   return lines.join("\n");
 }

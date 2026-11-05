@@ -1,4 +1,4 @@
-import { formatMessages } from "./conversation.js";
+import { formatMessages, type AnalyzedMessage } from "./conversation.js";
 import type { WorkItem } from "./workDetection.js";
 import type { ReviewThread } from "./ghWorkService.js";
 
@@ -20,6 +20,21 @@ export interface PromptInput {
   /** The resolved configured prompt for this turn kind. */
   frame: string;
 }
+
+/**
+ * Bytes per token assumed when the budget is checked. Automata has no tokenizer, so the
+ * size is an estimate: 4 bytes per token is the usual rule for English text and code, and
+ * it errs toward counting more tokens for multi-byte text, which is the safe side.
+ */
+export const BYTES_PER_TOKEN = 4;
+
+export function estimatePromptTokens(prompt: string): number {
+  return Math.ceil(Buffer.byteLength(prompt, "utf8") / BYTES_PER_TOKEN);
+}
+
+export type BudgetedPrompt =
+  | { ok: true; prompt: string; omittedMessages: number; estimatedTokens: number }
+  | { ok: false; detail: string; estimatedTokens: number };
 
 /**
  * The branch this turn must integrate with and must not push to.
@@ -53,6 +68,128 @@ function formatThreads(threads: ReviewThread[]): string {
 }
 
 export function composePrompt(input: PromptInput): string {
+  return render(input, new Set());
+}
+
+/**
+ * Compose the prompt and keep it within `maxPromptTokens` (estimated).
+ *
+ * The oldest conversation messages, from the issue and the pull request together, are
+ * dropped first. A message that is new since the last agent message is never dropped, and
+ * neither are the frame, the identifiers or the review threads. When that required part
+ * alone is too large, no prompt is returned and the detail names the setting to raise.
+ */
+export function composePromptWithinBudget(input: PromptInput, maxPromptTokens: number): BudgetedPrompt {
+  const full = render(input, new Set());
+  const fullTokens = estimatePromptTokens(full);
+  if (fullTokens <= maxPromptTokens) {
+    return { ok: true, prompt: full, omittedMessages: 0, estimatedTokens: fullTokens };
+  }
+
+  const surfaces: Surface[] = [];
+  if (input.item.issue) surfaces.push(newSurface(input.item.issueAnalysis.messages));
+  if (input.item.prAnalysis) surfaces.push(newSurface(input.item.prAnalysis.messages));
+  const droppable = surfaces
+    .flatMap((surface, surfaceIndex) =>
+      surface.messages.map((message, index) => ({ message, surfaceIndex, index })),
+    )
+    .filter(({ message }) => !message.isNew)
+    .sort((a, b) => a.message.createdAt.localeCompare(b.message.createdAt));
+
+  // Dropping more usually shortens the prompt, but not always: the first drop on a
+  // surface adds that surface's omission marker, which can outweigh a short message. A
+  // bisection would be wrong there, so the smallest fitting count is found by a scan. The
+  // scan tracks byte sizes per surface instead of rendering each candidate, so it costs
+  // one pass over the messages; only the chosen count is rendered.
+  const fullBytes = Buffer.byteLength(full, "utf8");
+  const fixedBytes = fullBytes - surfaces.reduce((sum, surface) => sum + sectionBytes(surface), 0);
+  let smallest = fullBytes;
+  for (let count = 1; count <= droppable.length; count++) {
+    const { surfaceIndex, index } = droppable[count - 1];
+    dropFrom(surfaces[surfaceIndex], index);
+    const bytes = fixedBytes + surfaces.reduce((sum, each) => sum + sectionBytes(each), 0);
+    smallest = Math.min(smallest, bytes);
+    if (Math.ceil(bytes / BYTES_PER_TOKEN) <= maxPromptTokens) {
+      const prompt = render(input, new Set(droppable.slice(0, count).map((entry) => entry.message)));
+      return { ok: true, prompt, omittedMessages: count, estimatedTokens: estimatePromptTokens(prompt) };
+    }
+  }
+  const needed = Math.ceil(smallest / BYTES_PER_TOKEN);
+  return {
+    ok: false,
+    estimatedTokens: needed,
+    detail:
+      `the prompt needs about ${String(needed)} tokens even with older messages omitted, ` +
+      `above the budget of ${String(maxPromptTokens)} tokens. Shorten the configured prompt or the newest messages, ` +
+      "or raise doWork.maxPromptTokens",
+  };
+}
+
+/** The size state of one conversation section while messages are dropped from it. */
+interface Surface {
+  messages: AnalyzedMessage[];
+  /** Byte length of each message as `formatMessages` renders it. */
+  formatted: number[];
+  keptCount: number;
+  keptBytes: number;
+  omittedCount: number;
+  firstOmitted: number;
+  lastOmitted: number;
+}
+
+function newSurface(messages: AnalyzedMessage[]): Surface {
+  const formatted = messages.map((message) => Buffer.byteLength(formatMessages([message]), "utf8"));
+  return {
+    messages,
+    formatted,
+    keptCount: messages.length,
+    keptBytes: formatted.reduce((sum, bytes) => sum + bytes, 0),
+    omittedCount: 0,
+    firstOmitted: Number.POSITIVE_INFINITY,
+    lastOmitted: -1,
+  };
+}
+
+function dropFrom(surface: Surface, index: number): void {
+  surface.keptBytes -= surface.formatted[index];
+  surface.keptCount--;
+  surface.omittedCount++;
+  surface.firstOmitted = Math.min(surface.firstOmitted, index);
+  surface.lastOmitted = Math.max(surface.lastOmitted, index);
+}
+
+/** Byte length of the section `formatConversation` renders for the surface's current state. */
+function sectionBytes(surface: Surface): number {
+  // Messages are joined by a blank line, so `keptCount` messages carry `keptCount - 1` separators.
+  const kept = surface.keptCount > 0 ? surface.keptBytes + 2 * (surface.keptCount - 1) : 0;
+  if (surface.omittedCount === 0) return kept;
+  const marker = Buffer.byteLength(
+    omissionMarker(
+      surface.omittedCount,
+      surface.messages[surface.firstOmitted].createdAt,
+      surface.messages[surface.lastOmitted].createdAt,
+    ),
+    "utf8",
+  );
+  return kept > 0 ? marker + 2 + kept : marker;
+}
+
+function omissionMarker(count: number, from: string, to: string): string {
+  return `[${String(count)} older message(s) from ${from} to ${to} omitted to fit the prompt budget]`;
+}
+
+/** A conversation section with the dropped messages replaced by one marker line. */
+function formatConversation(messages: AnalyzedMessage[], dropped: Set<AnalyzedMessage>): string {
+  const omitted = messages.filter((message) => dropped.has(message));
+  const kept = formatMessages(messages.filter((message) => !dropped.has(message)));
+  if (omitted.length === 0) return kept;
+  const first = omitted[0].createdAt;
+  const last = omitted.at(-1)?.createdAt ?? first;
+  const marker = omissionMarker(omitted.length, first, last);
+  return kept.length > 0 ? `${marker}\n\n${kept}` : marker;
+}
+
+function render(input: PromptInput, dropped: Set<AnalyzedMessage>): string {
   const { item, repo, agentUser, baseBranch, frame } = input;
 
   const lines: string[] = [
@@ -94,7 +231,7 @@ export function composePrompt(input: PromptInput): string {
       "",
       "Full conversation on the issue (authorized accounts and you only, oldest first):",
       "",
-      formatMessages(item.issueAnalysis.messages),
+      formatConversation(item.issueAnalysis.messages, dropped),
     );
   }
 
@@ -103,7 +240,7 @@ export function composePrompt(input: PromptInput): string {
       "",
       "Conversation on the pull request (authorized accounts and you only, oldest first):",
       "",
-      formatMessages(item.prAnalysis.messages),
+      formatConversation(item.prAnalysis.messages, dropped),
     );
   }
 

@@ -10,6 +10,46 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-05
+
+### Added
+
+- `do-work` keeps its prompt within a token budget. When the estimated size is above `doWork.maxPromptTokens`
+  (default `100000`, set with `config set do-work-max-prompt-tokens`), the oldest conversation messages are left
+  out and a marker says how many. The frame, the new messages and the review threads are kept; if they alone are
+  too large, no run starts and the marker comment says why. See `docs/do-work.md` (#176)
+
+- `automata conductor config [<id>] set|get|unset|list` sets `copilot-review-rounds` (an integer, 0 is off) and
+  `copilot-review-type` (`balanced` or `lite`; stored, but not supported yet, so not sent to GitHub), for one item or
+  for all. With rounds set, the conductor asks Copilot for a review of each pull request, waits for it, lets the agent
+  fix the comments, asks again up to the number of rounds, and holds back `conductor-ready` until the rounds are done.
+  See `docs/conductor.md` (#172)
+- `automata git request-copilot-review [<pr>]` asks Copilot to review a pull request. See `docs/git.md` (#172)
+- `automata conductor` applies the label `conductor-ready` to a watched pull request (or one linked to a watched
+  issue) that is open, not a draft, free of merge conflicts, has no unresolved review thread and has only green
+  checks. It removes the label when one of these stops being true. It posts no comment. See `docs/conductor.md`
+
+- The conductor reads the thread of a story child before it starts the child. When the agent spoke last, a model run
+  answers as the conductor user (new `conductor.prompts.child`), then the child is labelled; when an allowed account
+  spoke last, the child waits; the fixed start comment is posted only for a child with no comment. A model that needs
+  a person (`NEEDS-HUMAN:`) posts nothing and its question is printed. See `docs/conductor.md` (#173)
+
+### Changed
+
+- `do-work` passes the prompt to Claude and Codex on stdin instead of as a command-line argument. A long conversation
+  no longer fails with `E2BIG`, and the 96 KiB refusal ("the composed prompt is … KiB") is removed. `--dry-run` now
+  prints the command with `< <prompt file>`, where the prompt file is written under the system temporary directory
+  (one fixed name for each item and turn). `--dry-run --json` gains `promptFile`, and `args` ends in a bare `-p` (or
+  `-` for Codex). (#40)
+
+### Fixed
+
+- The conductor prompt tells the model to run `gh` and `git` commands exactly as written. A project rule that
+  prefixes commands (for example with `rtk`) no longer makes the run refuse every command (#163).
+- The conductor posts its own replies. The model only writes the reply (or `NEEDS-HUMAN: <question>`); the
+  conductor posts it with its own `gh` call and adds the marker. A refused `gh` permission can no longer block a
+  reply, and a run that prints no answer fails with `the model produced no answer`. `do-work` is not changed (#179).
+
 ## [0.13.0] - 2026-10-19
 
 ### Added

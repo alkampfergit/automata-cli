@@ -30,6 +30,8 @@ export interface PullRequestRef {
   mergeable?: string;
   /** The commit the head branch points at. */
   headSha?: string;
+  /** Label names; only `getPrSurface` fills them. */
+  labels?: string[];
 }
 
 export interface ReviewThread {
@@ -104,6 +106,7 @@ interface RawPrView {
   isDraft?: boolean;
   mergeable?: string;
   headRefOid?: string;
+  labels?: { name?: string }[];
   body: string;
   author?: RawAuthor;
   createdAt: string;
@@ -173,9 +176,9 @@ interface RawComment {
   created_at: string;
 }
 
-function run(cmd: string, args: string[]): { stdout: string; stderr: string; status: number } {
+function run(cmd: string, args: string[], input?: string): { stdout: string; stderr: string; status: number } {
   const startedAt = Date.now();
-  const result = spawnSync(cmd, args, { encoding: "utf8" });
+  const result = spawnSync(cmd, args, { encoding: "utf8", ...(input === undefined ? {} : { input }) });
   // A no-op unless `--check --verbose` armed the sink; see `commandTrace.ts`.
   // `-1` for a command that never started, which is a different fact from one
   // that ran and failed, and the distinction is what the trace exists for.
@@ -616,7 +619,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       "view",
       String(prNumber),
       "--json",
-      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid",
+      "number,title,url,headRefName,baseRefName,isCrossRepository,state,isDraft,body,author,createdAt,updatedAt,assignees,comments,reviews,mergeable,headRefOid,labels",
     ],
     `read pull request #${String(prNumber)}`,
   );
@@ -657,6 +660,7 @@ export function getPrSurface(prNumber: number): PrSurface {
       updatedAt: raw.updatedAt ?? raw.createdAt,
       mergeable: raw.mergeable,
       headSha: raw.headRefOid,
+      labels: (raw.labels ?? []).map((label) => label.name ?? "").filter((name) => name.length > 0),
     },
     assignees: (raw.assignees ?? []).map(login).filter((name) => name.length > 0),
     messages,
@@ -687,6 +691,29 @@ export function getPrChecks(prNumber: number): CiCheck[] {
     const pending = state === "PENDING" || state === "EXPECTED";
     return { name, status: pending ? "PENDING" : "COMPLETED", conclusion: pending || state === "" ? null : state };
   });
+}
+
+/** The pull request of the current branch, or the one named; its number and state. */
+export function getPrNumberAndState(prNumber?: number): { number: number; state: string } {
+  const args = ["pr", "view", ...(prNumber === undefined ? [] : [String(prNumber)]), "--json", "number,state"];
+  return ghJson<{ number: number; state: string }>(
+    args,
+    prNumber === undefined ? "read the pull request of the current branch" : `read pull request #${String(prNumber)}`,
+  );
+}
+
+/**
+ * Whether Copilot is a requested reviewer that has not reviewed yet. GitHub keeps the reviewer in `reviewRequests`
+ * until its review is submitted, and drops it then.
+ */
+export function getCopilotReviewPending(prNumber: number): boolean {
+  const raw = ghJson<{ reviewRequests?: { login?: string; name?: string; slug?: string }[] | null }>(
+    ["pr", "view", String(prNumber), "--json", "reviewRequests"],
+    `read the review requests of pull request #${String(prNumber)}`,
+  );
+  return (raw.reviewRequests ?? []).some((request) =>
+    [request.login, request.name, request.slug].some((name) => name?.toLowerCase().includes("copilot") === true),
+  );
 }
 
 /**
@@ -835,6 +862,16 @@ export function commentOnIssue(number: number, comment: string): void {
   if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(number)}.`);
 }
 
+/**
+ * Post a comment on an issue or a pull request. The body goes on standard input, so its length and its
+ * characters never meet a shell or an argument limit.
+ */
+export function postComment(target: { kind: "issue" | "pr"; number: number }, body: string): void {
+  const args = [target.kind === "pr" ? "pr" : "issue", "comment", String(target.number), "--body-file", "-"];
+  const { stderr, status } = run("gh", args, body);
+  if (status !== 0) throw new Error(stderr.trim() || `Failed to comment on #${String(target.number)}.`);
+}
+
 /** Close an issue with a comment, in one call, so a failed close cannot leave the comment to be posted again. */
 export function closeIssue(number: number, comment: string): void {
   const { stderr, status } = run("gh", ["issue", "close", String(number), "--comment", comment]);
@@ -860,6 +897,15 @@ export function addLabel(target: Pick<WatchTarget, "number" | "kind">, name: str
   }
   if (result.status !== 0) {
     throw new Error(result.stderr.trim() || `Failed to add the label ${name} to #${String(target.number)}.`);
+  }
+}
+
+/** Remove a label from an issue or a pull request. A label the item does not have is not an error. */
+export function removeLabel(target: Pick<WatchTarget, "number" | "kind">, name: string): void {
+  const edit = target.kind === "pr" ? "pr" : "issue";
+  const result = run("gh", [edit, "edit", String(target.number), "--remove-label", name]);
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Failed to remove the label ${name} from #${String(target.number)}.`);
   }
 }
 

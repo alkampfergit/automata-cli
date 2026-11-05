@@ -238,7 +238,9 @@ describe("runCodex quiet", () => {
     const mockSpawn = vi.fn();
     vi.resetModules();
     vi.doMock("node:child_process", () => ({ spawn: mockSpawn, spawnSync: vi.fn() }));
-    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    const { Writable } = await import("node:stream");
+    const stdin = new Writable({ write(_c, _e, done) { done(); } });
+    const child = Object.assign(new EventEmitter(), { stdin, stdout: new EventEmitter(), stderr: new EventEmitter() });
     mockSpawn.mockReturnValue(child);
     const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     const { runCodex } = await import("../../src/codex/codexService.js");

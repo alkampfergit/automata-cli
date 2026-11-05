@@ -1183,3 +1183,24 @@ describe("getStorySource and closeIssue", () => {
     expect(calls().map((c) => c.args)).toEqual([["issue", "close", "3", "--comment", "done"]]);
   });
 });
+
+describe("postComment", () => {
+  beforeEach(() => mockSpawnSync.mockReset());
+
+  it("posts the body on standard input to an issue, and to a pull request", async () => {
+    const { postComment } = await import("../../src/github/ghWorkService.js");
+    mockSpawnSync.mockReturnValue(ok(""));
+    postComment({ kind: "issue", number: 7 }, "Body with $(shell) and `ticks`");
+    postComment({ kind: "pr", number: 9 }, "Second");
+    const [issue, pr] = mockSpawnSync.mock.calls as [string, string[], { input: string }][];
+    expect(issue[1]).toEqual(["issue", "comment", "7", "--body-file", "-"]);
+    expect(issue[2].input).toBe("Body with $(shell) and `ticks`");
+    expect(pr[1]).toEqual(["pr", "comment", "9", "--body-file", "-"]);
+  });
+
+  it("throws the stderr of a failed post", async () => {
+    const { postComment } = await import("../../src/github/ghWorkService.js");
+    mockSpawnSync.mockReturnValue({ stdout: "", stderr: "HTTP 403\n", status: 1 });
+    expect(() => postComment({ kind: "issue", number: 7 }, "x")).toThrow("HTTP 403");
+  });
+});

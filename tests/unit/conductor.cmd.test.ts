@@ -18,13 +18,24 @@ const mockCommentOnIssue = vi.fn();
 const mockTarget = vi.fn();
 const mockApply = vi.fn();
 const mockAddLabel = vi.fn();
+const mockRemoveLabel = vi.fn();
 const mockPostMarker = vi.fn();
 const mockLinks = vi.fn();
 const mockIssueSurface = vi.fn();
 const mockPrSurface = vi.fn();
 const mockChecks = vi.fn();
 const mockRunClaude = vi.fn();
+const mockPostComment = vi.fn();
+/** A model run that prints a reply, as the conductor now expects. */
+function printedReply(_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }): Promise<void> {
+  options.sink?.output("stdout", JSON.stringify({ type: "result", result: "My reply." }) + "\n");
+  return Promise.resolve();
+}
 const mockRunCodex = vi.fn();
+const mockPending = vi.fn();
+const mockAddReviewer = vi.fn();
+let settingsState: { global: Record<string, number | string>; items: Record<string, Record<string, number | string>> } = { global: {}, items: {} };
+let roundsState: Record<string, { requested: number; headSha: string | null; stopped?: string }> = {};
 
 vi.mock("../../src/config/configStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/config/configStore.js")>();
@@ -37,10 +48,22 @@ vi.mock("../../src/config/configStore.js", async (importOriginal) => {
 vi.mock("../../src/conductor/watchStore.js", () => ({
   readWatch: () => watchState,
   writeWatch: (list: number[]) => mockWriteWatch(list),
+  updateWatchList: (change: (current: number[]) => number[]) => {
+    const next = change(watchState);
+    if (next.length !== watchState.length || next.some((id, i) => id !== watchState[i])) mockWriteWatch(next);
+  },
   readStories: () => storyState,
   writeStories: (list: number[]) => {
     storyState = list;
   },
+  readSettings: () => settingsState,
+  readRounds: () => roundsState,
+  writeRound: (n: number, record: { requested: number; headSha: string | null; stopped?: string }) => {
+    roundsState = { ...roundsState, [String(n)]: record };
+  },
+}));
+vi.mock("../../src/config/githubService.js", () => ({
+  addCopilotReviewer: (...a: unknown[]) => mockAddReviewer(...a),
 }));
 vi.mock("../../src/github/ghWorkService.js", () => ({
   getAuthenticatedLogin: () => mockLogin(),
@@ -50,12 +73,15 @@ vi.mock("../../src/github/ghWorkService.js", () => ({
   commentOnIssue: (...a: unknown[]) => mockCommentOnIssue(...a),
   applyDiscovery: (...a: unknown[]) => mockApply(...a),
   addLabel: (...a: unknown[]) => mockAddLabel(...a),
+  removeLabel: (...a: unknown[]) => mockRemoveLabel(...a),
   postMarker: (...a: unknown[]) => mockPostMarker(...a),
+  postComment: (...a: unknown[]) => mockPostComment(...a),
   getOpenPrLinkMap: () => mockLinks(),
   getIssueSurface: (...a: unknown[]) => mockIssueSurface(...a),
   getPrSurface: (...a: unknown[]) => mockPrSurface(...a),
   getPrChecks: (...a: unknown[]) => mockChecks(...a),
   getRepoSlug: () => ({ owner: "acme", repo: "widget" }),
+  getCopilotReviewPending: (...a: unknown[]) => mockPending(...a),
 }));
 vi.mock("../../src/claude/claudeService.js", () => ({
   runClaude: (...a: unknown[]) => mockRunClaude(...a),
@@ -87,6 +113,9 @@ beforeEach(() => {
   stderr = "";
   watchState = [];
   storyState = [];
+  settingsState = { global: {}, items: {} };
+  roundsState = {};
+  mockPending.mockReturnValue(false);
   mockStorySource.mockReturnValue({ via: "none", state: "open", title: "", children: [] });
   vi.spyOn(process.stdout, "write").mockImplementation((s) => ((stdout += String(s)), true));
   vi.spyOn(process.stderr, "write").mockImplementation((s) => ((stderr += String(s)), true));
@@ -318,13 +347,29 @@ describe("conductor tick replies", () => {
   it("runs claude read-only on a watched issue the agent spoke last on, and reports the post", async () => {
     watching({ models: { claude: "opus" }, effort: { claude: "high" } });
     agentSpokeLast(true);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     expect(await run()).toBe(0);
     const [prompt, options] = mockRunClaude.mock.calls[0] as [string, Record<string, unknown>];
     expect(options).toMatchObject({ readOnly: true, model: "opus", effort: "high", ghRepo: "acme/widget" });
-    expect(prompt).toContain("gh issue comment 7 --body-file -");
+    expect(options).not.toHaveProperty("replyTo");
+    expect(prompt).not.toContain("--body-file");
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "issue", number: 7 }, "My reply.\n\n<!-- automata:conductor -->");
     expect(stdout).toMatch(/posted a reply on issue #7/);
     expect(mockRunCodex).not.toHaveBeenCalled();
+  });
+
+  it("appends the footer when the reply quotes the marker before its last line", async () => {
+    watching({});
+    agentSpokeLast(true);
+    mockRunClaude.mockImplementation((_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }) => {
+      options.sink?.output("stdout", JSON.stringify({ type: "result", result: "Quote: <!-- automata:conductor --> done." }) + "\n");
+      return Promise.resolve();
+    });
+    expect(await run()).toBe(0);
+    expect(mockPostComment).toHaveBeenCalledWith(
+      { kind: "issue", number: 7 },
+      "Quote: <!-- automata:conductor --> done.\n\n<!-- automata:conductor -->",
+    );
   });
 
   it("refuses codex: it cannot be limited to comments on the reply target", async () => {
@@ -339,10 +384,30 @@ describe("conductor tick replies", () => {
   it("exits 1 and says so when the run posted nothing", async () => {
     watching();
     agentSpokeLast(false);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     expect(await run()).toBe(1);
     expect(stderr).toMatch(/posted no comment on issue #7/);
     expect(mockRelease).toHaveBeenCalledOnce();
+  });
+
+  it("exits 1 and says so when the model produced no answer, posting nothing", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockResolvedValue(undefined);
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/failed and posted no comment.*the model produced no answer/);
+    expect(mockPostComment).not.toHaveBeenCalled();
+  });
+
+  it("exits 1 when the post itself fails", async () => {
+    watching();
+    agentSpokeLast(false);
+    mockRunClaude.mockImplementation(printedReply);
+    mockPostComment.mockImplementationOnce(() => {
+      throw new Error("gh: HTTP 403");
+    });
+    expect(await run()).toBe(1);
+    expect(stderr).toMatch(/failed and posted no comment.*HTTP 403/);
   });
 
   it("exits 1 when the run fails without posting", async () => {
@@ -575,7 +640,7 @@ describe("conductor loop safety", () => {
   it("defaults the limit to 5", async () => {
     watching();
     conversation(4);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     mockRunClaude.mockClear();
@@ -607,6 +672,77 @@ describe("conductor loop safety", () => {
     expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
     expect(stdout).toMatch(/needs a human \(the choice is a policy call\)/);
     expect(stderr).not.toMatch(/posted no comment/);
+    expect(mockPostComment).not.toHaveBeenCalled();
+  });
+
+  it("removes conductor-ready from a linked pull request when the model says it needs a human", async () => {
+    watching();
+    conversation(0);
+    mockLinks.mockReturnValue({ byIssue: new Map([[7, [{ number: 50 }]]]) });
+    mockPrSurface.mockImplementation((n: number) => ({
+      pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", labels: [] },
+      assignees: [],
+      messages: [],
+      threads: [],
+    }));
+    mockChecks.mockReturnValue([{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }]);
+    mockRunClaude.mockImplementation(printed("NEEDS-HUMAN: the choice is a policy call"));
+    expect(await run()).toBe(0);
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50, kind: "pr" }), "conductor-ready", expect.any(String));
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 7, kind: "issue" }), "conductor-blocked", expect.any(String));
+    expect(mockRemoveLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50, kind: "pr" }), "conductor-ready");
+  });
+
+  describe("conductor-ready reconciliation", () => {
+    const readyPr = (n: number, labels: string[] = []) => ({
+      pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", labels },
+      assignees: [],
+      messages: [],
+      threads: [],
+    });
+    const green = [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }];
+
+    it("does not add the label to a pull request of a blocked watched issue, also as its own entry", async () => {
+      watchState = [5, 50];
+      mockTarget.mockImplementation((n: number) => (n === 5 ? { ...issue(5), labels: ["conductor-blocked"] } : pr(50)));
+      mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+      mockPrSurface.mockImplementation((n: number) => readyPr(n));
+      mockChecks.mockReturnValue(green);
+      expect(await run()).toBe(0);
+      expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+    });
+
+    it("removes the label from a blocked story child's pull request and retries a failed removal", async () => {
+      watchState = [];
+      storyState = [30];
+      mockStorySource.mockReturnValue({ via: "label", state: "open", title: "S", children: [{ number: 31, state: "open", title: "C", labels: [], assignees: [] }] });
+      mockLinks.mockReturnValue({ byIssue: new Map([[31, [{ number: 60 }]]]) });
+      mockTarget.mockImplementation((n: number) => ({ ...issue(n), labels: ["conductor-blocked"] }));
+      mockPrSurface.mockImplementation((n: number) => readyPr(n, ["conductor-ready"]));
+      mockChecks.mockReturnValue(green);
+      mockRemoveLabel.mockImplementationOnce(() => {
+        throw new Error("503");
+      });
+      expect(await run()).toBe(0);
+      expect(stderr).toMatch(/could not remove the conductor-ready label from #60: 503/);
+      expect(await run()).toBe(0);
+      expect(mockRemoveLabel).toHaveBeenCalledTimes(2);
+      expect(mockRemoveLabel).toHaveBeenLastCalledWith(expect.objectContaining({ number: 60 }), "conductor-ready");
+    });
+
+    it("removes the label from a watched pull request that closed, before the prune, and only reports it in a dry run", async () => {
+      watchState = [50];
+      mockTarget.mockReturnValue({ ...pr(50, "closed"), labels: ["conductor-ready"] });
+      expect(await run()).toBe(0);
+      expect(mockRemoveLabel).toHaveBeenCalledWith({ kind: "pr", number: 50 }, "conductor-ready");
+      mockRemoveLabel.mockClear();
+      stdout = "";
+      watchState = [50];
+      const { runConductor } = await import("../../src/commands/conductor.js");
+      expect(await runConductor({ dryRun: true })).toBe(0);
+      expect(mockRemoveLabel).not.toHaveBeenCalled();
+      expect(stdout).toMatch(/dry run, a tick would remove the conductor-ready label from #50/);
+    });
   });
 
   it("exits 1 when the label cannot be applied", async () => {
@@ -673,7 +809,7 @@ describe("conductor --automatic", () => {
     vi.useFakeTimers();
     try {
       watchState = [7];
-      mockTarget.mockReturnValueOnce(issue(7));
+      mockTarget.mockReturnValueOnce(issue(7)).mockReturnValueOnce(issue(7)).mockReturnValueOnce(issue(7));
       mockTarget.mockReturnValue({ ...issue(7), state: "closed" });
       const done = runWith({ automatic: true, interval: "3" });
       await vi.advanceTimersByTimeAsync(3000);
@@ -699,7 +835,7 @@ describe("conductor --automatic", () => {
     expect(mockRunClaude).not.toHaveBeenCalled();
 
     mockInspectRun.mockReturnValue({ kind: "free" });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await runWith({});
     expect(mockRunClaude).toHaveBeenCalledOnce();
   });
@@ -728,19 +864,20 @@ describe("conductor rebase check", () => {
 
   it("rebases a blocked pull request with a conflict, with the configured prompt and the rebase marker", async () => {
     watchingPr("CONFLICTING", spoke, ["conductor-blocked"], { prompts: { rebase: "REBASE NOW" } });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     const [prompt] = mockRunClaude.mock.calls[0] as [string];
     expect(prompt.startsWith("REBASE NOW")).toBe(true);
-    expect(prompt).toContain("gh pr comment 9 --body-file -");
-    expect(prompt).toContain(rebaseMark(SHA));
+    expect(prompt).toContain("Write your reply to pull request #9.");
+    expect(prompt).not.toContain(rebaseMark(SHA));
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "pr", number: 9 }, `My reply.\n\n${rebaseMark(SHA)}`);
     expect(stdout).toMatch(/needs a rebase request on pull request #9/);
   });
 
   it("uses the default prompt of the issue", async () => {
     watchingPr("CONFLICTING", spoke);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
   });
@@ -753,7 +890,7 @@ describe("conductor rebase check", () => {
 
   it("ignores a rebase marker written by an account other than the agent", async () => {
     watchingPr("CONFLICTING", [...spoke, comment("mallory", "2026-10-01T10:00:00Z", `rebase\n${rebaseMark(SHA)}`)]);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
   });
@@ -768,7 +905,7 @@ describe("conductor rebase check", () => {
   it("has its own limit: replies do not use it up, and rebases do not use up the replies", async () => {
     const replies = [1, 2].map((i) => comment("alice", `2026-10-02T0${String(i)}:00:00Z`, `r\n${MARK}`));
     watchingPr("CONFLICTING", [...spoke, ...replies], ["conductor-blocked"], { maxRepliesPerItem: 2 });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
 
@@ -826,19 +963,20 @@ describe("conductor CI-fix check", () => {
 
   it("asks for a fix on a blocked pull request, with the configured prompt and the CI-fix marker", async () => {
     watchingPr(FAILED, spoke, { prompts: { ciFix: "FIX THE BUILD" } });
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect(mockRunClaude).toHaveBeenCalledOnce();
     const [prompt] = mockRunClaude.mock.calls[0] as [string];
     expect(prompt.startsWith("FIX THE BUILD")).toBe(true);
-    expect(prompt).toContain("gh pr comment 9 --body-file -");
-    expect(prompt).toContain(fixMark(SHA));
+    expect(prompt).toContain("Write your reply to pull request #9.");
+    expect(prompt).not.toContain(fixMark(SHA));
+    expect(mockPostComment).toHaveBeenCalledWith({ kind: "pr", number: 9 }, `My reply.\n\n${fixMark(SHA)}`);
     expect(stdout).toMatch(/needs a CI-fix request on pull request #9/);
   });
 
   it("uses the default prompt", async () => {
     watchingPr(FAILED);
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^A check failed on this pull request/);
   });
@@ -861,7 +999,7 @@ describe("conductor CI-fix check", () => {
 
   it("asks for the rebase first on a conflicting pull request", async () => {
     watchingPr(FAILED, spoke, {}, "CONFLICTING");
-    mockRunClaude.mockResolvedValue(undefined);
+    mockRunClaude.mockImplementation(printedReply);
     await run();
     expect((mockRunClaude.mock.calls[0] as [string])[0]).toMatch(/^please fetch, update the target branch then rebase/);
   });
@@ -911,6 +1049,8 @@ describe("conductor stories", () => {
   beforeEach(() => {
     mockApply.mockReset();
     mockReadConfig.mockReturnValue({ ...CONFIG, issueDiscoveryTechnique: "label", issueDiscoveryValue: "automata" });
+    // A child that nobody commented on yet.
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, []));
   });
 
   async function runWith(options: { check?: boolean; dryRun?: boolean } = {}): Promise<number> {
@@ -979,16 +1119,86 @@ describe("conductor stories", () => {
     expect(`${stdout}${stderr}`).toMatch(/#12/);
   });
 
+  describe("a child with a thread", () => {
+    const agentLast = [text("alice", "t1", "please"), text("bot", "t2", "Which database?")];
+
+    beforeEach(() => {
+      storyState = [10];
+      mockStorySource.mockReturnValue(story([sub(12)]));
+      mockTarget.mockImplementation((id: number) => issue(id));
+    });
+
+    it("waits, without a comment or a label, when an allowed account spoke last", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, [...agentLast, text("alice", "t3", "Postgres")]));
+      expect(await runWith()).toBe(0);
+      expect(stdout).toMatch(/child #12 is waiting for the agent/);
+      expect(mockApply).not.toHaveBeenCalled();
+      expect(mockCommentOnIssue).not.toHaveBeenCalled();
+      expect(mockRunClaude).not.toHaveBeenCalled();
+    });
+
+    it("answers as the user when the agent spoke last, then applies the label and posts no start comment", async () => {
+      let posted = false;
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, posted ? [...agentLast, text("alice", "t3", "Postgres")] : agentLast));
+      mockRunClaude.mockImplementation(async (prompt: string) => {
+        expect(prompt).toMatch(/child of story #10: Epic/);
+        expect(prompt).toMatch(/Which database\?/);
+        posted = true;
+      });
+      expect(await runWith()).toBe(0);
+      expect(mockRunClaude).toHaveBeenCalledOnce();
+      expect(mockCommentOnIssue).not.toHaveBeenCalled();
+      expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ number: 12 }), "label", "automata");
+    });
+
+    it("prints the question and applies no label when the model needs the user", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+        options.sink.output("stdout", JSON.stringify({ type: "result", result: "NEEDS-HUMAN: Which budget?" }) + "\n");
+      });
+      expect(await runWith()).toBe(0);
+      expect(stdout).toMatch(/#12 needs you: Which budget\?/);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
+
+    it("leaves the child next and exits 1 when the run posted nothing", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockImplementation(printedReply);
+      expect(await runWith()).toBe(1);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
+
+    it("--dry-run prints the reply and changes nothing", async () => {
+      mockIssueSurface.mockImplementation((n: number) => issueSurface(n, agentLast));
+      mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {
+        options.sink.output("stdout", JSON.stringify({ type: "result", result: "Use Postgres." }) + "\n");
+      });
+      expect(await runWith({ dryRun: true })).toBe(0);
+      expect(stdout).toMatch(/the agent spoke last on child #12; a tick would answer it/);
+      expect(stdout).toMatch(/Use Postgres\./);
+      expect(mockApply).not.toHaveBeenCalled();
+    });
+  });
+
   it("a failed label leaves the child startable: the comment came first, so a retry repeats both", async () => {
     storyState = [10];
     mockStorySource.mockReturnValue(story([sub(12)]));
     mockApply.mockImplementationOnce(() => {
       throw new Error("label failed");
     });
+    // The issue surface keeps the posted start comment, as GitHub does.
+    const posted: unknown[] = [];
+    mockCommentOnIssue.mockImplementation((_n: number, body: string) => {
+      posted.push({ kind: "issue-comment", author: "alice", body, createdAt: "2026-01-01T00:00:00Z" });
+    });
+    mockIssueSurface.mockImplementation((n: number) => issueSurface(n, posted));
     expect(await runWith()).toBe(1);
     expect(mockCommentOnIssue).toHaveBeenCalledOnce();
+    // The next tick sees the conductor user's own comment: the child waits, with no second comment and no label attempt.
     expect(await runWith()).toBe(0);
-    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(mockCommentOnIssue).toHaveBeenCalledOnce();
+    expect(mockApply).toHaveBeenCalledOnce();
+    expect(stdout).toMatch(/waiting for the agent/);
   });
 
   it("a failed comment applies no label, so the child stays next", async () => {
@@ -1058,5 +1268,144 @@ describe("conductor stories", () => {
     const { runWatchList } = await import("../../src/commands/conductor.js");
     expect(runWatchList()).toBe(0);
     expect(stdout).toMatch(/story #10 \(open, 3 children via sub-issues\): Epic\n  #11 closed: C11\n  #12 next: C12\n  #13 queued: C13/);
+  });
+});
+
+describe("conductor Copilot review rounds", () => {
+  const SHA = "a".repeat(40);
+  const green = [{ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }];
+  const prSurface = (n: number, extra: object = {}, labels: string[] = [], threads: unknown[] = []) => ({
+    pr: { number: n, title: "P", url: "u", state: "OPEN", isDraft: false, headRefName: "b", baseRefName: "develop", mergeable: "MERGEABLE", headSha: SHA, labels, ...extra },
+    assignees: [],
+    messages: [],
+    threads,
+  });
+
+  function watchingPr(n: number) {
+    watchState = [n];
+    mockTarget.mockReturnValue({ number: n, kind: "pr", state: "open", title: "P", labels: [] });
+    mockPrSurface.mockImplementation((id: number) => prSurface(id));
+    mockChecks.mockReturnValue(green);
+  }
+
+  it("does nothing about Copilot when no rounds are configured", async () => {
+    watchingPr(50);
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockPending).not.toHaveBeenCalled();
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50 }), "conductor-ready", expect.any(String));
+  });
+
+  it("requests the first round, records it, and holds the ready label back", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+    expect(roundsState["50"]).toEqual({ requested: 1, headSha: SHA });
+    expect(stdout).toMatch(/requesting Copilot review round 1 of 2/);
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  it("waits while a review is pending and does not request twice", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    mockPending.mockReturnValue(true);
+    expect(await run()).toBe(0);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  it("applies the setting of the issue that links the pull request, and the pull request's own value wins", async () => {
+    watchState = [5];
+    mockTarget.mockReturnValue({ number: 5, kind: "issue", state: "open", title: "I", labels: [] });
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    mockPrSurface.mockImplementation((id: number) => prSurface(id));
+    mockChecks.mockReturnValue(green);
+    settingsState.items["5"] = { "copilot-review-rounds": 1 };
+    await run();
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+    mockAddReviewer.mockClear();
+    roundsState = {};
+    settingsState.items["50"] = { "copilot-review-rounds": 0 };
+    await run();
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed request, stops the rounds of that pull request and goes on", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 2;
+    mockAddReviewer.mockImplementation(() => {
+      throw new Error("no licence");
+    });
+    expect(await run()).toBe(0);
+    expect(stderr).toMatch(/could not ask Copilot to review PR #50, going on without Copilot: no licence/);
+    expect(roundsState["50"]).toMatchObject({ requested: 0, stopped: "no licence" });
+    mockAddReviewer.mockClear();
+    await run();
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(mockAddLabel).toHaveBeenCalledWith(expect.objectContaining({ number: 50 }), "conductor-ready", expect.any(String));
+  });
+
+  it("applies an issue-level value to a watched pull request that its issue does not handle", async () => {
+    watchingPr(50);
+    mockLinks.mockReturnValue({ byIssue: new Map([[5, [{ number: 50 }]]]) });
+    settingsState.items["5"] = { "copilot-review-rounds": 1 };
+    await run();
+    expect(mockAddReviewer).toHaveBeenCalledWith(50);
+  });
+
+  it("reads the surface again once no review is pending, so a finished review is not missed", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    const open = { id: "t1", isResolved: false, comments: [{ author: "copilot-pull-request-reviewer", body: "x" }] };
+    let reads = 0;
+    mockPrSurface.mockImplementation((id: number) => prSurface(id, {}, [], ++reads === 1 ? [] : [open]));
+    await run();
+    expect(reads).toBeGreaterThan(1);
+    expect(mockAddLabel).not.toHaveBeenCalledWith(expect.anything(), "conductor-ready", expect.anything());
+  });
+
+  const spokenLast = [
+    { kind: "pr-comment", author: "alice", body: "go", createdAt: "2026-10-01T09:00:00Z" },
+    { kind: "pr-comment", author: "bot", body: "question?", createdAt: "2026-10-01T10:00:00Z" },
+  ];
+
+  it("holds an ordinary reply when the review status cannot be read, and retries next tick", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    mockPrSurface.mockImplementation((id: number) => ({ ...prSurface(id), messages: spokenLast }));
+    mockPending.mockImplementation(() => {
+      throw new Error("network");
+    });
+    expect(await run()).toBe(0);
+    expect(stderr).toMatch(/could not check the Copilot review rounds of #50: network/);
+    expect(stdout).toMatch(/a Copilot review is pending; waiting/);
+    expect(mockRunClaude).not.toHaveBeenCalled();
+  });
+
+  it("builds the prompt from the surface read after the review finished", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    roundsState["50"] = { requested: 1, headSha: SHA };
+    const open = { id: "t1", isResolved: false, path: "src/a.ts", line: 3, comments: [{ author: "copilot-pull-request-reviewer", body: "FRESH-COMMENT" }] };
+    let reads = 0;
+    mockPrSurface.mockImplementation((id: number) => ({ ...prSurface(id, {}, [], ++reads === 1 ? [] : [open]), messages: spokenLast }));
+    mockRunClaude.mockImplementation(printedReply);
+    await run();
+    const [prompt] = mockRunClaude.mock.calls[0] as [string];
+    expect(prompt).toContain("FRESH-COMMENT");
+  });
+
+  it("a dry run reports the request and records nothing", async () => {
+    watchingPr(50);
+    settingsState.global["copilot-review-rounds"] = 1;
+    const { runConductor } = await import("../../src/commands/conductor.js");
+    expect(await runConductor({ dryRun: true })).toBe(0);
+    expect(stdout).toMatch(/dry run, a tick would ask Copilot for a review of PR #50/);
+    expect(mockAddReviewer).not.toHaveBeenCalled();
+    expect(roundsState).toEqual({});
   });
 });

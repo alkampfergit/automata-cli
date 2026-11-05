@@ -2,7 +2,7 @@
 
 One tick of the conductor role, meant to be fired from cron like [`do-work`](do-work.md). It is part of the conductor
 epic (#114). A tick does the pre-flight — configuration, identity and lock — prunes the [watch list](#watch-list), and
-for each watched item whose newest message is the agent's runs a model [read-only](#running-the-model) that posts the
+for each watched item whose newest message is the agent's runs a model [read-only](#running-the-model) that writes the
 reply as a comment. Comment only: the conductor never approves or merges.
 
 ```bash
@@ -15,6 +15,7 @@ automata conductor --automatic --interval 30
 automata conductor add <id>     # watch an issue or pull request; a parent with children becomes a story
 automata conductor remove <id>  # stop watching it
 automata conductor list         # show what is watched
+automata conductor config list  # show the settings, for example the Copilot review rounds
 ```
 
 | Option | Effect |
@@ -51,6 +52,51 @@ each comment, and then resolve the review thread. The conductor run stays read-o
   tries again on the next tick.
 - [Loop safety](#loop-safety) applies: the reply limit and the `conductor-blocked` label stop a Copilot turn too.
 
+## Copilot review rounds
+
+The conductor can ask Copilot for a number of review rounds on a pull request before the pull request counts as ready.
+It is off until you set `copilot-review-rounds`. Use it only when the account that runs the conductor has a Copilot
+licence. The request is `gh pr edit <n> --add-reviewer @copilot` (it does not work on GitHub Enterprise Server).
+
+```bash
+automata conductor config set copilot-review-rounds 3      # all items
+automata conductor config 12 set copilot-review-rounds 1   # item 12 only (an issue or a pull request)
+automata conductor config list                             # every key: allowed values, default, value, source
+automata conductor config 12 list                          # the effective values for item 12
+automata conductor config 12 get copilot-review-rounds
+automata conductor config 12 unset copilot-review-rounds
+```
+
+In an interactive shell, write the id as `12` or `'#12'`: an unquoted `#12` starts a comment.
+
+| Key | Allowed | Default | Effect |
+|-----|---------|---------|--------|
+| `copilot-review-rounds` | integer >= 0 | `0` (off) | The number of Copilot review rounds for a pull request. |
+| `copilot-review-type` | `balanced`, `lite` | none | **Not supported yet.** The value is stored, but it is not sent to GitHub: `gh` has no option for a review mode, so every request is a plain `@copilot` request. `set` prints a warning. |
+
+- **Where it is stored.** In the gitignored state file `.automata/conductor-watch.json`, in a `settings` section
+  (`global` and `items`). `config.json` is not changed. `list`, `get` and an `unset` of a key that is not set never
+  create the file. An unknown key fails and names the supported keys.
+- **Which value applies.** The value of the item, then the global value, then the default. A setting on an issue
+  applies to the pull requests linked to it (and to the pull requests of a story child); the pull request's own
+  setting wins.
+- **The rounds.** For an open pull request that is not a draft, a tick does this, in this order:
+  1. A Copilot review is pending (Copilot is a requested reviewer): the item gets no ordinary reply, and the tick waits.
+     A rebase or CI-fix request is not held back.
+  2. Open Copilot review threads: the normal turn runs, and its prompt tells the agent to fix them (see
+     [Copilot review threads](#copilot-review-threads)).
+  3. Fewer rounds asked for than set, and no round yet or a new head commit since the last request: the conductor
+     asks Copilot for a review and records the round and the head commit in the `copilotRounds` section of the state
+     file. The first round is asked for at the first tick that sees the pull request.
+  4. Otherwise the rounds are done: all rounds asked for, or the head commit did not change since the last request
+     (Copilot has seen this code).
+- **The ready label.** `conductor-ready` is applied only when the rounds are off or done, in addition to the other
+  rules of the [ready label](#ready-label).
+- **A failed request** (for example, no Copilot licence) is logged as a warning. The rounds of that pull request end,
+  and the conductor goes on without Copilot. It does not try again on every tick.
+- **`--dry-run`** reports the request that a tick would make and records nothing.
+- A review that stays pending (Copilot never answers) holds the item until a person removes the review request.
+
 ## Rebase check
 
 Some checks run on every watched item, even one with the `conductor-blocked` label or one that has used its replies.
@@ -62,7 +108,7 @@ A watched pull request, or an open pull request linked to a watched issue, is ow
 reads `UNKNOWN` again. A pull request that is not watched is not touched.
 
 The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.rebase` as its instructions. The
-model posts that request as a comment to the agent; the agent does the rebase. The comment ends with the marker
+model writes that request, the conductor posts it as a comment to the agent; the agent does the rebase. The comment ends with the marker
 `<!-- automata:conductor-rebase head=<sha> -->` instead of the reply marker. Only a comment of an allowed user (`allowedUsers`, the accounts the conductor posts as) counts, and only when the marker is the last line of the comment; a marker from another account is ignored. A rebase request on a linked pull request runs before an ordinary reply on the issue. The marker gives two rules:
 
 | Rule | Skip reason | Effect |
@@ -86,7 +132,7 @@ any check is still pending. It does nothing when GitHub reports `mergeable: CONF
 first; a push after the rebase re-arms it. Set `conductor.ciFix.enabled` to `false` to switch it off.
 
 The turn is an ordinary conductor turn on that pull request, with `conductor.prompts.ciFix` as its instructions. The
-model finds the failed checks, posts the request as a comment to the agent, and the agent fixes the build and pushes.
+model finds the failed checks and writes the request, the conductor posts it as a comment to the agent, and the agent fixes the build and pushes.
 The comment ends with the marker `<!-- automata:conductor-ci-fix head=<sha> -->`. Only a comment of an allowed user
 (`allowedUsers`) counts, and only when the marker is the last line of the comment. The marker gives two rules:
 
@@ -99,6 +145,35 @@ If the run ends with a `NEEDS-HUMAN:` line, the item gets the `conductor-blocked
 one short note with the CI-fix marker, so the check does not run again for the same head commit. As for the rebase
 check, it waits while the `do-work` run lock is held. `--dry-run` prints the request and `--check` lists it as
 `CI-fix request on PR #<n>`.
+
+## Ready label
+
+A person can find the pull requests that wait for a review by the `conductor-ready` label. automata applies it; the
+model is not run and has no permission to edit labels. The conductor posts no comment for it.
+
+A pull request is ready when all of these are true:
+
+- it is open and not a draft;
+- GitHub does not report a merge conflict (`CONFLICTING`; `UNKNOWN` does not block);
+- every review thread is resolved (a resolved thread does not block);
+- it has at least one check, every check is finished, and each one ended `SUCCESS`, `SKIPPED` or `NEUTRAL`; any other
+  conclusion, for example `FAILURE` or `STALE`, is not green;
+- neither the pull request nor the watched item has the `conductor-blocked` label.
+
+An approving review is not needed. Each tick, before the prune, for each watched pull request, each open pull request linked to a
+watched issue and each open pull request of the current child of a story, automata adds the label when the pull request is ready and lacks it. It removes the label when the pull
+request is not ready and has it, so a new push (checks start again), a failed check, a new unresolved thread or a
+merge conflict removes it. When the model answers `NEEDS-HUMAN` in the same tick, automata also removes the label from
+every pull request of the item as it applies `conductor-blocked`.
+
+The label does not depend on who may reply. A blocked item, an item at its reply limit and a pull request that another
+entry covers are all reconciled. A pull request has the labels of every watched entry that holds it, so a blocked
+issue blocks its linked pull request also when that pull request is a watch entry of its own. The label of a watched
+pull request that closed or merged is removed before the prune drops it from the watch list. A removal that fails is
+tried again on the next tick. If the repository has no such label, the tick creates it.
+
+A label that cannot be added or removed is a warning on stderr; the tick does not exit 1 for it. `--dry-run` prints
+the change a tick would make and applies none. `--check` does not list label changes.
 
 ## Watch list
 
@@ -155,7 +230,7 @@ At each tick the conductor finds the first open child and acts on it. It never s
 | Child state | Meaning | Tick |
 |-------------|---------|------|
 | `closed` | Done: the child is closed and has no open pull request. | Passed over. |
-| `next` | First open child, with no open pull request and no discovery setting. | Applies the discovery setting (label or assignee) so `do-work` implements it. |
+| `next` | First open child, with no open pull request and no discovery setting. | Reads the thread, then [starts the child](#starting-a-child). |
 | `started` | First open child that has the discovery setting and no pull request. | Waits. |
 | `in review` | First child that has an open pull request, also a closed child. | Waits until the pull request is merged and the child is closed. |
 | `blocked` | First open child with the `conductor-blocked` label. | Does nothing on GitHub, until a person removes the label. |
@@ -164,12 +239,32 @@ At each tick the conductor finds the first open child and acts on it. It never s
 When all children are closed, the conductor closes the parent with one comment that names the children, and drops it
 from the stories. A closed parent is dropped at the start of its turn, with a line on stdout. A story that cannot be read
 stays, with a warning, as an item does. `--automatic` counts a story as an open item. A tick runs no model for the parent.
-When a tick starts a child, the conductor also posts one comment on it, so `do-work` sees a message from an authorized
-account. The comment comes before the label, so a failed label leaves the child `next` and the next tick repeats both.
 The child that the story waits for, and its linked pull requests, get the ordinary conductor processing: a reply
 to an agent question, a rebase request or a CI-fix request. A closed parent is dropped without a read of its children.
 `conductor add` on a watched parent that has children removes its ordinary watch entry. A watched pull request that
 closes the current child of a story, also a blocked child, is covered by the story and gets no separate reply.
+
+### Starting a child
+
+The conductor automates the person who answers the `do-work` turns: the conductor posts, `do-work` runs the agent, the
+agent answers, the conductor replies. Before it starts a `next` child, it reads the comments of the child. Only comments
+of `allowedUsers` and `agentUser` count, and the issue body is not a message.
+
+| Newest comment | Tick |
+|----------------|------|
+| None | Posts one start comment ("The conductor starts this child of story #N. Please implement it."), then applies the discovery setting. The comment comes first, so a failed label leaves the child `next` and the next tick repeats both. |
+| From an allowed account | Does nothing and prints `waiting for the agent`. The child gets no label. |
+| From the agent | Runs the model as the conductor user, then applies the discovery setting so `do-work` continues. |
+
+The model gets the whole thread of the child (and its linked pull requests) and the parent story, with the instructions
+`conductor.prompts.child`. It answers the question or clarification of the agent as the user would, or says to proceed
+with the implementation when nothing is open. If the answer needs a person, the model ends with
+`NEEDS-HUMAN: <question>`: nothing is posted, no label is applied, the question is printed on stdout as
+`Conductor: story #N: #C needs you: <question>`, and the next tick checks the child again. A failed run is an error
+(exit 1) and leaves the child `next`. The run uses the `conductor.executor` setting like every other conductor turn.
+
+A child that already has the discovery setting stays with `do-work` and the ordinary conductor turn. `--dry-run` runs
+the model for a child on which the agent spoke last and prints the reply; it prints a line for the other two cases.
 
 `conductor list` shows each story with its children and their states. `conductor --check` adds a `Stories` section: for
 each story, which child is next, which is waiting and which is blocked; an unreadable story is a problem. `--dry-run`
@@ -207,6 +302,10 @@ follows it under `--- Thread assembled by automata ---`:
   threads with their file, line and URL, and the CI status — one line per check, with its conclusion, or its status
   while it still runs.
 
+After the thread, automata appends the reply instruction. It also tells the model to run every `gh` and `git`
+command exactly as written, with no `rtk` or other prefix, and to ignore a project rule that asks for one. The run
+allows only commands that start with `gh` or `git`, so a prefixed command is refused.
+
 The pull request description is included when an allowed account wrote it.
 Only messages from `allowedUsers` and `agentUser` appear, oldest first; other accounts are withheld, as in
 [`do-work`](do-work.md). A resolved review thread is left out. No message is marked as new: the conductor reads the
@@ -220,14 +319,15 @@ The prompt depends on the kind of the watched item:
 | `conductor.prompts.pr` | A watched pull request |
 | `conductor.prompts.rebase` | A [rebase request](#rebase-check) for a watched pull request that has a merge conflict |
 | `conductor.prompts.ciFix` | A [CI-fix request](#ci-fix-check) for a watched pull request that has a failed check |
+| `conductor.prompts.child` | The answer to a story child on which the agent spoke last, [before it is started](#starting-a-child) |
 
 Each key holds prompt text or a plain `.md` filename in `.automata/`, resolved like `doWork.prompts`; see
 [config.md](config.md#conductor). Without a key, a built-in default applies. The issue and pull request defaults ask the model to write the
 next message to the agent, and forbid file changes, merging, closing and pushing. The rebase default is the request itself: fetch, update the target branch, rebase, resolve conflicts, commit and push, wait for the checks, and fix a failing check or a SonarCloud issue. The CI-fix default is, like the issue and pull request defaults, an instruction for the model: find the failed checks with `gh`, name each one with its error, and tell the agent to reproduce the failure, fix the cause, push, wait for the checks and end with `NEEDS-HUMAN:` if it cannot fix the failure.
 
-After the thread, automata appends the posting instruction itself, so a configured prompt cannot lose it: post one
-comment with `gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input,
-because what the model prints is discarded.
+After the thread, automata appends the reply instruction itself, so a configured prompt cannot lose it: write the
+reply as the final message, with no marker line, and do not post it. The conductor posts it (see
+[Running the model](#running-the-model)).
 
 ## Running the model
 
@@ -247,21 +347,25 @@ the lock is taken.
 The run is **read-only**:
 
 - Claude runs with `--permission-mode dontAsk`, may only read and search inside the working directory, look at a thread with `gh issue view`,
-  `gh pr view`, `gh pr diff`, `gh pr checks` and `gh run view` (for the failed-check logs), use `git status`, and post with
-  `gh issue comment <n> --body-file -` or `gh pr comment <n> --body-file -` for the one reply target only. Comments on
-  any other number are denied. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
+  `gh pr view`, `gh pr diff`, `gh pr checks` and `gh run view` (for the failed-check logs), and use `git status`. It has
+  no permission to comment. `git log`, `git diff` and `git show` are not allowed, because `--output` lets them write
   a file. `Edit`, `Write` and `NotebookEdit` are denied. The run sets `GH_REPO` to the watched repository, and `gh`
   calls with `--repo` or `-R` are denied, so `gh` cannot reach another repository.
 - Codex is not supported. It has no command allow-list, so it cannot be limited to comments on the reply target.
   With `conductor.executor` set to `codex` the tick writes an error and exits 1 before the lock is taken.
+
+The model only writes the reply: it is the final message of the run. The conductor reads it and posts it itself with
+`gh issue comment <n> --body-file -` (or `gh pr comment <n> --body-file -`), the body on standard input, followed by the
+reply marker (or the marker of a rebase or CI-fix request). The model is not given any permission to post, so a denied
+`gh` call cannot block a reply. A final message that ends with a `NEEDS-HUMAN:` line is not posted.
 
 After the run the tick reads the conversation again. A reply counts as posted only when the account `gh` runs as has a
 comment that was not there before. Otherwise the tick writes an error on stderr and exits 1:
 
 | Message | Meaning |
 |---------|---------|
-| `finished but posted no comment on <surface>` | The run succeeded and posted nothing; its output is discarded, so nothing is recovered. |
-| `failed and posted no comment on <surface>` | The run failed and nothing was posted. |
+| `finished but posted no comment on <surface>` | The run succeeded, but no new comment of the account is there. |
+| `failed and posted no comment on <surface>` | The run failed, printed no answer (`the model produced no answer`), or the post failed, and nothing was posted. |
 | `could not tell whether … got a reply` | The conversation could not be read before or after the run. |
 
 A run that fails after it posted counts as posted, with a warning. An item that cannot be read is skipped with a warning
@@ -279,15 +383,15 @@ as a whole (an issue and its linked pull requests together) and turn an owed rep
 | Blocked | `blocked` | The watched item has the `conductor-blocked` label. Remove the label to resume. |
 | Closed | `closed` | A closed issue, or a closed or merged pull request, is left alone. |
 
-**Counting.** The count comes from the conversation, so a fresh checkout counts the same as an old one. The posting
-instruction tells the model to end each reply with the line `<!-- automata:conductor -->`; the count is the number of
-comments, on the issue or its pull requests, that carry it. A reply that lacks the marker is not counted.
+**Counting.** The count comes from the conversation, so a fresh checkout counts the same as an old one. The
+conductor ends each reply it posts with the line `<!-- automata:conductor -->`; the count is the number of comments,
+on the issue or its pull requests, that carry it. A comment that lacks the marker is not counted.
 
-**Needs a human.** When the model cannot go on without a person, it posts no comment and ends its final message with
+**Needs a human.** When the model cannot go on without a person, it writes no reply and ends its final message with
 `NEEDS-HUMAN: <reason>`. The tick then adds the `conductor-blocked` label to the watched item (the issue, or the watched
 pull request) and stays silent on the conversation. If the repository has no such label, the tick creates it. The
 model has no permission to edit labels; automata applies the label. If the label cannot be applied, the tick writes an
-error and exits 1. A model run that posted a reply and also printed `NEEDS-HUMAN:` is labelled too.
+error and exits 1. A reply that contains a `NEEDS-HUMAN:` line is not posted; the item is labelled.
 
 **Overlapping entries.** `watch add` on an issue also follows its linked pull requests, and the issue's conversation
 already includes them. A tick, `--check` and `--dry-run` give such a pull request no separate reply while its issue

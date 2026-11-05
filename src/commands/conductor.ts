@@ -6,6 +6,7 @@ import {
   DEFAULT_CONDUCTOR_ISSUE_PROMPT,
   DEFAULT_CONDUCTOR_PR_PROMPT,
   DEFAULT_CONDUCTOR_REBASE_PROMPT,
+  DEFAULT_CONDUCTOR_CHILD_PROMPT,
   DEFAULT_CONDUCTOR_CI_FIX_PROMPT,
   DEFAULT_DO_WORK,
   type AutomataConfig,
@@ -22,7 +23,9 @@ import {
   getStorySource,
   getWatchTarget,
   addLabel,
+  removeLabel,
   postMarker,
+  postComment,
   type StorySource,
   type WatchTarget,
 } from "../github/ghWorkService.js";
@@ -41,6 +44,7 @@ import {
   type AgentRequest,
   type ConductorThread,
   type ReplyTarget,
+  replyMarkerFor,
   type ThreadPr,
 } from "../conductor/thread.js";
 import {
@@ -62,11 +66,16 @@ import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
+import { READY_LABEL, READY_LABEL_DESCRIPTION, readyLabelChange } from "../conductor/readyLabel.js";
+import { advanceCopilotRounds, copilotRoundsDone } from "./conductorCopilot.js";
+import { runConductorConfig } from "./conductorConfig.js";
+import { settingsHelp } from "../conductor/settings.js";
 import { runClaude } from "../claude/claudeService.js";
 import type { RunSink } from "../run/runTranscript.js";
 import { parseWatchId, withoutWatched, withWatched } from "../conductor/watchList.js";
-import { readStories, readWatch, writeStories, writeWatch } from "../conductor/watchStore.js";
-import { checkStories, conductStories, listStoryLines, storyCovered } from "../conductor/storyRunner.js";
+import { readStories, readWatch, updateWatchList, writeStories } from "../conductor/watchStore.js";
+import type { StoryChild } from "../conductor/story.js";
+import { checkStories, conductStories, listStoryLines, storyCovered, type ChildReply, type ChildTurn } from "../conductor/storyRunner.js";
 import { conductorIdentityProblemFor } from "../github/identity.js";
 import { describePermissionDenials, parsePermissionDenials } from "../conductor/permissionDenials.js";
 import { describeTracedCommand, startCommandTrace, stopCommandTrace, takeCommandTrace } from "../run/commandTrace.js";
@@ -82,10 +91,7 @@ function fail(message: string): number {
  * snapshot taken earlier in the command (the network calls in between are slow).
  */
 function updateWatch(change: (current: number[]) => number[]): void {
-  const current = readWatch();
-  const next = change(current);
-  if (next.length === current.length && next.every((id, i) => id === current[i])) return;
-  writeWatch(next);
+  updateWatchList(change);
 }
 
 function describe(target: WatchTarget): string {
@@ -160,10 +166,23 @@ function readTargetMessages(target: ReplyTarget) {
     : prConversation(getPrSurface(target.number)).messages;
 }
 
-/** Read-only: the conductor comments, nothing else. `--body-file -` is how it posts without writing a file. */
-function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, sink: RunSink): Promise<void> {
+/**
+ * Read-only: the model has no permission to comment. It writes the reply, and the conductor posts it with its own
+ * `gh` call, so a refused `gh` can no longer block a reply. A `NEEDS-HUMAN:` reply is not posted.
+ */
+async function runModel(prompt: string, execution: ConductorExecution, replyTo: ReplyTarget, request: AgentRequest | undefined, captured: CapturedStdout): Promise<void> {
   const { owner, repo } = getRepoSlug();
-  return runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, replyTo, ghRepo: `${owner}/${repo}`, sink, printSteps: verboseRun, echoResult: false });
+  try {
+    await runClaude(prompt, { model: execution.model, effort: execution.effort, readOnly: true, ghRepo: `${owner}/${repo}`, sink: captured.sink, printSteps: verboseRun, echoResult: false });
+  } finally {
+    reportDenials(captured.text(), `#${String(replyTo.number)}`);
+  }
+  const reply = extractDryRunReply(execution.executor, captured.text());
+  if (reply === null) throw new Error("the model produced no answer");
+  if (parseNeedsHuman(reply) !== null) return;
+  const marker = replyMarkerFor(request);
+  const lastLine = reply.trimEnd().split("\n").at(-1)?.trim();
+  postComment(replyTo, lastLine === marker ? reply : `${reply}\n\n${marker}`);
 }
 
 /**
@@ -192,8 +211,13 @@ function reportCommandTrace(): void {
   for (const traced of trace) process.stderr.write(`  ${describeTracedCommand(traced)}\n`);
 }
 
+interface CapturedStdout {
+  sink: RunSink;
+  text: () => string;
+}
+
 /** A sink that keeps what the run printed on stdout. */
-function captureStdout(): { sink: RunSink; text: () => string } {
+function captureStdout(): CapturedStdout {
   let stdout = "";
   const sink: RunSink = {
     output: (stream, text) => {
@@ -254,6 +278,20 @@ function targetKey(target: ReplyTarget): string {
   return `${target.kind}#${String(target.number)}`;
 }
 
+/**
+ * A blocked item is not ready. The sync ran before the model, so a pull request of the item may carry the
+ * label, also one added earlier in this tick. A failed removal is a warning; the next tick reconciles it.
+ */
+function clearReadyLabels(item: WatchedItem): void {
+  for (const pr of item.thread.prs) {
+    try {
+      removeLabel({ kind: "pr", number: pr.surface.pr.number }, READY_LABEL);
+    } catch (err) {
+      process.stderr.write(`Warning: could not ${readyPhrase(pr.surface.pr.number, "remove", false)}: ${(err as Error).message}\n`);
+    }
+  }
+}
+
 /** The model needs a person: label the watched item and say nothing on the conversation. */
 function blockItem(item: WatchedItem, label: string, reason: string): ItemResult {
   try {
@@ -263,6 +301,7 @@ function blockItem(item: WatchedItem, label: string, reason: string): ItemResult
     return "failed";
   }
   process.stdout.write(`Conductor: ${label} needs a human (${reason}); applied the ${BLOCKED_LABEL} label.\n`);
+  clearReadyLabels(item);
   return "idle";
 }
 
@@ -281,6 +320,107 @@ function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: st
 }
 
 type ItemResult = "replied" | "idle" | "failed";
+
+/** Apply one label change; a failed edit throws. */
+function applyReadyChange(number: number, change: "add" | "remove"): void {
+  const target = { kind: "pr" as const, number };
+  if (change === "add") addLabel(target, READY_LABEL, READY_LABEL_DESCRIPTION);
+  else removeLabel(target, READY_LABEL);
+}
+
+const READY_PHRASES = {
+  add: { now: "add the", done: "added the", to: "to" },
+  remove: { now: "remove the", done: "removed the", to: "from" },
+} as const;
+
+/** The label change as a phrase, for example `add the conductor-ready label to #7`. */
+function readyPhrase(number: number, change: "add" | "remove", past: boolean): string {
+  const words = READY_PHRASES[change];
+  return `${past ? words.done : words.now} ${READY_LABEL} label ${words.to} #${String(number)}`;
+}
+
+/** Apply or, in a dry run, report one label change. A failed edit is a warning only: the next tick reconciles it. */
+function changeReadyLabel(number: number, change: "add" | "remove", dryRun: boolean): void {
+  if (dryRun) {
+    process.stdout.write(`Conductor: dry run, a tick would ${readyPhrase(number, change, false)}.\n`);
+    return;
+  }
+  try {
+    applyReadyChange(number, change);
+    process.stdout.write(`Conductor: ${readyPhrase(number, change, true)}.\n`);
+  } catch (err) {
+    process.stderr.write(`Warning: could not ${readyPhrase(number, change, false)}: ${(err as Error).message}\n`);
+  }
+}
+
+/** The labels of a story child, or null when it cannot be read: its pull request is then left alone. */
+function childLabels(child: number): string[] | null {
+  try {
+    return getWatchTarget(child).labels;
+  } catch (err) {
+    process.stderr.write(`Warning: could not read #${String(child)} for the ${READY_LABEL} label, skipping its pull request: ${(err as Error).message}\n`);
+    return null;
+  }
+}
+
+/**
+ * The labels of every watched context of each open pull request: the pull request itself, a watched issue that
+ * links it, and the current child of a story. A blocked context blocks the pull request, whichever entry decides.
+ * A closed or merged watched pull request is returned apart, for its stale label.
+ */
+function readyContexts(
+  watch: number[],
+  linkMap: () => OpenPrLinkMap,
+  config: AutomataConfig,
+): { open: Map<number, string[] | null>; closed: WatchTarget[]; owners: Map<number, number[]> } {
+  const open = new Map<number, string[] | null>();
+  const closed: WatchTarget[] = [];
+  // The issues and story children that bring a pull request: their settings apply to it.
+  const owners = new Map<number, number[]>();
+  const add = (pr: number, labels: string[] | null, owner?: number): void => {
+    const known = open.get(pr);
+    open.set(pr, labels === null || known === null ? null : [...(known ?? []), ...labels]);
+    if (owner !== undefined) owners.set(pr, [...(owners.get(pr) ?? []), owner]);
+  };
+  for (const id of watch) {
+    let target: WatchTarget;
+    try {
+      target = getWatchTarget(id);
+    } catch (err) {
+      process.stderr.write(`Warning: could not check #${String(id)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
+      continue;
+    }
+    if (isWatchClosed(target.state)) {
+      if (target.kind === "pr") closed.push(target);
+    } else if (target.kind === "pr") add(id, target.labels);
+    else for (const ref of linkMap().byIssue.get(id) ?? []) add(ref.number, target.labels, id);
+  }
+  for (const [pr, child] of storyCovered(config, linkMap)) add(pr, childLabels(child), child);
+  return { open, closed, owners };
+}
+
+/**
+ * Keep the `conductor-ready` label true for every watched pull request. It needs no model and posts no comment,
+ * and it does not depend on who may reply: a blocked or limited item, a covered pull request and a pull request
+ * that closed are all reconciled. It runs before the prune. A dry run changes nothing.
+ */
+function reconcileReadyLabels(watch: number[], linkMap: () => OpenPrLinkMap, config: AutomataConfig, dryRun: boolean): void {
+  const { open, closed, owners } = readyContexts(watch, linkMap, config);
+  for (const target of closed) {
+    if (target.labels.some((label) => label.toLowerCase() === READY_LABEL)) changeReadyLabel(target.number, "remove", dryRun);
+  }
+  for (const [number, labels] of open) {
+    if (labels === null) continue;
+    try {
+      const pr = readPr(number);
+      // Rounds that are not done hold the label back. Not read when rounds are off.
+      const change = readyLabelChange(pr.surface, pr.checks, labels, copilotRoundsDone(pr.surface, [...new Set([...(owners.get(number) ?? []), ...issueOwnersOf(number, linkMap)])]));
+      if (change !== null) changeReadyLabel(number, change, dryRun);
+    } catch (err) {
+      process.stderr.write(`Warning: could not read #${String(number)} for the ${READY_LABEL} label: ${(err as Error).message}\n`);
+    }
+  }
+}
 
 async function conductDryRunItem(
   prompt: string,
@@ -337,6 +477,61 @@ function idleMessage(decisions: ConductorDecision[], label: string): string {
   return stopped?.kind === "skip" ? `Conductor: ${label} gets no reply: ${stopped.detail}.` : `Conductor: ${label} needs no reply.`;
 }
 
+/** The issues that close a pull request, whichever item handles it, so an issue-level setting always reaches it. */
+function issueOwnersOf(pr: number, linkMap: () => OpenPrLinkMap): number[] {
+  const owners: number[] = [];
+  for (const [issue, refs] of linkMap().byIssue) if (refs.some((ref) => ref.number === pr)) owners.push(issue);
+  return owners;
+}
+
+/**
+ * Ask Copilot for the next review round of each pull request of the item, where its settings say so. `waits` is true
+ * when a review is pending or its status cannot be read, so the item gets no ordinary reply this tick; the next tick
+ * tries again. `item` is read again from the surfaces the rounds used, so a review that finished meanwhile reaches the
+ * reply decision and the prompt.
+ */
+function advanceRounds(item: WatchedItem, dryRun: boolean, linkMap: () => OpenPrLinkMap): { waits: boolean; item: WatchedItem } {
+  let waits = false;
+  let changed = false;
+  const prs = item.thread.prs.map((pr) => {
+    try {
+      const result = advanceCopilotRounds(pr.surface, issueOwnersOf(pr.surface.pr.number, linkMap), dryRun);
+      if (result.outcome === "wait") waits = true;
+      if (result.surface === pr.surface) return pr;
+      changed = true;
+      return { ...pr, surface: result.surface };
+    } catch (err) {
+      process.stderr.write(`Warning: could not check the Copilot review rounds of #${String(pr.surface.pr.number)}: ${(err as Error).message}\n`);
+      waits = true;
+      return pr;
+    }
+  });
+  return { waits, item: changed ? withPrs(item, prs) : item };
+}
+
+/** The item with its pull requests replaced (same order), and the conversations built again from them. */
+function withPrs(item: WatchedItem, prs: ThreadPr[]): WatchedItem {
+  const prConversations = prs.map((pr) => prConversation(pr.surface, pr.checks));
+  if (item.thread.kind === "pr") return { ...item, thread: { kind: "pr", prs: [prs[0] ?? item.thread.prs[0]] }, conversations: prConversations };
+  return { ...item, thread: { ...item.thread, prs }, conversations: [issueConversation(item.thread.issue), ...prConversations] };
+}
+
+/** A Copilot, rebase or CI-fix turn starts no run while the agent works; the line says so. */
+function waitsForAgent(owed: ConductorDecision, request: AgentRequest | undefined, config: AutomataConfig, label: string): boolean {
+  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
+  if ((!copilotTurn && request === undefined) || !agentIsWorking(config)) return false;
+  const what = waitingReason(copilotTurn, request);
+  process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
+  return true;
+}
+
+/** A pending Copilot review holds an ordinary reply; a rebase or CI-fix request is not held. */
+function holdsForCopilot(pending: boolean, owed: ConductorDecision, label: string): boolean {
+  if (!pending || owed.kind !== "reply") return false;
+  process.stdout.write(`Conductor: ${label} gets no reply: a Copilot review is pending; waiting.\n`);
+  return true;
+}
+
 async function conductItem(
   id: number,
   config: AutomataConfig,
@@ -355,6 +550,9 @@ async function conductItem(
     process.stderr.write(`Warning: could not read ${label}, skipping it this tick: ${(err as Error).message}\n`);
     return "idle";
   }
+  const advanced = advanceRounds(item, dryRun !== undefined, dryRun?.linkMap ?? linkMap ?? getOpenPrLinkMap);
+  const copilotWaits = advanced.waits;
+  item = advanced.item;
   const { thread, conversations } = item;
   const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
   const verdict = decideConductorReply(conversations, participants, loop);
@@ -368,13 +566,9 @@ async function conductItem(
     process.stdout.write(`${idleMessage(verdict.decisions, label)}\n`);
     return "idle";
   }
+  if (holdsForCopilot(copilotWaits, owed, label)) return "idle";
   const request: AgentRequest | undefined = owed.kind === "rebase" || owed.kind === "ci-fix" ? { kind: owed.kind, headSha: owed.headSha } : undefined;
-  const copilotTurn = owed.kind === "reply" && owed.copilot === true;
-  if ((copilotTurn || request !== undefined) && dryRun === undefined && agentIsWorking(config)) {
-    const what = waitingReason(copilotTurn, request);
-    process.stdout.write(`Conductor: ${label} ${what}, but the agent is working (the do-work run lock is held); waiting.\n`);
-    return "idle";
-  }
+  if (dryRun === undefined && waitsForAgent(owed, request, config, label)) return "idle";
   const replyTo: ReplyTarget = { kind: owed.surface.kind, number: owed.surface.number };
   const frame = frameFor(frameKey(thread.kind, request), config);
   const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun: dryRun !== undefined, request });
@@ -387,9 +581,8 @@ async function conductItem(
   const outcome = await conductReply({
     login,
     read: () => readTargetMessages(replyTo),
-    run: () => runModel(prompt, execution, replyTo, captured.sink),
+    run: () => runModel(prompt, execution, replyTo, request, captured),
   });
-  reportDenials(captured.text(), label);
   const needsHuman = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
   if (needsHuman !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
     if (request !== undefined) noteRequestStop(replyTo, request, needsHuman, label);
@@ -411,6 +604,58 @@ async function conductItem(
     case "unverified":
       process.stderr.write(`Error: could not tell whether ${label} got a reply: ${outcome.error}\n`);
       return "failed";
+  }
+}
+
+/**
+ * The start step of a story child on which the agent spoke last: the conductor answers as the user. The whole
+ * thread of the child goes to the model with the story, and the discovery setting follows the reply. A model that
+ * needs a person (`NEEDS-HUMAN:`) posts nothing, the question is printed, and the child gets no label.
+ */
+async function replyToChild(
+  child: StoryChild,
+  story: { id: number; title: string },
+  dryRun: boolean,
+  checked: Preflight,
+  linkMap: () => OpenPrLinkMap,
+): Promise<ChildReply> {
+  const { login, config, participants, execution } = checked;
+  const label = `#${String(child.number)}`;
+  const { thread } = readWatchedItem(child.number, linkMap);
+  const replyTo: ReplyTarget = { kind: "issue", number: child.number };
+  const context =
+    `This issue is a child of story #${String(story.id)}: ${story.title}. ` +
+    `Read the story with \`gh issue view ${String(story.id)}\` if you need it.`;
+  const frame = `${config.conductor?.prompts?.child ?? DEFAULT_CONDUCTOR_CHILD_PROMPT}\n\n${context}`;
+  const prompt = composeConductorPrompt({ thread, repo: getRepoSlug(), participants, frame, replyTo, dryRun });
+  const where = `issue #${String(child.number)}`;
+  process.stdout.write(`Conductor: ${label} needs a reply on ${where}; running ${describeConductorExecution(execution)}.\n`);
+  if (dryRun) {
+    const result = await conductDryRunItem(prompt, execution, label, where, replyTo, { linkMap, answered: new Set() });
+    if (result === "failed") throw new Error(`the dry run for ${label} failed`);
+    return result === "replied" ? "replied" : "needs-user";
+  }
+  const captured = captureStdout();
+  const outcome = await conductReply({
+    login,
+    read: () => readTargetMessages(replyTo),
+    run: () => runModel(prompt, execution, replyTo, undefined, captured),
+  });
+  const needsUser = parseNeedsHuman(extractDryRunReply(execution.executor, captured.text()) ?? "");
+  if (needsUser !== null && outcome.kind !== "run-failed" && outcome.kind !== "unverified") {
+    process.stdout.write(`Conductor: story #${String(story.id)}: ${label} needs you: ${needsUser}\n`);
+    return "needs-user";
+  }
+  switch (outcome.kind) {
+    case "posted":
+      process.stdout.write(`Conductor: posted a reply on ${where}.\n`);
+      return "replied";
+    case "posted-nothing":
+      throw new Error(`the run for ${label} finished but posted no comment on ${where}`);
+    case "run-failed":
+      throw new Error(`the run for ${label} failed and posted no comment on ${where}: ${outcome.error}`);
+    case "unverified":
+      throw new Error(`could not tell whether ${label} got a reply: ${outcome.error}`);
   }
 }
 
@@ -676,6 +921,7 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
   process.stdout.write(`Conductor: dry run as ${login}; nothing is posted and the watch list is not changed.\n`);
   const context: DryRunContext = { linkMap: onceLinkMap(), answered: new Set() };
   const watchIds = readWatch({ migrate: false });
+  reconcileReadyLabels(watchIds, context.linkMap, config, true);
   const covered = coveredOf(watchIds, context.linkMap, config, participants);
   const conduct = (id: number): Promise<boolean> =>
     conductSafely(id, () => conductItem(id, config, login, participants, execution, context));
@@ -695,13 +941,20 @@ async function runConductorDryRun(checked: Preflight): Promise<number> {
     }
     return conduct(id);
   });
-  const stories = conductStories(config, context.linkMap, true);
+  const stories = await conductStories(config, context.linkMap, true, childTurn(checked, context.linkMap));
   failed += stories.failed;
   failed += await conductInOrder(
     stories.active.filter((child) => !watchIds.includes(child)),
     conduct,
   );
   return failed > 0 ? 1 : 0;
+}
+
+function childTurn(checked: Preflight, linkMap: () => OpenPrLinkMap): ChildTurn {
+  return {
+    participants: checked.participants,
+    reply: (child, story, dryRun) => replyToChild(child, story, dryRun, checked, linkMap),
+  };
 }
 
 function reportHeldLock(held: { pid: number; host: string; startedAt: string }, suspect: boolean, staleMinutes: number): number {
@@ -805,8 +1058,9 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
 
   try {
     process.stdout.write(`Conductor: running as ${login}.\n`);
-    const watch = pruneWatchList();
     const linkMap = onceLinkMap();
+    reconcileReadyLabels(readWatch(), linkMap, config, false);
+    const watch = pruneWatchList();
     const covered = coveredOf(watch, linkMap, config, participants);
     const conduct = (id: number): Promise<boolean> =>
       conductSafely(id, () => conductItem(id, config, login, participants, execution, undefined, linkMap));
@@ -817,7 +1071,7 @@ async function runTick(options: ConductorOptions): Promise<TickResult> {
       process.stdout.write(`${coveredNote(id, coveredBy)}\n`);
       return Promise.resolve(false);
     });
-    const stories = conductStories(config, linkMap, false);
+    const stories = await conductStories(config, linkMap, false, childTurn(checked, linkMap));
     // The active child and its linked pull requests get the ordinary conductor processing.
     failed += await conductInOrder(
       stories.active.filter((child) => !watch.includes(child)),
@@ -864,6 +1118,15 @@ conductorCommand
   .description("List the watched issues and pull requests")
   .action(() => {
     exitWith(runWatchList());
+  });
+
+conductorCommand
+  .command("config")
+  .description("Show or change conductor settings, for one item or for all: config [<id>|#<id>] set <key> <value> | get <key> | unset <key> | list")
+  .argument("<words...>", "[<id>|#<id>] set <key> <value> | get <key> | unset <key> | list")
+  .addHelpText("after", `${settingsHelp()}\nIn an interactive shell, write the id as 12 or '#12': an unquoted #12 starts a comment.\n`)
+  .action((words: string[]) => {
+    exitWith(runConductorConfig(words));
   });
 
 /** Why a turn waits for the agent: an open Copilot thread, a failed check or a merge conflict. */

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { truncate, handleSpawnError, handleExitCode, resolveCommand } from "../cli/spawnUtils.js";
+import { truncate, handleSpawnError, handleExitCode, resolveCommand, feedStdin } from "../cli/spawnUtils.js";
 import { trackChild, untrackChild } from "../cli/childRegistry.js";
 import type { RunSink } from "../run/runTranscript.js";
 
@@ -76,6 +76,12 @@ export interface InvokeClaudeOptions {
    * binary accepts until automata cut a release of its own.
    */
   effort?: string;
+  /**
+   * Where the prompt travels. `"argv"` (the default) puts it on the command
+   * line, which Linux caps at 128 KiB for one argument. `"stdin"` emits a bare
+   * `-p`, and the caller writes the prompt to the child's stdin.
+   */
+  promptOn?: "argv" | "stdin";
 }
 
 export const MODEL_IDS: Record<string, string> = {
@@ -119,7 +125,8 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
   // than a bare `--effort` that would swallow the next argument.
   if (options.effort) args.push("--effort", options.effort);
   if (options.verbose) args.push("--verbose", "--output-format", "stream-json");
-  args.push("-p", prompt);
+  if (options.promptOn === "stdin") args.push("-p");
+  else args.push("-p", prompt);
   return args;
 }
 
@@ -152,13 +159,15 @@ export function runClaude(
       model: options.model,
       effort: options.effort,
       verbose: true,
+      promptOn: "stdin",
     });
     const sink = options.sink;
     const child = spawn(claudeBin, args, {
-      stdio: ["inherit", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
     });
     trackChild(child);
+    feedStdin(child, prompt);
 
     // stderr is piped only so the transcript can see it; it still reaches the terminal.
     child.stderr.on("data", (chunk: Buffer) => {
