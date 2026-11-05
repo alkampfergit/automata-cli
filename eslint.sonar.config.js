@@ -21,4 +21,10 @@ export default tseslint.config(
     plugins: { sonarjs, unicorn, "@typescript-eslint": tseslint.plugin },
     rules,
   },
+  {
+    // The build scripts are plain JavaScript, and SonarCloud analyses them too.
+    files: ["scripts/**/*.mjs"],
+    plugins: { sonarjs, unicorn },
+    rules: Object.fromEntries(Object.entries(rules).filter(([name]) => !name.startsWith("@typescript-eslint/"))),
+  },
 );
