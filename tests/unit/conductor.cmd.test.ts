@@ -338,6 +338,20 @@ describe("conductor tick replies", () => {
     expect(mockRunCodex).not.toHaveBeenCalled();
   });
 
+  it("appends the footer when the reply quotes the marker before its last line", async () => {
+    watching({});
+    agentSpokeLast(true);
+    mockRunClaude.mockImplementation((_prompt: string, options: { sink?: { output: (s: "stdout", t: string) => void } }) => {
+      options.sink?.output("stdout", JSON.stringify({ type: "result", result: "Quote: <!-- automata:conductor --> done." }) + "\n");
+      return Promise.resolve();
+    });
+    expect(await run()).toBe(0);
+    expect(mockPostComment).toHaveBeenCalledWith(
+      { kind: "issue", number: 7 },
+      "Quote: <!-- automata:conductor --> done.\n\n<!-- automata:conductor -->",
+    );
+  });
+
   it("refuses codex: it cannot be limited to comments on the reply target", async () => {
     watching({ executor: "codex", models: { codex: "gpt-x" } });
     agentSpokeLast(true);

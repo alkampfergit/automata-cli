@@ -181,7 +181,8 @@ async function runModel(prompt: string, execution: ConductorExecution, replyTo: 
   if (reply === null) throw new Error("the model produced no answer");
   if (parseNeedsHuman(reply) !== null) return;
   const marker = replyMarkerFor(request);
-  postComment(replyTo, reply.includes(marker) ? reply : `${reply}\n\n${marker}`);
+  const lastLine = reply.trimEnd().split("\n").at(-1)?.trim();
+  postComment(replyTo, lastLine === marker ? reply : `${reply}\n\n${marker}`);
 }
 
 /**
