@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run a local approximation of the SonarCloud quality gate, with no build and no token.
 #   1. SonarJS rules (the same rules SonarCloud applies) -> code smells, bugs, vulnerabilities
-#   2. jscpd with the Sonar thresholds                    -> duplication (gate limit: 3%)
+#   2. scripts/sonar-shell-check.mjs                      -> shell rules (S7688, S131, S1066, S1192, S7679)
+#   3. jscpd with the Sonar thresholds                    -> duplication (gate limit: 3%)
 #
 # The gate looks at new code only, so by default the rules run on the files that differ
 # from the base branch (default: origin/develop) and on uncommitted files.
@@ -49,6 +50,12 @@ else
 fi
 
 if [[ "${#FILES[@]}" -gt 0 ]] && ! npx --no-install eslint --config eslint.sonar.config.js --report-unused-disable-directives-severity off "${FILES[@]}"; then
+  status=1
+fi
+
+echo
+echo "== Shell rules (every tracked *.sh file) =="
+if ! node scripts/sonar-shell-check.mjs; then
   status=1
 fi
 

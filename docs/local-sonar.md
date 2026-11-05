@@ -141,6 +141,16 @@ stays in `eslint.config.js` and is not changed. `scripts/sonar-local.sh` selects
    - Folders without any real finding, for example `tests/`: remove them from the rule scope.
    - Duplication: raise or lower `--min-tokens` in `scripts/sonar-local.sh` until `jscpd` is close to the real value.
 
+## Shell scripts
+
+SonarCloud also analyses the shell scripts (`*.sh`), and SonarJS does not. `scripts/sonar-shell-check.mjs` checks every
+tracked `*.sh` file for the five shell rules that fire on this repository: `S7688` (use `[[` instead of `[`), `S131`
+(`case` without a `*)` branch), `S1066` (mergeable `if`), `S1192` (a literal used seven times or more) and `S7679` (a
+positional parameter used without a local variable). `npm run sonar:local` runs it on every call. On the `develop` branch
+before issue 181, it found the 123 shell findings that SonarCloud reported, at the same lines. It is a line-based
+approximation, not a shell parser. When SonarCloud reports a shell finding that it does not find, add the rule to the
+script and compare again.
+
 ## Known limits
 
 The local check is an approximation. On `develop` of this repository, it finds the four issues that SonarCloud
@@ -149,7 +159,7 @@ reports, at the same lines. It also reports eight findings that SonarCloud does 
 - **Extra findings.** SonarJS suppresses some reports inside its own rule wrappers. The local check does not copy this.
   `no-await-in-loop` (`S9382`) is the most frequent example. Check such a finding before you change the code. Do not hide
   it with a suppression comment.
-- **Missing rules.** The skipped rules are never checked. A pass does not guarantee a green quality gate.
+- **Missing rules.** The skipped rules are never checked. Only five shell rules are checked. A pass does not guarantee a green quality gate.
 - **Not computed.** The quality gate also uses the review of Security Hotspots and the maintainability ratings. The local
   check does not compute them.
 - **Duplication.** `jscpd` counts tokens differently from Sonar. At 100 tokens it reported 2.05% where SonarCloud
