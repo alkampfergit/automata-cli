@@ -249,7 +249,7 @@ export function decideConductorReply(
   const always = runAlwaysChecks(
     conversations,
     loop === undefined
-      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, trustedUsers: p.allowedUsers }
+      ? { rebases: 0, maxRebases: Infinity, ciFixes: 0, maxCiFixes: Infinity, ciFixEnabled: true, trustedUsers: p.allowedUsers, blocked: false }
       : {
           rebases: loop.rebases,
           maxRebases: loop.maxRebases,
@@ -257,6 +257,7 @@ export function decideConductorReply(
           maxCiFixes: loop.maxCiFixes,
           ciFixEnabled: loop.ciFixEnabled,
           trustedUsers: p.allowedUsers,
+          blocked: loop.blocked,
         },
   );
   const decided = conversations.map(
@@ -265,13 +266,36 @@ export function decideConductorReply(
       decideConversation(conversation, p),
   );
   const stop = loop === undefined ? null : loopStop(loop);
-  const decisions = decided.map((decision): ConductorDecision =>
-    decision.kind === "reply" && stop !== null
-      ? { kind: "skip", surface: decision.surface, reason: stop.reason, detail: stop.detail }
-      : decision,
-  );
+  const itemMessages = conversations.flatMap((conversation) => conversation.messages);
+  const decisions = decided.map((decision): ConductorDecision => {
+    if (decision.kind !== "reply") return decision;
+    const answeredBy = answeredElsewhere(itemMessages, p, decision.agentMessageAt);
+    if (answeredBy !== undefined) {
+      return {
+        kind: "skip",
+        surface: decision.surface,
+        reason: "answered",
+        detail: `${answeredBy} wrote on the item after ${decision.agentMessageAt}`,
+      };
+    }
+    return stop !== null ? { kind: "skip", surface: decision.surface, reason: stop.reason, detail: stop.detail } : decision;
+  });
   decisions.push(...always.filter((decision) => decision.kind === "skip"));
   return { needsReply: decisions.some((decision) => decision.kind !== "skip"), decisions };
+}
+
+/**
+ * The allowed user who wrote anywhere on the item after `since`, if any. An issue and its pull request are one
+ * conversation for the people on it: an answer on the pull request answers the agent's message on the issue.
+ * Copilot is not a person who answers, so it is left out.
+ */
+function answeredElsewhere(messages: RawMessage[], p: Participants, since: string): string | undefined {
+  const agent = p.agentUser.toLowerCase();
+  const allowed = new Set(p.allowedUsers.map((user) => user.toLowerCase()));
+  return messages.find((message) => {
+    const author = message.author.toLowerCase();
+    return message.createdAt > since && author !== agent && allowed.has(author) && !author.includes("copilot");
+  })?.author;
 }
 
 function loopStop(loop: LoopState): { reason: "blocked" | "limit"; detail: string } | null {

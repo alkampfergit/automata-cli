@@ -164,7 +164,7 @@ describe("decideConductorReply", () => {
   });
 
   it("needs a reply when only the issue is unanswered", () => {
-    const issue = convo([msg("bot", "10:00:00")]);
+    const issue = convo([msg("bot", "12:00:00")]);
     const pr: Conversation = { kind: "pr", number: 8, state: "open", messages: [msg("alice", "11:00:00", "pr-comment")] };
     expect(decideConductorReply([issue, pr], p).needsReply).toBe(true);
   });
@@ -183,5 +183,31 @@ describe("isWatchClosed", () => {
   it("is the rule the prune uses", () => {
     expect(isWatchClosed("closed")).toBe(true);
     expect(isWatchClosed("open")).toBe(false);
+  });
+});
+
+describe("an answer anywhere on the item", () => {
+  const pr = (messages: RawMessage[], copilotAt?: string): Conversation => ({ kind: "pr", number: 8, state: "open", messages, copilotAt });
+
+  it("answers the agent's message on the issue when an allowed user wrote on the pull request after it", () => {
+    const verdict = decideConductorReply([convo([msg("bot", "10:00:00")]), pr([msg("alice", "11:00:00", "pr-comment")])], p);
+    expect(verdict.needsReply).toBe(false);
+    expect(verdict.decisions[0]).toMatchObject({ kind: "skip", reason: "answered" });
+  });
+
+  it("still owes a reply when the allowed user wrote before the agent's message", () => {
+    const verdict = decideConductorReply([convo([msg("bot", "12:00:00")]), pr([msg("alice", "11:00:00", "pr-comment")])], p);
+    expect(verdict.needsReply).toBe(true);
+  });
+
+  it("holds a Copilot thread that an allowed user wrote after", () => {
+    const verdict = decideConductorReply([pr([msg("alice", "11:00:00", "pr-comment")], "2026-10-01T10:00:00Z")], p);
+    expect(verdict.needsReply).toBe(false);
+  });
+
+  it("does not count Copilot as the answer", () => {
+    const withCopilot = { agentUser: "bot", allowedUsers: ["alice", "copilot"] };
+    const verdict = decideConductorReply([convo([msg("bot", "10:00:00")]), pr([msg("copilot", "11:00:00", "pr-comment")])], withCopilot);
+    expect(verdict.needsReply).toBe(true);
   });
 });
