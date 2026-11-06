@@ -8,6 +8,8 @@ A command-line interface tool for automating Git and project workflows.
 npm install -g automata-cli
 ```
 
+To try the build of an open pull request from this repository, install its tag: `npm install -g automata-cli@pr-<number>`.
+
 ## Quick start
 
 ```bash

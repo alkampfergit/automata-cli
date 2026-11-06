@@ -45,9 +45,43 @@ jobs:
           path: test-results/unit.xml
           reporter: java-junit
 
+  # Decides who publishes a branch. A pull request from this repository publishes as `pr-<number>`. A push
+  # publishes only when no open pull request to master or develop owns the branch, so one commit never goes
+  # out twice. A pull request from a fork never publishes: its code is not trusted with the npm credentials.
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+
+    steps:
+      - name: Decide whether this run publishes
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          PUBLISH=false
+          if [ "$EVENT" = "pull_request" ]; then
+            [ "$HEAD_REPO" = "$GH_REPO" ] && PUBLISH=true
+          elif [ "$EVENT" = "push" ]; then
+            if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "develop" ] || [[ "$BRANCH" == release/* ]]; then
+              PUBLISH=true
+            else
+              OWNED=$(gh pr list --head "$BRANCH" --state open --json baseRefName \
+                --jq '[.[] | select(.baseRefName == "master" or .baseRefName == "develop")] | length')
+              [ "$OWNED" = "0" ] && PUBLISH=true
+            fi
+          fi
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
   publish:
-    needs: [build]
-    if: github.event_name == 'push'
+    needs: [build, plan]
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -80,10 +114,14 @@ jobs:
           BASE_VERSION=$(node -p "require('./package.json').version")
           BRANCH="${GITHUB_REF_NAME}"
           RUN="${GITHUB_RUN_NUMBER}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
 
           SAFE_BRANCH=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g')
 
-          if [ "$BRANCH" = "master" ]; then
+          if [ -n "$PR_NUMBER" ]; then
+            TAG="pr-${PR_NUMBER}"
+            VERSION="${BASE_VERSION}-pr${PR_NUMBER}.${RUN}"
+          elif [ "$BRANCH" = "master" ]; then
             TAG="latest"
             HEAD_TAG=$(git tag --points-at HEAD | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$' | head -n 1)
             if [ -z "$HEAD_TAG" ]; then
