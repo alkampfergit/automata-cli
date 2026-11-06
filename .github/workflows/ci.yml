@@ -45,15 +45,17 @@ jobs:
           path: test-results/unit.xml
           reporter: java-junit
 
-  # Decides who publishes a branch. A pull request from this repository publishes as `pr-<number>`. A push
-  # publishes only when no open pull request to master or develop owns the branch, so one commit never goes
-  # out twice. A pull request from a fork never publishes: its code is not trusted with the npm credentials.
+  # Decides who publishes a branch. A pull request build is published only on demand: start this workflow by hand
+  # on the branch of the pull request (`gh workflow run ci.yml --ref <branch>`) and it publishes the branch head
+  # as `pr-<number>`. A pull request event only builds and tests. A push publishes only when no open pull request
+  # to master or develop owns the branch, so one commit never goes out twice.
   plan:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
+      pr: ${{ steps.plan.outputs.pr }}
 
     steps:
       - name: Decide whether this run publishes
@@ -63,11 +65,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           BRANCH: ${{ github.ref_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           PUBLISH=false
-          if [ "$EVENT" = "pull_request" ]; then
-            [ "$HEAD_REPO" = "$GH_REPO" ] && PUBLISH=true
+          PR=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            PR=$(gh pr list --head "$BRANCH" --state open --json number,baseRefName \
+              --jq '[.[] | select(.baseRefName == "master" or .baseRefName == "develop")] | first | .number // empty')
+            [ -n "$PR" ] && PUBLISH=true
           elif [ "$EVENT" = "push" ]; then
             if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "develop" ] || [[ "$BRANCH" == release/* ]]; then
               PUBLISH=true
@@ -78,6 +82,7 @@ jobs:
             fi
           fi
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: [build, plan]
@@ -114,7 +119,7 @@ jobs:
           BASE_VERSION=$(node -p "require('./package.json').version")
           BRANCH="${GITHUB_REF_NAME}"
           RUN="${GITHUB_RUN_NUMBER}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_NUMBER="${{ needs.plan.outputs.pr }}"
 
           SAFE_BRANCH=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g')
 

@@ -12,9 +12,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ### Added
 
-- CI publishes a build of each pull request from this repository to npm under the tag `pr-<number>`, for example
-  `npm install -g automata-cli@pr-184`. A push to a branch with an open pull request to `master` or `develop` no
-  longer publishes, so one commit does not go out twice. A pull request from a fork does not publish.
+- CI publishes a build of a pull request to npm under the tag `pr-<number>` when someone starts the CI workflow by
+  hand on the branch of the pull request (`gh workflow run ci.yml --ref <branch>`), for example
+  `npm install -g automata-cli@pr-184`. A pull request event does not publish. A push to a branch with an open
+  pull request to `master` or `develop` does not publish either, so one commit does not go out twice.
 
 ### Fixed
 
