@@ -22,6 +22,8 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 - `conductor` no longer writes a reply that a person already answered on the same item. A message of an allowed
   user on the issue or on its pull request, written after the agent's message or the Copilot thread, now counts as
   the answer on every conversation of the item. Copilot does not count as that person.
+  An issue description does not count as an answer, and an answer to an older agent message does not silence a
+  Copilot thread that arrived after it.
 - `conductor` retries a rebase or CI-fix request that stopped on `NEEDS-HUMAN:` once a person removes the
   `conductor-blocked` label. Before, the stop note counted as a request already made for that head commit, so only
   a new push re-armed the check. A stop note no longer counts toward `conductor.maxRepliesPerItem`.
