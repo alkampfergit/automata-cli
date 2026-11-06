@@ -10,6 +10,12 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Added
+
+- CI publishes a build of each pull request from this repository to npm under the tag `pr-<number>`, for example
+  `npm install -g automata-cli@pr-184`. A push to a branch with an open pull request to `master` or `develop` no
+  longer publishes, so one commit does not go out twice. A pull request from a fork does not publish.
+
 ### Fixed
 
 - `conductor` no longer writes a reply that a person already answered on the same item. A message of an allowed
