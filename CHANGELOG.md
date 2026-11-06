@@ -10,6 +10,15 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- `conductor` no longer writes a reply that a person already answered on the same item. A message of an allowed
+  user on the issue or on its pull request, written after the agent's message or the Copilot thread, now counts as
+  the answer on every conversation of the item. Copilot does not count as that person.
+- `conductor` retries a rebase or CI-fix request that stopped on `NEEDS-HUMAN:` once a person removes the
+  `conductor-blocked` label. Before, the stop note counted as a request already made for that head commit, so only
+  a new push re-armed the check. A stop note no longer counts toward `conductor.maxRepliesPerItem`.
+
 ## [0.14.0] - 2026-11-05
 
 ### Added

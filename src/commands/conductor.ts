@@ -62,7 +62,7 @@ import {
   parseNeedsHuman,
   resolveMaxReplies,
 } from "../conductor/loopSafety.js";
-import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
+import { ciFixMarker, rebaseMarker, STOP_NOTE_PREFIX } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
@@ -313,7 +313,7 @@ function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: st
   const what = request.kind === "rebase" ? "the rebase" : "the CI fix";
   const marker = request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
   try {
-    postMarker(replyTo.kind, replyTo.number, `The conductor stopped on ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
+    postMarker(replyTo.kind, replyTo.number, `${STOP_NOTE_PREFIX} ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
   } catch (err) {
     process.stderr.write(`Warning: could not record the stopped ${what} of ${label}; the next tick tries again: ${(err as Error).message}\n`);
   }
