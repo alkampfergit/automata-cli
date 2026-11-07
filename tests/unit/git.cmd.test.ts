@@ -10,6 +10,7 @@ describe("automata git (CLI smoke)", () => {
     expect(output).toContain("get-pr-comments");
     expect(output).toContain("finish-feature");
     expect(output).toContain("publish-release");
+    expect(output).toContain("clean-branches");
   });
 
   it("shows help for get-pr-info", () => {

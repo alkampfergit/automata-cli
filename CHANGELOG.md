@@ -16,6 +16,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
   hand on the branch of the pull request (`gh workflow run ci.yml --ref <branch>`), for example
   `npm install -g automata-cli@pr-184`. A pull request event does not publish. A push to a branch with an open
   pull request to `master` or `develop` does not publish either, so one commit does not go out twice.
+- `automata git clean-branches` deletes the local branches that have no `origin` branch and the `origin` branches
+  whose pull requests are all closed or merged. It prints the plan and asks first; `--yes`, `--dry-run`,
+  `--local-only` and `--remote-only` change that. The current branch, the trunk, `develop`, `master` and `main` are
+  never deleted. See `docs/git.md` (#183)
 
 ### Fixed
 

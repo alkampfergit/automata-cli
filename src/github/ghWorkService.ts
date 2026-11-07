@@ -1050,6 +1050,28 @@ export function listPullRequestsForHead(branch: string): PullRequestHeadRef[] {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+interface RawSameRepoPr {
+  number: number;
+  state: string;
+  isCrossRepository: boolean;
+}
+
+/**
+ * The state of every pull request, in any state, whose head is `branch` of *this* repository.
+ *
+ * `gh pr list --head` matches the branch name only, so a fork's branch of the same name is dropped here:
+ * it must not decide whether the branch of this repository is finished. Throws when `gh` fails.
+ */
+export function listSameRepoPullRequests(branch: string): { number: number; state: PullRequestHeadRef["state"] }[] {
+  const raw = ghJson<RawSameRepoPr[]>(
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,isCrossRepository"],
+    `list pull requests for branch ${branch}`,
+  );
+  return raw
+    .filter((pr) => !pr.isCrossRepository)
+    .map((pr) => ({ number: pr.number, state: toHeadState(pr.state) }));
+}
+
 export interface DraftPullRequestInput {
   head: string;
   base: string;

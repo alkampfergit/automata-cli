@@ -274,3 +274,44 @@ describe("gitService command trace", () => {
     expect(takeCommandTrace()?.[0]?.exitCode).toBe(128);
   });
 });
+
+describe("fetchPruneOrigin", () => {
+  it("prunes against origin by name", async () => {
+    mockSpawnSync.mockReturnValue(ok());
+    const { fetchPruneOrigin } = await service();
+    expect(fetchPruneOrigin()).toEqual({ ok: true, stderr: "" });
+    expect(lastArgs()).toEqual(["fetch", "--prune", "origin"]);
+  });
+});
+
+describe("countUnpushedCommits", () => {
+  it("counts the commits that no origin branch has", async () => {
+    mockSpawnSync.mockReturnValue(ok("4\n"));
+    const { countUnpushedCommits } = await service();
+    expect(countUnpushedCommits("feature/a")).toBe(4);
+    expect(lastArgs()).toEqual(["rev-list", "--count", "feature/a", "--not", "--remotes=origin"]);
+  });
+
+  it("returns null, not 0, when git fails or prints something else", async () => {
+    const { countUnpushedCommits } = await service();
+    mockSpawnSync.mockReturnValue(bad("fatal: bad revision", 128));
+    expect(countUnpushedCommits("feature/a")).toBeNull();
+    mockSpawnSync.mockReturnValue(ok("many\n"));
+    expect(countUnpushedCommits("feature/a")).toBeNull();
+  });
+});
+
+describe("deleteRemoteBranch", () => {
+  it("pushes a deletion to origin", async () => {
+    mockSpawnSync.mockReturnValue(ok());
+    const { deleteRemoteBranch } = await service();
+    expect(deleteRemoteBranch("feature/a").ok).toBe(true);
+    expect(lastArgs()).toEqual(["push", "origin", "--delete", "feature/a"]);
+  });
+
+  it("reports the git error", async () => {
+    mockSpawnSync.mockReturnValue(bad("remote: denied"));
+    const { deleteRemoteBranch } = await service();
+    expect(deleteRemoteBranch("feature/a")).toEqual({ ok: false, stderr: "remote: denied" });
+  });
+});
