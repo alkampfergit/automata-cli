@@ -575,7 +575,7 @@ describe("conductor --check and --dry-run", () => {
     mockIssueSurface.mockImplementation((n: number) => issueSurface(n, answered));
     mockPrSurface.mockImplementation((n: number) => ({
       pr: { number: n, title: "P", body: "", url: "u", state: "OPEN", headRefName: "b", baseRefName: "develop" },
-      messages: owed,
+      messages: [text("bot", "2026-10-03T00:00:00Z", "question?")],
       threads: [],
     }));
     mockRunClaude.mockImplementation(async (_prompt: string, options: { sink: { output(s: string, t: string): void } }) => {

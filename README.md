@@ -8,6 +8,9 @@ A command-line interface tool for automating Git and project workflows.
 npm install -g automata-cli
 ```
 
+To try the build of an open pull request, start the CI workflow by hand on its branch, then install its tag:
+`gh workflow run ci.yml --ref <branch>`, then `npm install -g automata-cli@pr-<number>`. A pull request does not publish by itself.
+
 ## Quick start
 
 ```bash

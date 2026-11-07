@@ -62,7 +62,7 @@ import {
   parseNeedsHuman,
   resolveMaxReplies,
 } from "../conductor/loopSafety.js";
-import { ciFixMarker, rebaseMarker } from "../conductor/alwaysChecks.js";
+import { ciFixMarker, rebaseMarker, STOP_NOTE_PREFIX } from "../conductor/alwaysChecks.js";
 import { buildConductorCheck, type WatchedCheck } from "../conductor/checkReport.js";
 import { extractDryRunReply } from "../conductor/dryRunReply.js";
 import type { LoopState } from "../conductor/loopSafety.js";
@@ -136,6 +136,8 @@ interface WatchedItem {
   conversations: Conversation[];
   /** The label names of the watched item itself, for the loop-safety rules. */
   labels: string[];
+  /** The labels of the issues that link a watched pull request; empty for an issue. */
+  ownerLabels?: string[];
 }
 
 function readPr(number: number): ThreadPr {
@@ -147,7 +149,13 @@ function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLin
   const target = getWatchTarget(id);
   if (target.kind === "pr") {
     const pr = readPr(id);
-    return { target, thread: { kind: "pr", prs: [pr] }, conversations: [prConversation(pr.surface, pr.checks)], labels: target.labels };
+    return {
+      target,
+      thread: { kind: "pr", prs: [pr] },
+      conversations: [prConversation(pr.surface, pr.checks)],
+      labels: target.labels,
+      ownerLabels: linkedIssueLabels(id, linkMap),
+    };
   }
   const issue = getIssueSurface(id);
   const prs = (linkMap().byIssue.get(id) ?? []).map((ref) => readPr(ref.number));
@@ -157,6 +165,21 @@ function readWatchedItem(id: number, linkMap: () => OpenPrLinkMap = getOpenPrLin
     conversations: [issueConversation(issue), ...prs.map((pr) => prConversation(pr.surface, pr.checks))],
     labels: target.labels,
   };
+}
+
+/**
+ * The labels of the issues that close a pull request. A stop note of a rebase or CI-fix turn is posted on the pull
+ * request but the label goes on the issue, so a pull request handled on its own must still see that label as its own.
+ * An issue that cannot be read adds nothing: its label is then missed for this tick only.
+ */
+function linkedIssueLabels(pr: number, linkMap: () => OpenPrLinkMap): string[] {
+  return issueOwnersOf(pr, linkMap).flatMap((issue) => {
+    try {
+      return getWatchTarget(issue).labels;
+    } catch {
+      return [];
+    }
+  });
 }
 
 /** The current messages of the conversation a reply goes on. */
@@ -313,7 +336,7 @@ function noteRequestStop(replyTo: ReplyTarget, request: AgentRequest, reason: st
   const what = request.kind === "rebase" ? "the rebase" : "the CI fix";
   const marker = request.kind === "rebase" ? rebaseMarker(request.headSha) : ciFixMarker(request.headSha);
   try {
-    postMarker(replyTo.kind, replyTo.number, `The conductor stopped on ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
+    postMarker(replyTo.kind, replyTo.number, `${STOP_NOTE_PREFIX} ${what} of this pull request and needs a person: ${reason}\n\n${marker}`);
   } catch (err) {
     process.stderr.write(`Warning: could not record the stopped ${what} of ${label}; the next tick tries again: ${(err as Error).message}\n`);
   }
@@ -554,7 +577,7 @@ async function conductItem(
   const copilotWaits = advanced.waits;
   item = advanced.item;
   const { thread, conversations } = item;
-  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false);
+  const loop = loopStateOf(conversations, item.labels, resolveMaxReplies(config.conductor), participants.allowedUsers, config.conductor?.ciFix?.enabled !== false, item.ownerLabels);
   const verdict = decideConductorReply(conversations, participants, loop);
   // A real tick posts its reply, so the next item sees it; a dry run must skip a target it has already answered.
   // A rebase request, then a CI-fix request, come before an ordinary reply, on whichever conversation of the item.
@@ -852,8 +875,8 @@ function checkWatched(
     const target = getWatchTarget(id);
     if (isWatchClosed(target.state)) return { id, kind: target.kind, state: "closed", decisions: [] };
     if (coveredBy !== undefined) return { id, kind: target.kind, state: "open", decisions: [], coveredBy };
-    const { conversations, labels } = readWatchedItem(id, linkMap);
-    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.allowedUsers, ciFixEnabled);
+    const { conversations, labels, ownerLabels } = readWatchedItem(id, linkMap);
+    const loop: LoopState = loopStateOf(conversations, labels, maxReplies, participants.allowedUsers, ciFixEnabled, ownerLabels);
     return { id, kind: target.kind, state: "open", decisions: decideConductorReply(conversations, participants, loop).decisions };
   } catch (err) {
     return { id, unavailable: (err as Error).message };

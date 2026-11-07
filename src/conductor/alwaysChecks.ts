@@ -24,6 +24,9 @@ export function ciFixMarker(headSha: string): string {
   return `${CI_FIX_MARKER_PREFIX} head=${headSha} -->`;
 }
 
+/** Starts the note a stopped turn leaves behind. The note carries the marker of its turn but is not a request. */
+export const STOP_NOTE_PREFIX = "The conductor stopped on";
+
 /** The marker when the last non-empty line of the body is one, and nothing follows it. */
 function endingMarker(body: string, prefix: string): string | null {
   const last = body.trimEnd().split("\n").at(-1)?.trim() ?? "";
@@ -34,12 +37,13 @@ function endingMarker(body: string, prefix: string): string | null {
  * Only comments of a trusted account count: another account cannot forge the state of a check.
  * The trusted accounts are the allowed users, because the conductor posts the request as one of them.
  */
-function markerComments(messages: RawMessage[], trustedUsers: string[], prefix: string): string[] {
+function markerComments(messages: RawMessage[], trustedUsers: string[], prefix: string, withStopNotes = false): string[] {
   const trusted = new Set(trustedUsers.map((user) => user.toLowerCase()));
   const found: string[] = [];
   for (const message of messages) {
     if (message.kind !== "issue-comment" && message.kind !== "pr-comment") continue;
     if (!trusted.has(message.author.toLowerCase())) continue;
+    if (!withStopNotes && message.body.startsWith(STOP_NOTE_PREFIX)) continue;
     const marker = endingMarker(message.body, prefix);
     if (marker !== null) found.push(marker);
   }
@@ -52,8 +56,8 @@ export function countRebaseTurns(messages: RawMessage[], trustedUsers: string[])
 }
 
 /** True when a rebase turn already ran for this head commit. */
-export function hasRebaseFor(messages: RawMessage[], headSha: string, trustedUsers: string[]): boolean {
-  return markerComments(messages, trustedUsers, REBASE_MARKER_PREFIX).includes(rebaseMarker(headSha));
+export function hasRebaseFor(messages: RawMessage[], headSha: string, trustedUsers: string[], blocked = false): boolean {
+  return markerComments(messages, trustedUsers, REBASE_MARKER_PREFIX, blocked).includes(rebaseMarker(headSha));
 }
 
 /** The CI-fix turns already on the messages. */
@@ -62,8 +66,8 @@ export function countCiFixTurns(messages: RawMessage[], trustedUsers: string[]):
 }
 
 /** True when a CI-fix turn already ran for this head commit. */
-export function hasCiFixFor(messages: RawMessage[], headSha: string, trustedUsers: string[]): boolean {
-  return markerComments(messages, trustedUsers, CI_FIX_MARKER_PREFIX).includes(ciFixMarker(headSha));
+export function hasCiFixFor(messages: RawMessage[], headSha: string, trustedUsers: string[], blocked = false): boolean {
+  return markerComments(messages, trustedUsers, CI_FIX_MARKER_PREFIX, blocked).includes(ciFixMarker(headSha));
 }
 
 export type AlwaysSkipReason = "rebase-limit" | "rebase-done" | "ci-fix-limit" | "ci-fix-done";
@@ -83,6 +87,11 @@ export interface AlwaysState {
   maxCiFixes: number;
   /** `conductor.ciFix.enabled`: false switches the CI-fix check off. */
   ciFixEnabled: boolean;
+  /**
+   * The item carries `conductor-blocked`. A stop note holds back a new request for its head commit only
+   * while it does: removing the label asks for a retry.
+   */
+  blocked?: boolean;
   /** The accounts whose markers count: the allowed users, which the conductor posts as. */
   trustedUsers: string[];
 }
@@ -98,7 +107,7 @@ export const rebaseCheck: AlwaysCheck = (conversation, state) => {
   if (conversation.kind !== "pr" || conversation.state !== "open") return null;
   const headSha = conversation.headSha;
   if (conversation.mergeable !== "CONFLICTING" || headSha === undefined || headSha.length === 0) return null;
-  if (hasRebaseFor(conversation.messages, headSha, state.trustedUsers)) {
+  if (hasRebaseFor(conversation.messages, headSha, state.trustedUsers, state.blocked)) {
     return {
       kind: "skip",
       surface: conversation,
@@ -133,7 +142,7 @@ export const ciFixCheck: AlwaysCheck = (conversation, state) => {
   if (conversation.mergeable === "CONFLICTING" || headSha === undefined || headSha.length === 0) return null;
   const failed = conversation.ciFailed ?? [];
   if (failed.length === 0 || conversation.ciPending === true) return null;
-  if (hasCiFixFor(conversation.messages, headSha, state.trustedUsers)) {
+  if (hasCiFixFor(conversation.messages, headSha, state.trustedUsers, state.blocked)) {
     return {
       kind: "skip",
       surface: conversation,

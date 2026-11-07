@@ -215,3 +215,26 @@ describe("decideConductorReply with the CI-fix check", () => {
     expect(verdict.decisions).toContainEqual(expect.objectContaining({ kind: "skip", reason: "ci-fix-limit" }));
   });
 });
+
+describe("a stop note", () => {
+  const note = (marker: string): RawMessage =>
+    comment("alice", "10:00:00", `The conductor stopped on the CI fix of this pull request and needs a person: why\n\n${marker}`);
+  const red = (messages: RawMessage[]): Conversation =>
+    pr({ mergeable: "MERGEABLE", ciFailed: ["Sonar"], ciPending: false, messages });
+
+  it("holds back the request for its head commit while the item is blocked", () => {
+    const messages = [note(ciFixMarker(SHA))];
+    expect(ciFixCheck(red(messages), { ...state, blocked: true })).toMatchObject({ kind: "skip", reason: "ci-fix-done" });
+  });
+
+  it("lets the request run again once the label is removed", () => {
+    const messages = [note(ciFixMarker(SHA))];
+    expect(ciFixCheck(red(messages), { ...state, blocked: false })).toMatchObject({ kind: "ci-fix", headSha: SHA });
+  });
+
+  it("does not count toward the limit", () => {
+    expect(countCiFixTurns([note(ciFixMarker(SHA))], ["alice"])).toBe(0);
+    expect(hasRebaseFor([note(rebaseMarker(SHA))], SHA, ["alice"])).toBe(false);
+    expect(hasRebaseFor([note(rebaseMarker(SHA))], SHA, ["alice"], true)).toBe(true);
+  });
+});

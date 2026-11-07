@@ -10,6 +10,32 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.15.0] - 2026-11-07
+
+### Added
+
+- CI publishes a build of a pull request to npm under the tag `pr-<number>` when someone starts the CI workflow by
+  hand on the branch of the pull request (`gh workflow run ci.yml --ref <branch>`), for example
+  `npm install -g automata-cli@pr-184`. A pull request event does not publish. A push to a branch with an open
+  pull request to `master` or `develop` does not publish either, so one commit does not go out twice.
+- `automata git clean-branches` deletes the local branches that have no `origin` branch and the `origin` branches
+  whose pull requests are all closed or merged. It prints the plan and asks first; `--yes`, `--dry-run`,
+  `--local-only` and `--remote-only` change that. The current branch, the trunk, `develop`, `master` and `main` are
+  never deleted. See `docs/git.md` (#183)
+
+### Fixed
+
+- `conductor` no longer writes a reply that a person already answered on the same item. A message of an allowed
+  user on the issue or on its pull request, written after the agent's message or the Copilot thread, now counts as
+  the answer on every conversation of the item. Copilot does not count as that person.
+  An issue description does not count as an answer, and an answer to an older agent message does not silence a
+  Copilot thread that arrived after it.
+- `conductor` retries a rebase or CI-fix request that stopped on `NEEDS-HUMAN:` once a person removes the
+  `conductor-blocked` label. Before, the stop note counted as a request already made for that head commit, so only
+  a new push re-armed the check. A stop note no longer counts toward `conductor.maxRepliesPerItem`.
+
 ## [0.14.0] - 2026-11-05
 
 ### Added

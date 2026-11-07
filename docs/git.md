@@ -523,3 +523,68 @@ committed, branched, merged, tagged or pushed.
 |---|---|
 | `0` | Release published successfully (or dry-run completed) |
 | `1` | Precondition failed or git error during release sequence |
+
+---
+
+## `automata git clean-branches`
+
+Delete the stale branches of a repository in two phases. It prints the whole plan first, asks once, and then deletes.
+The local phase needs only `git`. The remote phase needs the [`gh` CLI](https://cli.github.com/).
+
+```bash
+automata git clean-branches --dry-run     # print the plan, change nothing
+automata git clean-branches               # print the plan, ask, delete
+automata git clean-branches --yes         # no question
+automata git clean-branches --local-only  # local phase only
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print the plan and change nothing |
+| `--yes` | Do not ask for confirmation. Without `--yes` and without a terminal, nothing is deleted and the exit code is `1` |
+| `--local-only` | Run the local phase only. It does not call `gh` |
+| `--remote-only` | Run the remote phase only. It cannot be combined with `--local-only` |
+
+### What it does
+
+1. `git fetch --prune origin`, then `git ls-remote --heads origin`. If `origin` cannot be listed, nothing is deleted.
+2. **Local phase.** A local branch that has no branch of the same name on `origin` is deleted with `git branch -D`.
+   If the branch has commits that no `origin` branch has, the plan line carries a warning. The branch is still deleted.
+3. **Remote phase.** For each branch on `origin`, `gh pr list --head <branch> --state all` is read. The branch is
+   deleted with `git push origin --delete <branch>` only when it has **no open pull request and at least one closed or
+   merged pull request**. A branch that never had a pull request is kept. Pull requests from forks are ignored.
+
+These branches are never deleted, in both phases: the current branch, the trunk branch (`git.trunkBranch` or the
+detected trunk, see [`publish-release`](#automata-git-publish-release)), `develop`, `master` and `main`.
+
+The remote phase can leave a local branch behind (its remote branch is now gone). The next run removes it.
+
+### Output
+
+One line per branch: the action, the scope, the branch and the reason.
+
+```
+Plan:
+  delete       local  feature/old (no origin branch) [warning: 2 unpushed commit(s) will be lost]
+  keep         local  develop (protected branch)
+  delete       remote feature/done (closed pull request #41)
+  keep         remote feature/wip (open pull request #44)
+  keep         remote feature/idea (no pull request)
+```
+
+With `--dry-run` the word `delete` reads `would delete`.
+
+### Azure DevOps mode
+
+With `remoteType` set to `azdo` the remote phase is refused (see [azdo-gap.md](azdo-gap.md)). Use `--local-only`.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | The run is complete, a dry run, or you answered no |
+| `1` | A deletion failed, a pull request lookup failed (the branch is kept), `origin` could not be reached or listed, no terminal and no `--yes`, or the options conflict |
+
+A failure on one branch does not stop the other branches.

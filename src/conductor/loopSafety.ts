@@ -50,6 +50,11 @@ export function parseNeedsHuman(output: string): string | null {
 /** What the decision needs to know about the item as a whole. */
 export interface LoopState {
   blocked: boolean;
+  /**
+   * An issue that links this pull request carries `conductor-blocked`. It does not stop an ordinary reply, but it keeps
+   * a stop note of a rebase or CI-fix turn in force, because the note is on the pull request and the label is on the issue.
+   */
+  ownerBlocked?: boolean;
   /** Conductor replies already on the item (the issue and its pull requests together). */
   replies: number;
   maxReplies: number;

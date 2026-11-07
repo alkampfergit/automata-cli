@@ -26,6 +26,7 @@ import {
 import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetection.js";
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
 import { describeReleaseFlowSource } from "../git/releaseFlow.js";
+import { cleanBranchesCmd } from "./cleanBranches.js";
 import { checkChangelogSection, readChangelog } from "../git/changelogGate.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
@@ -562,4 +563,5 @@ export const gitCommand = new Command("git")
   .addCommand(getPrInfoCmd)
   .addCommand(getPrCommentsCmd)
   .addCommand(finishFeatureCmd)
-  .addCommand(publishReleaseCmd);
+  .addCommand(publishReleaseCmd)
+  .addCommand(cleanBranchesCmd);
