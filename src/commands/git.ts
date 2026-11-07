@@ -27,6 +27,17 @@ import { describeTrunkSource, unresolvedTrunkMessage } from "../git/trunkDetecti
 import { resolveReleaseVersion } from "../git/releaseVersion.js";
 import { describeReleaseFlowSource } from "../git/releaseFlow.js";
 import { checkChangelogSection, readChangelog } from "../git/changelogGate.js";
+import { describeOutcome, exitCodeFor, rebasePullRequests, type PrOutcome } from "../git/rebasePrs.js";
+import { terminateTrackedChildren } from "../cli/childRegistry.js";
+import { createRebaseDeps, fetchOrigin, listOpenPrs } from "../git/rebasePrsService.js";
+import {
+  DEFAULT_DO_WORK,
+  DEFAULT_REBASE_PRS_MAX_ATTEMPTS,
+  DEFAULT_REBASE_PRS_PROMPT,
+  readConfig,
+} from "../config/configStore.js";
+import { getAuthenticatedLogin, getRepoSlug } from "../github/ghWorkService.js";
+import { acquireRunLock, inspectRunLock } from "../run/runLock.js";
 
 const FAIL_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"]);
 const SKIP_CONCLUSIONS = new Set(["SKIPPED", "NEUTRAL"]);
@@ -557,9 +568,160 @@ CHANGELOG.md is not subject to the check.`,
     }
   });
 
+function parseCount(value: string, label: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || String(parsed) !== value.trim()) {
+    process.stderr.write(`Error: ${label} must be a non-negative integer (got "${value}").\n`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
+const rebasePrsCmd = new Command("rebase-prs")
+  .description("Rebase every open pull request onto its base branch; the configured model resolves conflicts")
+  .option("--dry-run", "Report what would be rebased; push and change nothing")
+  .option("--no-fetch", "Do not run git fetch origin first")
+  .option("--pr <number>", "Handle only this pull request")
+  .option("--max-prs <number>", "Handle at most this many pull requests that need a rebase (0 = no limit)", "0")
+  .addHelpText(
+    "after",
+    `
+Each pull request that is behind origin/<base> is rebased in a temporary git worktree, so this
+checkout is never touched. A clean rebase is pushed with --force-with-lease. On a conflict the
+executor (doWork.executor, doWork.models, doWork.effort) edits the conflicted files; automata runs
+git add and git rebase --continue. If the model leaves a conflict marker, the test command fails or
+the attempt limit is reached, the branch stays as it was and the pull request gets the label
+'rebase-blocked' and one comment.
+
+Skipped: forks, drafts (unless git.rebasePrs.includeDrafts), pull requests whose author is neither
+agentUser nor the authenticated gh login, and pull requests that are up to date.
+Exits 0 while a do-work run holds the run lock. Exits 1 when a pull request was blocked or failed.`,
+  )
+  .action(async (options: { dryRun?: boolean; fetch: boolean; pr?: string; maxPrs: string }) => {
+    const config = readConfig();
+    const dryRun = options.dryRun ?? false;
+    const only = options.pr === undefined ? undefined : parseCount(options.pr, "--pr");
+    const maxPrs = parseCount(options.maxPrs, "--max-prs");
+    const owners = [config.agentUser, getAuthenticatedLogin()].filter((login): login is string => !!login);
+    if (owners.length === 0) {
+      process.stderr.write("Error: cannot tell which branches automata owns. Set agentUser or authenticate gh as a user.\n");
+      process.exit(1);
+    }
+
+    // hand-edited JSON is not validated by readConfig; 0 or a negative value would make every foreign lock look stale.
+    const staleMinutes = config.doWork?.lockStaleMinutes ?? DEFAULT_DO_WORK.lockStaleMinutes;
+    if (!Number.isSafeInteger(staleMinutes) || staleMinutes < 1) {
+      process.stderr.write(`Error: doWork.lockStaleMinutes must be a positive integer (got ${String(staleMinutes)}).\n`);
+      process.exit(1);
+    }
+
+    const release = takeRunLock(dryRun, staleMinutes);
+    if (release === null) return;
+    const interrupt = { requested: false };
+    const onSignal = interruptRebase(interrupt);
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    try {
+      await runRebasePrs(config, { dryRun, only, maxPrs, owners, fetch: options.fetch }, () => interrupt.requested);
+      if (interrupt.requested) process.exitCode = 130;
+    } catch (err) {
+      process.stderr.write(`Error: ${(err as Error).message}\n`);
+      process.exitCode = 1;
+    } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+      release();
+    }
+  });
+
+/**
+ * Stop the executor and the test command, then let the run unwind, as `do-work` does: a child that
+ * outlives its parent would keep working while the next tick takes the freed lock. The flag stops
+ * any further pull request; the interrupted one aborts its rebase and removes its worktree on the
+ * way out, and the caller releases the run lock last. When a child cannot be confirmed gone, the
+ * lock stays in place and the process exits at once.
+ */
+function interruptRebase(interrupt: { requested: boolean }): () => void {
+  return (): void => {
+    if (interrupt.requested) return;
+    interrupt.requested = true;
+    process.stderr.write("\nInterrupted: stopping the executor before releasing the run lock…\n");
+    void terminateTrackedChildren().then((allExited) => {
+      if (allExited) return;
+      process.stderr.write("Warning: could not confirm the executor exited; leaving the run lock in place.\n");
+      process.exit(130);
+    });
+  };
+}
+
+/**
+ * Take the `do-work` run lock, or say why not. Returns the release function, or null
+ * when the run must end: a held lock is not an error, so the exit code stays 0 unless the holder looks orphaned.
+ * A dry run only reads the lock.
+ */
+function takeRunLock(dryRun: boolean, staleMinutes: number): (() => void) | null {
+  if (dryRun) {
+    const status = inspectRunLock(staleMinutes);
+    if (status.kind !== "held" && status.kind !== "suspect") return () => undefined;
+    process.stdout.write(`A do-work run holds the run lock (pid ${String(status.owner.pid)}); nothing was checked.\n`);
+    return null;
+  }
+  const lock = acquireRunLock("rebase-prs", staleMinutes);
+  if (lock.ok) return () => lock.handle.release();
+  process.stdout.write(`The run lock is held by ${lock.heldBy.command} (pid ${String(lock.heldBy.pid)}); nothing was done.\n`);
+  process.exitCode = lock.suspect ? 1 : 0;
+  return null;
+}
+
+interface RebasePrsRun {
+  dryRun: boolean;
+  only?: number;
+  maxPrs: number;
+  owners: string[];
+  fetch: boolean;
+}
+
+async function runRebasePrs(
+  config: ReturnType<typeof readConfig>,
+  run: RebasePrsRun,
+  isCancelled: () => boolean,
+): Promise<void> {
+  // git uses origin; every gh call must name the same repository, whatever GH_REPO or gh's default says.
+  const slug = getRepoSlug();
+  process.env.GH_REPO = `${slug.owner}/${slug.repo}`;
+  if (run.fetch) {
+    const fetched = fetchOrigin();
+    if (!fetched.ok) {
+      process.stderr.write(`Error: git fetch origin failed.\n${fetched.stderr}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const rebase = config.git?.rebasePrs ?? {};
+  const doWork = config.doWork ?? {};
+  const executor = doWork.executor ?? DEFAULT_DO_WORK.executor;
+  const outcomes: PrOutcome[] = await rebasePullRequests(
+    listOpenPrs(run.only),
+    {
+      dryRun: run.dryRun,
+      includeDrafts: rebase.includeDrafts ?? false,
+      owners: run.owners,
+      maxAttempts: rebase.maxAttempts ?? DEFAULT_REBASE_PRS_MAX_ATTEMPTS,
+      testCommand: rebase.testCommand,
+      prompt: rebase.prompt ?? DEFAULT_REBASE_PRS_PROMPT,
+      maxPrs: run.maxPrs,
+    },
+    createRebaseDeps({ executor, model: doWork.models?.[executor], effort: doWork.effort?.[executor] }, isCancelled),
+    (outcome) => process.stdout.write(`${describeOutcome(outcome)}\n`),
+  );
+  process.stdout.write(`${run.dryRun ? "Dry-run: " : ""}${String(outcomes.length)} pull request(s) examined.\n`);
+  process.exitCode = exitCodeFor(outcomes);
+}
+
 export const gitCommand = new Command("git")
   .description("Git workflow commands (some require gh CLI)")
   .addCommand(getPrInfoCmd)
   .addCommand(getPrCommentsCmd)
   .addCommand(finishFeatureCmd)
-  .addCommand(publishReleaseCmd);
+  .addCommand(publishReleaseCmd)
+  .addCommand(rebasePrsCmd);

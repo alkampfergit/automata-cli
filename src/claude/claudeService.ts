@@ -56,6 +56,20 @@ export const CLAUDE_READ_ONLY_DENIED = [
   "Bash(gh * -R*)",
 ];
 
+/**
+ * The tools of an edit-only run: files can be read and changed, nothing else.
+ * There is no shell, so no `git` and no network client is reachable.
+ */
+export const CLAUDE_EDIT_ONLY_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
+export const CLAUDE_EDIT_ONLY_DENIED = ["Bash", "WebFetch", "WebSearch"];
+
+/** The environment of an edit-only run: no credential that can reach GitHub. */
+export function editOnlyEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) delete env[key];
+  return env;
+}
+
 /** The environment of a read-only run: `gh` defaults to the watched repository. */
 export function readOnlyEnv(ghRepo?: string): NodeJS.ProcessEnv {
   return ghRepo ? { ...process.env, GH_REPO: ghRepo } : process.env;
@@ -65,6 +79,8 @@ export interface InvokeClaudeOptions {
   yolo?: boolean;
   /** Deny every tool that changes a file. Wins over `yolo`. */
   readOnly?: boolean;
+  /** Allow file edits only: no shell, no network. Ignored when `readOnly` is set. */
+  editOnly?: boolean;
   /** With `readOnly`: the only issue or pull request the run may comment on. */
   replyTo?: ReadOnlyReplyTarget;
   verbose?: boolean;
@@ -117,6 +133,15 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
       "--disallowed-tools",
       CLAUDE_READ_ONLY_DENIED.join(","),
     );
+  } else if (options.editOnly) {
+    args.push(
+      "--permission-mode",
+      "dontAsk",
+      "--allowed-tools",
+      CLAUDE_EDIT_ONLY_TOOLS.join(","),
+      "--disallowed-tools",
+      CLAUDE_EDIT_ONLY_DENIED.join(","),
+    );
   } else if (options.yolo) {
     args.push("--dangerously-skip-permissions");
   }
@@ -148,13 +173,14 @@ export function buildClaudeArgs(prompt: string, options: InvokeClaudeOptions = {
  */
 export function runClaude(
   prompt: string,
-  options: { model?: string; effort?: string; printSteps?: boolean; echoResult?: boolean; readOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink } = {},
+  options: { model?: string; effort?: string; printSteps?: boolean; echoResult?: boolean; readOnly?: boolean; editOnly?: boolean; replyTo?: ReadOnlyReplyTarget; ghRepo?: string; sink?: RunSink; cwd?: string } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const claudeBin = resolveCommand("claude");
     const args = buildClaudeArgs(prompt, {
       yolo: true,
       readOnly: options.readOnly,
+      editOnly: options.editOnly,
       replyTo: options.replyTo,
       model: options.model,
       effort: options.effort,
@@ -164,7 +190,8 @@ export function runClaude(
     const sink = options.sink;
     const child = spawn(claudeBin, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: options.readOnly ? readOnlyEnv(options.ghRepo) : process.env,
+      env: childEnv(options),
+      cwd: options.cwd,
     });
     trackChild(child);
     feedStdin(child, prompt);
@@ -352,3 +379,8 @@ function summarizeTool(name: string, input: Record<string, unknown> | undefined)
   }
 }
 
+
+function childEnv(options: { readOnly?: boolean; editOnly?: boolean; ghRepo?: string }): NodeJS.ProcessEnv {
+  if (options.readOnly) return readOnlyEnv(options.ghRepo);
+  return options.editOnly ? editOnlyEnv() : process.env;
+}
