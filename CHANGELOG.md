@@ -10,6 +10,10 @@ see [docs/maintenance.md](docs/maintenance.md#changelog) for how to keep this fi
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.15.0] - 2026-11-07
+
 ### Added
 
 - CI publishes a build of a pull request to npm under the tag `pr-<number>` when someone starts the CI workflow by
