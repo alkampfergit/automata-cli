@@ -41,7 +41,7 @@ local branches and the remote branches of finished pull requests do not pile up.
 - Q: Delete local branches with unpushed commits? → A: Yes, with a warning. [issue #183, owner said "ok"]
 - Q: Fork pull requests? → A: Ignored. [issue #183, owner said "ok"]
 - Q: One prompt or one per phase? → A: One, after the whole plan is shown. [AUTO: the phases do not depend on each other]
-- Q: Azure DevOps? → A: Rejected with a message when `remoteType` is `azdo`. [AUTO: the remote phase uses `gh`; a command built on `gh` rejects an explicit `azdo` (see `docs/azdo-gap.md`)]
+- Q: Azure DevOps? → A: The remote phase is rejected with a message when `remoteType` is `azdo`; `--local-only` still works. [AUTO: the remote phase uses `gh`; a command built on `gh` rejects an explicit `azdo` (see `docs/azdo-gap.md`)]
 
 ## Assumptions
 

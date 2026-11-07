@@ -863,6 +863,33 @@ describe("marker comments", () => {
   });
 });
 
+describe("listSameRepoPullRequests", () => {
+  it("drops the pull requests from forks and maps the states", async () => {
+    mockSpawnSync.mockReturnValueOnce(
+      json([
+        { number: 1, state: "MERGED", isCrossRepository: false },
+        { number: 2, state: "OPEN", isCrossRepository: true },
+        { number: 3, state: "CLOSED", isCrossRepository: false },
+      ]),
+    );
+    const { listSameRepoPullRequests } = await import("../../src/github/ghWorkService.js");
+    expect(listSameRepoPullRequests("fix/x")).toEqual([
+      { number: 1, state: "MERGED" },
+      { number: 3, state: "CLOSED" },
+    ]);
+    expect(calls()[0]).toEqual({
+      cmd: "gh",
+      args: ["pr", "list", "--head", "fix/x", "--state", "all", "--json", "number,state,isCrossRepository"],
+    });
+  });
+
+  it("throws when gh fails, so the caller can keep the branch", async () => {
+    mockSpawnSync.mockReturnValueOnce({ stdout: "", stderr: "not logged in", status: 1 });
+    const { listSameRepoPullRequests } = await import("../../src/github/ghWorkService.js");
+    expect(() => listSameRepoPullRequests("fix/x")).toThrow("not logged in");
+  });
+});
+
 describe("listPullRequestsForHead", () => {
   it("asks for every state for the named head and sorts newest update first", async () => {
     mockSpawnSync.mockReturnValueOnce(

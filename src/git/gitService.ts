@@ -1175,6 +1175,28 @@ export function countCommitsNotIn(baseBranch: string, branch: string): number | 
   return Number(trimmed);
 }
 
+/** `git fetch --prune origin` — drops the remote-tracking refs of branches that origin no longer has. */
+export function fetchPruneOrigin(): GitCommandResult {
+  return gitCommand(["fetch", "--prune", "origin"]);
+}
+
+/**
+ * How many commits of `branch` no `origin` branch has, or null when it could not be counted.
+ *
+ * Null stays apart from 0 so the caller never reads "could not ask" as "nothing would be lost".
+ */
+export function countUnpushedCommits(branch: string): number | null {
+  const { stdout, status } = run("git", ["rev-list", "--count", branch, "--not", "--remotes=origin"]);
+  if (status !== 0) return null;
+  const trimmed = stdout.trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : null;
+}
+
+/** `git push origin --delete <branch>` — removes a branch from origin. */
+export function deleteRemoteBranch(branch: string): GitCommandResult {
+  return gitCommand(["push", "origin", "--delete", branch]);
+}
+
 /**
  * `git branch -D <branch>` — the non-throwing sibling of `deleteLocalBranch`.
  *
