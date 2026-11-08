@@ -588,3 +588,94 @@ With `remoteType` set to `azdo` the remote phase is refused (see [azdo-gap.md](a
 | `1` | A deletion failed, a pull request lookup failed (the branch is kept), `origin` could not be reached or listed, no terminal and no `--yes`, or the options conflict |
 
 A failure on one branch does not stop the other branches.
+
+---
+
+## `automata git rebase-prs`
+
+Bring every open pull request up to date with its base branch. Intended for cron, like `do-work`. Needs `git` and the
+[`gh` CLI](https://cli.github.com/).
+
+```bash
+automata git rebase-prs                 # rebase every pull request that is behind its base
+automata git rebase-prs --dry-run       # report what would be rebased; push nothing
+automata git rebase-prs --pr 42         # one pull request
+automata git rebase-prs --max-prs 5     # at most five pull requests that need a rebase
+automata git rebase-prs --no-fetch      # do not run git fetch origin first
+```
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Report what would happen. No worktree, no push, no label, no comment, no lock. |
+| `--no-fetch` | Skip `git fetch origin`. The refs already in this clone are used. |
+| `--pr <number>` | Handle only this open pull request. |
+| `--max-prs <number>` | Stop after this many pull requests that needed a rebase. Skipped and up-to-date pull requests do not count. `0` (the default) means no limit. |
+
+### What it does
+
+For each open pull request, in number order:
+
+1. **Skip** it, with a reason, when it is
+   - `fork`: the head is in another repository. Automata cannot push there.
+   - `draft`: unless `git.rebasePrs.includeDrafts` is `true`.
+   - `not-owned`: the author is neither [`agentUser`](config.md#automata-config-set-agent-user-value) nor the login `gh` is authenticated as (compared without regard to case). Automata force-pushes only the branches it owns.
+   - `protected`: the head branch is the `doWork.baseBranch`, a `doWork.protectedBranches` entry, the trunk of `origin`, or the base of any listed pull request, for example a `main` to `develop` back-merge. Automata never rewrites these branches.
+   - `ref-missing`: `origin/<head>` or `origin/<base>` is not in this clone.
+   - `up-to-date`: `origin/<head>` already contains `origin/<base>`.
+2. **Rebase** the head in a detached `git worktree` under the system temporary directory, onto `origin/<base>` of that
+   pull request. The strategy is the one `do-work` uses (`--no-reapply-cherry-picks`). This checkout is never touched.
+3. **Push** a clean result with `git push --force-with-lease=refs/heads/<head>:<old sha> origin HEAD:refs/heads/<head>`.
+   If someone pushed to the branch after the fetch, the push is refused and the pull request is `failed`.
+4. On a **conflict**, run the executor (`doWork.executor`, `doWork.models`, `doWork.effort`) inside the worktree with the
+   conflict prompt and the list of conflicted files. The model edits files only: Claude runs with `Read`, `Edit`, `Write`, `Glob` and `Grep` (no shell, no web tools, no GitHub token in its
+   environment), and Codex runs in the `workspace-write` sandbox (writes stay in the worktree, no network). Automata runs `git add` and
+   `git rebase --continue`. A later commit can conflict again; every resolution is one attempt.
+5. Run `git.rebasePrs.testCommand` in the worktree when it is set.
+
+### When a pull request is blocked
+
+A pull request is **blocked** when the model leaves a conflict marker (`<<<<<<<` or `>>>>>>>`; the length that the `conflict-marker-size` attribute of the file sets, read before the model runs), the executor fails, the
+test command exits non-zero, `git.rebasePrs.maxAttempts` resolutions are spent, or git stops with no conflicted file.
+Automata then runs `git rebase --abort`, pushes nothing, adds the label `rebase-blocked` and posts one comment that names
+the reason. A pull request that already has the label gets no second comment. A later successful rebase removes the
+label. The comment is posted before the label, so a failed comment is retried on the next run. Secrets in the test
+output are masked before the comment is posted.
+
+One pull request that blocks or fails does not stop the others.
+
+### The run lock
+
+The command takes the `do-work` run lock for its run, so a `do-work` tick cannot start while it works. When `do-work`
+(or another `rebase-prs`) holds the lock, the command prints that and exits 0 without work. A lock that looks alive but
+is older than `doWork.lockStaleMinutes` exits 1, as `do-work` does. A value of `doWork.lockStaleMinutes` that is not a
+positive integer stops the command with exit 1. On `SIGINT` or `SIGTERM` the command starts no further pull request,
+stops the executor and the test command, aborts the rebase, removes the worktree, then releases the lock and exits 130.
+If a child process cannot be confirmed gone, the lock stays and a temporary worktree can remain; `git worktree prune`
+removes its record.
+
+Before it pushes, the command reads the pull request again. A pull request that is now closed, a draft (unless
+included), not owned or retargeted is skipped (`changed`). The rebase runs with `rebase.updateRefs` off, so no other
+local branch moves. All `gh` calls are scoped to the repository of `origin`, whatever `GH_REPO` says.
+
+### Configuration
+
+Keys under `git.rebasePrs` in `.automata/config.json`. See [config.md](config.md#gitrebaseprs).
+
+### Output
+
+One line per pull request:
+
+```
+#12 feature/a: rebased and pushed (1 conflict resolution(s))
+#13 feature/b: skipped (up-to-date)
+#14 feature/c: blocked, The model left conflict markers in a file.
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Every pull request was rebased, skipped or (in `--dry-run`) reported; or the run lock was held. |
+| `1` | A pull request was blocked or failed, `git fetch` failed, `gh` failed, or the owner could not be determined. |
