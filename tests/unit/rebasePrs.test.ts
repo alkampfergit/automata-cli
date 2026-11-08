@@ -37,12 +37,21 @@ const OPTIONS: RebaseOptions = {
   dryRun: false,
   includeDrafts: false,
   owners: ["bot"],
+  protectedBranches: ["main"],
   maxAttempts: 3,
   prompt: "Resolve.",
   maxPrs: 0,
 };
 
 describe("decideSkip", () => {
+  it("compares the author and the owners without regard to case", () => {
+    expect(decideSkip(pr({ author: "bot" }), { ...OPTIONS, owners: ["Bot"] })).toBeNull();
+  });
+
+  it("skips a pull request whose head is a protected branch", () => {
+    expect(decideSkip(pr({ headRefName: "main", baseRefName: "develop" }), OPTIONS)).toBe("protected");
+  });
+
   it("accepts an owned, non-draft, same-repository pull request", () => {
     expect(decideSkip(pr(), OPTIONS)).toBeNull();
   });
@@ -361,6 +370,41 @@ describe("rebasePullRequests with a real git repository", () => {
     expect(notices).toEqual([]);
     expect(remoteSha("feature/a")).toBe(tip);
     expect(git(work, "worktree", "list")).not.toContain("automata-rebase-test");
+  });
+
+  it("aborts before it stages when the model returns after a shutdown", async () => {
+    branchFromDevelop("feature/a", "shared.txt", "branch\n");
+    advanceDevelop("shared.txt", "develop\n");
+    const tip = remoteSha("feature/a");
+    const interrupted = deps();
+    interrupted.runModel = (_prompt, cwd) => {
+      resolver(cwd);
+      cancelled = true;
+      return Promise.resolve();
+    };
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, interrupted);
+    expect(outcome).toMatchObject({ status: "failed", detail: "interrupted" });
+    expect(notices).toEqual([]);
+    expect(remoteSha("feature/a")).toBe(tip);
+  });
+
+  it("leaves a pull request closed during a failed run without a notice", async () => {
+    branchFromDevelop("feature/a", "a.txt", "a\n");
+    advanceDevelop("other.txt", "other\n");
+    testResult = { ok: false, output: "boom" };
+    refreshed = null;
+    const [outcome] = await rebasePullRequests([pr()], { ...OPTIONS, testCommand: "npm test" }, deps());
+    expect(outcome).toMatchObject({ status: "skipped", reason: "changed" });
+    expect(notices).toEqual([]);
+  });
+
+  it("rebases onto the commit it compared, not onto an ambiguous name", async () => {
+    branchFromDevelop("feature/a", "a.txt", "a\n");
+    advanceDevelop("other.txt", "other\n");
+    git(work, "tag", "origin/develop", "feature/a");
+    const [outcome] = await rebasePullRequests([pr()], OPTIONS, deps());
+    expect(outcome).toMatchObject({ status: "rebased" });
+    expect(git(work, "merge-base", "--is-ancestor", "refs/remotes/origin/develop", "refs/remotes/origin/feature/a")).toBeDefined();
   });
 
   it("does not move a local branch when rebase.updateRefs is on", async () => {

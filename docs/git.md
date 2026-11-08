@@ -620,7 +620,8 @@ For each open pull request, in number order:
 1. **Skip** it, with a reason, when it is
    - `fork`: the head is in another repository. Automata cannot push there.
    - `draft`: unless `git.rebasePrs.includeDrafts` is `true`.
-   - `not-owned`: the author is neither [`agentUser`](config.md#automata-config-set-agent-user-value) nor the login `gh` is authenticated as. Automata force-pushes only the branches it owns.
+   - `not-owned`: the author is neither [`agentUser`](config.md#automata-config-set-agent-user-value) nor the login `gh` is authenticated as (compared without regard to case). Automata force-pushes only the branches it owns.
+   - `protected`: the head branch is the `doWork.baseBranch`, a `doWork.protectedBranches` entry, the trunk of `origin`, or the base of any listed pull request, for example a `main` to `develop` back-merge. Automata never rewrites these branches.
    - `ref-missing`: `origin/<head>` or `origin/<base>` is not in this clone.
    - `up-to-date`: `origin/<head>` already contains `origin/<base>`.
 2. **Rebase** the head in a detached `git worktree` under the system temporary directory, onto `origin/<base>` of that

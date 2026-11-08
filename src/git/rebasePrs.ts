@@ -17,7 +17,7 @@ export interface OpenPr {
   labels: string[];
 }
 
-export type SkipReason = "draft" | "fork" | "not-owned" | "ref-missing" | "up-to-date" | "changed";
+export type SkipReason = "draft" | "fork" | "not-owned" | "protected" | "ref-missing" | "up-to-date" | "changed";
 
 export type BlockReason = "attempt-limit" | "markers-left" | "executor-failed" | "test-failed" | "rebase-failed";
 
@@ -64,15 +64,21 @@ export interface RebaseOptions {
   maxAttempts: number;
   testCommand?: string;
   prompt: string;
+  /** Branches whose history must never be rewritten, such as the trunk and the integration branch. */
+  protectedBranches: string[];
   /** Stops after this many pull requests needed a rebase. 0 means no limit. */
   maxPrs: number;
 }
 
 /** Why a pull request is not rebased before its refs are even read, or null when it may be. */
-export function decideSkip(pr: OpenPr, options: Pick<RebaseOptions, "includeDrafts" | "owners">): SkipReason | null {
+export function decideSkip(pr: OpenPr, options: Pick<RebaseOptions, "includeDrafts" | "owners" | "protectedBranches">): SkipReason | null {
   if (pr.isCrossRepository) return "fork";
   if (pr.isDraft && !options.includeDrafts) return "draft";
-  if (!options.owners.includes(pr.author)) return "not-owned";
+  // GitHub logins are case-insensitive: `agentUser` may be written `MyBot` while the API returns `mybot`.
+  const author = pr.author.toLowerCase();
+  if (!options.owners.some((owner) => owner.toLowerCase() === author)) return "not-owned";
+  // A back-merge `main -> develop` passes the owner check, yet pushing its head would rewrite the trunk.
+  if (options.protectedBranches.includes(pr.headRefName)) return "protected";
   return null;
 }
 
@@ -181,6 +187,8 @@ async function rebaseWithModel(
     } catch (err) {
       return abort("executor-failed", (err as Error).message);
     }
+    // A successful model run after a shutdown must not stage, continue or start the next conflict round.
+    if (deps.isCancelled()) return abort("executor-failed", "interrupted");
     const remaining = files.filter((file, index) => {
       const text = readResolved(deps, join(worktree, file));
       return text !== null && hasConflictMarkers(text, sizes[index]);
@@ -193,7 +201,9 @@ async function rebaseWithModel(
   return resolveFrom(deps.git([...NO_UPDATE_REFS, ...REBASE_STRATEGY_ARGS, base], worktree), 0);
 }
 
-function block(pr: OpenPr, reason: BlockReason, detail: string, deps: RebaseDeps): PrOutcome {
+function block(pr: OpenPr, reason: BlockReason, detail: string, options: RebaseOptions, deps: RebaseDeps): PrOutcome {
+  // The model and the tests run for minutes; a pull request closed meanwhile must get no comment and no label.
+  if (changedSince(pr, options, deps)) return { pr, status: "skipped", reason: "changed" };
   try {
     // A pull request that already waits for a person has been told; a second comment every cron tick is noise.
     if (!pr.labels.includes(REBASE_BLOCKED_LABEL)) deps.notifyBlocked(pr, blockedComment(pr, reason, detail));
@@ -221,9 +231,9 @@ function changedSince(pr: OpenPr, options: RebaseOptions, deps: RebaseDeps): boo
 /** Rebases one pull request. Never throws for a git or executor failure; the outcome says what happened. */
 export async function rebaseOne(pr: OpenPr, options: RebaseOptions, deps: RebaseDeps): Promise<PrOutcome> {
   const headRef = `refs/remotes/origin/${pr.headRefName}`;
-  const base = `origin/${pr.baseRefName}`;
+  const baseRef = `refs/remotes/origin/${pr.baseRefName}`;
   const headSha = deps.git(["rev-parse", "--verify", "--quiet", headRef]).stdout.trim();
-  const baseSha = deps.git(["rev-parse", "--verify", "--quiet", `refs/remotes/${base}`]).stdout.trim();
+  const baseSha = deps.git(["rev-parse", "--verify", "--quiet", baseRef]).stdout.trim();
   if (headSha.length === 0 || baseSha.length === 0) return { pr, status: "skipped", reason: "ref-missing" };
   if (deps.git(["merge-base", "--is-ancestor", baseSha, headSha]).ok) return { pr, status: "skipped", reason: "up-to-date" };
   if (options.dryRun) return { pr, status: "would-rebase" };
@@ -233,14 +243,14 @@ export async function rebaseOne(pr: OpenPr, options: RebaseOptions, deps: Rebase
     const added = deps.git(["worktree", "add", "--detach", dir, headSha]);
     if (!added.ok) return { pr, status: "failed", detail: added.stderr.trim() };
     try {
-      const rebased = await rebaseWithModel(pr, base, dir, options, deps);
+      const rebased = await rebaseWithModel(pr, baseSha, dir, options, deps);
       if (deps.isCancelled()) return { pr, status: "failed", detail: "interrupted" };
-      if (!rebased.ok) return block(pr, rebased.reason, rebased.detail, deps);
+      if (!rebased.ok) return block(pr, rebased.reason, rebased.detail, options, deps);
 
       if (options.testCommand !== undefined) {
         const tested = await deps.runTest(options.testCommand, dir);
         if (deps.isCancelled()) return { pr, status: "failed", detail: "interrupted" };
-        if (!tested.ok) return block(pr, "test-failed", tested.output, deps);
+        if (!tested.ok) return block(pr, "test-failed", tested.output, options, deps);
       }
 
       // The model and the tests can run for minutes; the pull request may have been closed or retargeted meanwhile.
@@ -272,11 +282,16 @@ export async function rebasePullRequests(
   deps: RebaseDeps,
   onOutcome: (outcome: PrOutcome) => void = () => undefined,
 ): Promise<PrOutcome[]> {
+  // A branch that is the base of any open pull request is an integration branch: never rewrite it.
+  const guarded: RebaseOptions = {
+    ...options,
+    protectedBranches: [...options.protectedBranches, ...prs.map((pr) => pr.baseRefName)],
+  };
   const handle = async (pr: OpenPr): Promise<PrOutcome> => {
-    const skip = decideSkip(pr, options);
+    const skip = decideSkip(pr, guarded);
     if (skip !== null) return { pr, status: "skipped", reason: skip };
     try {
-      return await rebaseOne(pr, options, deps);
+      return await rebaseOne(pr, guarded, deps);
     } catch (err) {
       return { pr, status: "failed", detail: (err as Error).message };
     }

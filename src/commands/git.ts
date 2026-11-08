@@ -682,6 +682,16 @@ interface RebasePrsRun {
   fetch: boolean;
 }
 
+/** The base, the default and the configured protected branches, plus the trunk when origin names one. */
+function protectedHeads(doWork: NonNullable<ReturnType<typeof readConfig>["doWork"]>): string[] {
+  const trunk = resolveTrunkBranch();
+  return [
+    doWork.baseBranch ?? DEFAULT_DO_WORK.baseBranch,
+    ...(doWork.protectedBranches ?? DEFAULT_DO_WORK.protectedBranches),
+    ...(trunk.ok ? [trunk.branch] : []),
+  ];
+}
+
 async function runRebasePrs(
   config: ReturnType<typeof readConfig>,
   run: RebasePrsRun,
@@ -707,6 +717,7 @@ async function runRebasePrs(
       dryRun: run.dryRun,
       includeDrafts: rebase.includeDrafts ?? false,
       owners: run.owners,
+      protectedBranches: protectedHeads(doWork),
       maxAttempts: rebase.maxAttempts ?? DEFAULT_REBASE_PRS_MAX_ATTEMPTS,
       testCommand: rebase.testCommand,
       prompt: rebase.prompt ?? DEFAULT_REBASE_PRS_PROMPT,
